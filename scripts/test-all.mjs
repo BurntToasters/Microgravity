@@ -12,8 +12,17 @@ function nodeTests() {
   run(process.execPath, ["--test", ...tests]);
 }
 
+function uiSigning() {
+  const identity = process.env.MICROGRAVITY_UI_SIGNING_IDENTITY ?? "";
+  const team = process.env.MICROGRAVITY_UI_TEAM_ID ?? "";
+  if (Boolean(identity) !== Boolean(team)) throw new Error("set both MICROGRAVITY_UI_SIGNING_IDENTITY and MICROGRAVITY_UI_TEAM_ID to sign UI tests");
+  return { identity, team, enabled: Boolean(identity) };
+}
+
 function xcodeTests() {
   const architecture = os.arch() === "x64" ? "x86_64" : "arm64";
+  const signing = uiSigning();
+  if (!signing.enabled) console.warn("test:all: UI tests are unsigned; set MICROGRAVITY_UI_SIGNING_IDENTITY and MICROGRAVITY_UI_TEAM_ID if the runner cannot connect.");
   const resultBundle = path.join(root, "DerivedData/TestResults/Microgravity.xcresult");
   fs.rmSync(resultBundle, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(resultBundle), { recursive: true });
@@ -28,11 +37,12 @@ function xcodeTests() {
     "-parallel-testing-enabled", "NO",
     "-resultBundlePath", resultBundle,
     "test",
-    "CODE_SIGNING_ALLOWED=NO",
+    `CODE_SIGNING_ALLOWED=${signing.enabled ? "YES" : "NO"}`,
+    ...(signing.enabled ? [`CODE_SIGN_IDENTITY=${signing.identity}`, `DEVELOPMENT_TEAM=${signing.team}`] : []),
     `SPARKLE_ENABLE_AUTOMATIC_CHECKS=${process.env.MICROGRAVITY_SPARKLE_PUBLIC_KEY ? "YES" : "NO"}`,
   ]);
   resolvePackages(args);
-  run("xcodebuild", args, { env: { MICROGRAVITY_SPARKLE_PUBLIC_KEY: process.env.MICROGRAVITY_SPARKLE_PUBLIC_KEY ?? "", MICROGRAVITY_SKIP_EMBED_SIGNING: "1" } });
+  run("xcodebuild", args, { env: { MICROGRAVITY_SPARKLE_PUBLIC_KEY: process.env.MICROGRAVITY_SPARKLE_PUBLIC_KEY ?? "", MICROGRAVITY_SKIP_EMBED_SIGNING: signing.enabled ? "0" : "1" } });
 }
 
 export function runAllTests() {
@@ -54,6 +64,7 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
   if (process.argv.slice(2).some((argument) => argument === "--help" || argument === "-h")) {
     console.log("Usage: node scripts/test-all.mjs");
     console.log("Runs version, project, workspace, Node, Core XCTest, and UI XCTest gates.");
+    console.log("UI tests need Automation Mode; set MICROGRAVITY_UI_SIGNING_IDENTITY and MICROGRAVITY_UI_TEAM_ID to sign them.");
   } else {
     try {
       runAllTests();

@@ -1,0 +1,221 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A00000000000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000030 /* Sparkle */; };
+		A00000000000000000000002 /* Sparkle in Embed Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000030 /* Sparkle */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A00000000000000000000003 /* MicrogravityHelper in Copy Helpers */ = {isa = PBXBuildFile; fileRef = A00000000000000000000011 /* MicrogravityHelper */; };
+        A00000000000000000000004 /* Helper plist in Copy LaunchDaemons */ = {isa = PBXBuildFile; fileRef = A00000000000000000000027 /* Helper plist */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A00000000000000000000040 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (A00000000000000000000002 /* Sparkle in Embed Frameworks */, );
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+		};
+		A00000000000000000000041 /* Copy Helpers */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (A00000000000000000000003 /* MicrogravityHelper in Copy Helpers */, );
+			name = "Copy Helpers";
+			runOnlyForDeploymentPostprocessing = 0;
+			dstPath = "Contents/Helpers";
+			dstSubfolderSpec = 1;
+		};
+        A00000000000000000000042 /* Copy LaunchDaemons */ = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000004 /* Helper plist in Copy LaunchDaemons */, ); name = "Copy LaunchDaemons"; runOnlyForDeploymentPostprocessing = 0; dstPath = "Contents/Library/LaunchDaemons"; dstSubfolderSpec = 1; };
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		A00000000000000000000010 /* Microgravity.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Microgravity.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000011 /* MicrogravityHelper */ = {isa = PBXFileReference; explicitFileType = compiled.mach-o.executable; includeInIndex = 0; path = MicrogravityHelper; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000012 /* MicrogravityCoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MicrogravityCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000013 /* MicrogravityUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MicrogravityUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000020 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000021 /* Microgravity.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Microgravity.entitlements; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000022 /* MicrogravityHelper.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MicrogravityHelper.entitlements; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000023 /* base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = config/base.xcconfig; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000024 /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = config/debug.xcconfig; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000025 /* release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = config/release.xcconfig; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000026 /* version.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = config/version.xcconfig; sourceTree = SOURCE_ROOT; };
+        A00000000000000000000027 /* Helper plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = resources/helper/run.rosie.microgravity.helper.plist; sourceTree = SOURCE_ROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		A00000000000000000000050 /* Sources/App */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Sources/App; sourceTree = "<group>"; };
+		A00000000000000000000051 /* Sources/Core */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Sources/Core; sourceTree = "<group>"; };
+		A00000000000000000000052 /* Sources/Collectors */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Sources/Collectors; sourceTree = "<group>"; };
+		A00000000000000000000053 /* Sources/History */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Sources/History; sourceTree = "<group>"; };
+		A00000000000000000000054 /* Sources/UI */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Sources/UI; sourceTree = "<group>"; };
+		A00000000000000000000055 /* Sources/Integration */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Sources/Integration; sourceTree = "<group>"; };
+		A00000000000000000000056 /* Sources/Shared */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Sources/Shared; sourceTree = "<group>"; };
+		A00000000000000000000057 /* Sources/Helper */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Sources/Helper; sourceTree = "<group>"; };
+		A00000000000000000000058 /* Tests/CoreTests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Tests/CoreTests; sourceTree = "<group>"; };
+		A00000000000000000000059 /* Tests/UITests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Tests/UITests; sourceTree = "<group>"; };
+		A0000000000000000000005A /* resources */ = {isa = PBXFileSystemSynchronizedRootGroup; path = resources; sourceTree = "<group>"; };
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A00000000000000000000060 /* Microgravity Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000001 /* Sparkle in Frameworks */, ); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000061 /* MicrogravityHelper Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000062 /* CoreTests Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000063 /* UITests Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A00000000000000000000070 = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000050 /* Sources/App */,
+				A00000000000000000000051 /* Sources/Core */,
+				A00000000000000000000052 /* Sources/Collectors */,
+				A00000000000000000000053 /* Sources/History */,
+				A00000000000000000000054 /* Sources/UI */,
+				A00000000000000000000055 /* Sources/Integration */,
+				A00000000000000000000056 /* Sources/Shared */,
+				A00000000000000000000057 /* Sources/Helper */,
+				A00000000000000000000058 /* Tests/CoreTests */,
+				A00000000000000000000059 /* Tests/UITests */,
+				A0000000000000000000005A /* resources */,
+				A00000000000000000000020 /* Info.plist */,
+				A00000000000000000000021 /* Microgravity.entitlements */,
+				A00000000000000000000022 /* MicrogravityHelper.entitlements */,
+				A00000000000000000000023 /* base.xcconfig */,
+				A00000000000000000000024 /* debug.xcconfig */,
+				A00000000000000000000025 /* release.xcconfig */,
+				A00000000000000000000026 /* version.xcconfig */,
+				A00000000000000000000071 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A00000000000000000000071 /* Products */ = {isa = PBXGroup; children = (A00000000000000000000010 /* Microgravity.app */, A00000000000000000000011 /* MicrogravityHelper */, A00000000000000000000012 /* MicrogravityCoreTests.xctest */, A00000000000000000000013 /* MicrogravityUITests.xctest */, ); name = Products; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A00000000000000000000080 /* Microgravity */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A000000000000000000000CB /* Build configuration list for PBXNativeTarget "Microgravity" */;
+			buildPhases = (A00000000000000000000090 /* Sources */, A00000000000000000000060 /* Microgravity Frameworks */, A00000000000000000000095 /* Resources */, A00000000000000000000040 /* Embed Frameworks */, A00000000000000000000096 /* Copy Sparkle Helpers */, A00000000000000000000041 /* Copy Helpers */, A00000000000000000000042 /* Copy LaunchDaemons */, );
+			buildRules = ();
+			dependencies = (A000000000000000000000B0 /* MicrogravityHelper dependency */, );
+			fileSystemSynchronizedGroups = (A00000000000000000000050 /* Sources/App */, A00000000000000000000051 /* Sources/Core */, A00000000000000000000052 /* Sources/Collectors */, A00000000000000000000053 /* Sources/History */, A00000000000000000000054 /* Sources/UI */, A00000000000000000000055 /* Sources/Integration */, A00000000000000000000056 /* Sources/Shared */, A0000000000000000000005A /* resources */, );
+			name = Microgravity;
+			packageProductDependencies = (A00000000000000000000030 /* Sparkle */, );
+			productName = Microgravity;
+			productReference = A00000000000000000000010 /* Microgravity.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A00000000000000000000081 /* MicrogravityHelper */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A000000000000000000000CC /* Build configuration list for PBXNativeTarget "MicrogravityHelper" */;
+			buildPhases = (A00000000000000000000091 /* Sources */, A00000000000000000000061 /* MicrogravityHelper Frameworks */, A00000000000000000000097 /* Resources */, );
+			buildRules = ();
+			dependencies = ();
+			fileSystemSynchronizedGroups = (A00000000000000000000057 /* Sources/Helper */, A00000000000000000000056 /* Sources/Shared */, );
+			name = MicrogravityHelper;
+			packageProductDependencies = ();
+			productName = MicrogravityHelper;
+			productReference = A00000000000000000000011 /* MicrogravityHelper */;
+			productType = "com.apple.product-type.tool";
+		};
+		A00000000000000000000082 /* MicrogravityCoreTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A000000000000000000000CD /* Build configuration list for PBXNativeTarget "MicrogravityCoreTests" */;
+			buildPhases = (A00000000000000000000092 /* Sources */, A00000000000000000000062 /* CoreTests Frameworks */, A00000000000000000000098 /* Resources */, );
+			buildRules = ();
+			dependencies = (A000000000000000000000B1 /* Microgravity XCTest host dependency */, );
+			fileSystemSynchronizedGroups = (A00000000000000000000058 /* Tests/CoreTests */, );
+			name = MicrogravityCoreTests;
+			packageProductDependencies = ();
+			productName = MicrogravityCoreTests;
+			productReference = A00000000000000000000012 /* MicrogravityCoreTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		A00000000000000000000083 /* MicrogravityUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A000000000000000000000CE /* Build configuration list for PBXNativeTarget "MicrogravityUITests" */;
+			buildPhases = (A00000000000000000000093 /* Sources */, A00000000000000000000063 /* UITests Frameworks */, A00000000000000000000099 /* Resources */, );
+			buildRules = ();
+			dependencies = (A000000000000000000000B2 /* Microgravity UI test host dependency */, );
+			fileSystemSynchronizedGroups = (A00000000000000000000059 /* Tests/UITests */, );
+			name = MicrogravityUITests;
+			packageProductDependencies = ();
+			productName = MicrogravityUITests;
+			productReference = A00000000000000000000013 /* MicrogravityUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		D00000000000000000000001 = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = 1; LastUpgradeCheck = 2700; TargetAttributes = {A00000000000000000000080 = {CreatedOnToolsVersion = 27.2; }; A00000000000000000000081 = {CreatedOnToolsVersion = 27.2; }; A00000000000000000000082 = {CreatedOnToolsVersion = 27.2; TestTargetID = A00000000000000000000080; }; A00000000000000000000083 = {CreatedOnToolsVersion = 27.2; TestTargetID = A00000000000000000000080; }; }; }; buildConfigurationList = A000000000000000000000CA /* Build configuration list for PBXProject "Microgravity" */; compatibilityVersion = "Xcode 16.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base, ); mainGroup = A00000000000000000000070; packageReferences = (A00000000000000000000031 /* XCLocalSwiftPackageReference "vendor/Sparkle" */, ); productRefGroup = A00000000000000000000071; projectDirPath = ""; projectRoot = ""; targets = (A00000000000000000000080 /* Microgravity */, A00000000000000000000081 /* MicrogravityHelper */, A00000000000000000000082 /* MicrogravityCoreTests */, A00000000000000000000083 /* MicrogravityUITests */, ); };
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A00000000000000000000095 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000096 /* Sparkle Helpers */ = {isa = PBXShellScriptBuildPhase; buildActionMask = 2147483647; files = (); inputPaths = ("$(SRCROOT)/vendor/Sparkle/Helpers/Autoupdate", "$(SRCROOT)/vendor/Sparkle/Helpers/Updater.app/Contents/Info.plist", ); name = "Copy Sparkle Helpers"; outputPaths = ("$(BUILT_PRODUCTS_DIR)/$(FRAMEWORKS_FOLDER_PATH)/Sparkle.framework/Versions/A/Autoupdate", "$(BUILT_PRODUCTS_DIR)/$(FRAMEWORKS_FOLDER_PATH)/Sparkle.framework/Versions/A/Updater.app/Contents/Info.plist", ); runOnlyForDeploymentPostprocessing = 0; shellPath = /bin/sh; shellScript = "\"${SRCROOT}/scripts/copy-sparkle-helpers.sh\""; };
+		A00000000000000000000097 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000098 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000099 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A00000000000000000000090 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000091 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000092 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000093 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A000000000000000000000B0 /* MicrogravityHelper dependency */ = {isa = PBXTargetDependency; target = A00000000000000000000081 /* MicrogravityHelper */; targetProxy = A000000000000000000000B3 /* MicrogravityHelper proxy */; };
+		A000000000000000000000B1 /* Microgravity XCTest host dependency */ = {isa = PBXTargetDependency; target = A00000000000000000000080 /* Microgravity */; targetProxy = A000000000000000000000B4 /* Microgravity XCTest host proxy */; };
+		A000000000000000000000B2 /* Microgravity UI test host dependency */ = {isa = PBXTargetDependency; target = A00000000000000000000080 /* Microgravity */; targetProxy = A000000000000000000000B5 /* Microgravity UI test host proxy */; };
+/* End PBXTargetDependency section */
+
+/* Begin PBXContainerItemProxy section */
+		A000000000000000000000B3 /* MicrogravityHelper proxy */ = {isa = PBXContainerItemProxy; containerPortal = D00000000000000000000001; proxyType = 1; remoteGlobalIDString = A00000000000000000000081; remoteInfo = MicrogravityHelper; };
+		A000000000000000000000B4 /* Microgravity XCTest host proxy */ = {isa = PBXContainerItemProxy; containerPortal = D00000000000000000000001; proxyType = 1; remoteGlobalIDString = A00000000000000000000080; remoteInfo = Microgravity; };
+		A000000000000000000000B5 /* Microgravity UI test host proxy */ = {isa = PBXContainerItemProxy; containerPortal = D00000000000000000000001; proxyType = 1; remoteGlobalIDString = A00000000000000000000080; remoteInfo = Microgravity; };
+/* End PBXContainerItemProxy section */
+
+/* Begin XCBuildConfiguration section */
+		A000000000000000000000C0 /* Project Debug */ = {isa = XCBuildConfiguration; buildSettings = {ONLY_ACTIVE_ARCH = YES; CLANG_ENABLE_MODULES = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; SDKROOT = macosx; SWIFT_VERSION = 5.8; }; name = Debug; };
+		A000000000000000000000C1 /* Project Release */ = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; SDKROOT = macosx; SWIFT_VERSION = 5.8; }; name = Release; };
+		A000000000000000000000C2 /* App Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = A00000000000000000000024 /* debug.xcconfig */; buildSettings = {CODE_SIGN_ENTITLEMENTS = Microgravity.entitlements; DEFINES_MODULE = YES; ENABLE_TESTABILITY = YES; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = Info.plist; PRODUCT_BUNDLE_IDENTIFIER = run.rosie.microgravity; PRODUCT_MODULE_NAME = Microgravity; PRODUCT_NAME = Microgravity; SWIFT_EMIT_LOC_STRINGS = NO; }; name = Debug; };
+		A000000000000000000000C3 /* App Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = A00000000000000000000025 /* release.xcconfig */; buildSettings = {CODE_SIGN_ENTITLEMENTS = Microgravity.entitlements; DEFINES_MODULE = YES; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = Info.plist; PRODUCT_BUNDLE_IDENTIFIER = run.rosie.microgravity; PRODUCT_MODULE_NAME = Microgravity; PRODUCT_NAME = Microgravity; SWIFT_EMIT_LOC_STRINGS = NO; }; name = Release; };
+		A000000000000000000000C4 /* Helper Debug */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_ENTITLEMENTS = MicrogravityHelper.entitlements; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; PRODUCT_BUNDLE_IDENTIFIER = run.rosie.microgravity.helper; PRODUCT_NAME = MicrogravityHelper; SWIFT_VERSION = 5.8; }; name = Debug; };
+		A000000000000000000000C5 /* Helper Release */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_ENTITLEMENTS = MicrogravityHelper.entitlements; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; PRODUCT_BUNDLE_IDENTIFIER = run.rosie.microgravity.helper; PRODUCT_NAME = MicrogravityHelper; SWIFT_VERSION = 5.8; }; name = Release; };
+		A000000000000000000000C6 /* CoreTests Debug */ = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGNING_ALLOWED = NO; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; PRODUCT_BUNDLE_IDENTIFIER = run.rosie.microgravity.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.8; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Microgravity.app/Contents/MacOS/Microgravity"; }; name = Debug; };
+		A000000000000000000000C7 /* CoreTests Release */ = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGNING_ALLOWED = NO; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; PRODUCT_BUNDLE_IDENTIFIER = run.rosie.microgravity.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.8; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Microgravity.app/Contents/MacOS/Microgravity"; }; name = Release; };
+		A000000000000000000000C8 /* UITests Debug */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGNING_ALLOWED = NO; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; PRODUCT_BUNDLE_IDENTIFIER = run.rosie.microgravity.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.8; TEST_TARGET_NAME = Microgravity; }; name = Debug; };
+		A000000000000000000000C9 /* UITests Release */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGNING_ALLOWED = NO; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; PRODUCT_BUNDLE_IDENTIFIER = run.rosie.microgravity.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.8; TEST_TARGET_NAME = Microgravity; }; name = Release; };
+		A000000000000000000000CA /* Project configurations */ = {isa = XCConfigurationList; buildConfigurations = (A000000000000000000000C0 /* Project Debug */, A000000000000000000000C1 /* Project Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A000000000000000000000CB /* App configurations */ = {isa = XCConfigurationList; buildConfigurations = (A000000000000000000000C2 /* App Debug */, A000000000000000000000C3 /* App Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A000000000000000000000CC /* Helper configurations */ = {isa = XCConfigurationList; buildConfigurations = (A000000000000000000000C4 /* Helper Debug */, A000000000000000000000C5 /* Helper Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A000000000000000000000CD /* CoreTests configurations */ = {isa = XCConfigurationList; buildConfigurations = (A000000000000000000000C6 /* CoreTests Debug */, A000000000000000000000C7 /* CoreTests Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A000000000000000000000CE /* UITests configurations */ = {isa = XCConfigurationList; buildConfigurations = (A000000000000000000000C8 /* UITests Debug */, A000000000000000000000C9 /* UITests Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		A00000000000000000000031 /* XCLocalSwiftPackageReference "vendor/Sparkle" */ = {isa = XCLocalSwiftPackageReference; relativePath = vendor/Sparkle; };
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A00000000000000000000030 /* Sparkle */ = {isa = XCSwiftPackageProductDependency; package = A00000000000000000000031 /* XCLocalSwiftPackageReference "vendor/Sparkle" */; productName = Sparkle; };
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = D00000000000000000000001 /* Project object */;
+}

@@ -1,0 +1,9 @@
+#include "base.xcconfig"
+
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG
+SWIFT_COMPILATION_MODE = incremental
+ONLY_ACTIVE_ARCH = YES
+
+// Ad-hoc signed development builds cannot load Sparkle.framework when the
+// hardened runtime requires matching Team IDs. Release keeps the hardened runtime.
+ENABLE_HARDENED_RUNTIME = NO

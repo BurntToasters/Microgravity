@@ -1,0 +1,29 @@
+{
+  "name": "microgravity",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "buildNumber": 1,
+  "license": "GPL-3.0-only",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "project:sync": "node scripts/generate-project.mjs",
+    "sync-version": "node scripts/sync-version.mjs",
+    "validate": "node scripts/validate.mjs",
+    "build:debug": "node scripts/build.mjs debug",
+    "build:release-smoke": "node scripts/build.mjs release-smoke",
+    "test:node": "node --test scripts/tests/*.test.mjs",
+    "test:all": "node scripts/test-all.mjs",
+    "workspace:bootstrap": "npm ci --ignore-scripts && npm run sync-version && npm run project:sync",
+    "release:preflight": "node scripts/release-preflight.mjs --release",
+    "release:prepare": "node scripts/release.mjs prepare",
+    "release:session:verify": "node scripts/release-session.mjs verify",
+    "release:mac:continue": "npm run release:session:verify && node scripts/release.mjs continue",
+    "release:mac:resume": "npm run release:preflight && npm run release:mac:continue && npm run release:publish && npm run release:verify:published",
+    "release:mac": "npm run release:preflight && npm run release:prepare && npm run release:mac:continue && npm run release:publish && npm run release:verify:published",
+    "release:publish": "node scripts/release.mjs publish",
+    "release:verify:published": "node scripts/release.mjs verify-published"
+  }
+}

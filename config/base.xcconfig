@@ -1,0 +1,13 @@
+#include "version.xcconfig"
+
+PRODUCT_NAME = Microgravity
+PRODUCT_MODULE_NAME = Microgravity
+PRODUCT_BUNDLE_IDENTIFIER = run.rosie.microgravity
+MACOSX_DEPLOYMENT_TARGET = 14.0
+SWIFT_VERSION = 5.8
+SWIFT_TREAT_WARNINGS_AS_ERRORS = YES
+INFOPLIST_FILE = Info.plist
+CODE_SIGN_ENTITLEMENTS = Microgravity.entitlements
+ENABLE_HARDENED_RUNTIME = YES
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/../Frameworks
+OTHER_LDFLAGS = $(inherited) -lsqlite3

@@ -60,3 +60,21 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Microgravity local builds, test evidence, and credentials
+/node_modules/
+/DerivedData/
+/build/
+/dist/
+/.release/
+/.env
+/config/local.xcconfig
+*.xcresult
+*.xcuserstate
+*.xccheckout
+.DS_Store
+__pycache__/
+/ai/output/
+vendor/*/.build/
+vendor/*/.swiftpm/
+vendor/*/Package.resolved

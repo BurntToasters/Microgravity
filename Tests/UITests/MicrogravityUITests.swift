@@ -207,7 +207,15 @@ final class MicrogravityUITests: XCTestCase {
     private func launchFixture(arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-test-fixtures"] + arguments
+        app.launchEnvironment["XCTestConfigurationFilePath"] =
+            ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] ?? "MicrogravityUITests.xctest"
         app.launch()
+        // The XCTest runner keeps focus on macOS; without an explicit
+        // activation XCUITest refuses taps ("not foreground").
+        for _ in 0..<50 where app.state != .runningForeground {
+            app.activate()
+            usleep(100_000)
+        }
         XCTAssertTrue(element("navigation.item.processes", in: app).waitForExistence(timeout: 5))
         return app
     }

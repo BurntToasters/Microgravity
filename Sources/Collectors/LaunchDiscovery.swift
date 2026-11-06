@@ -34,68 +34,89 @@ enum LaunchDiscovery {
         var serviceReasons = ["Launchd loaded/idle state is not exposed by this read-only plist scan."]
         var programPaths: [String: String] = [:]
         var scannedAnyDirectory = false
+        var startupHadFailure = false
+        var serviceHadFailure = false
+
+        func recordFailure(_ issue: String, isService: Bool) {
+            if isService {
+                serviceHadFailure = true
+                serviceReasons.append(issue)
+            } else {
+                startupHadFailure = true
+                startupReasons.append(issue)
+            }
+        }
 
         for directory in directories {
             guard FileManager.default.fileExists(atPath: directory.path) else { continue }
             scannedAnyDirectory = true
             guard let listing = childNames(in: directory.path, maximum: 1_024) else {
-                let issue = "Could not enumerate \(directory.path): \(String(cString: strerror(errno)))"
-                if directory.isService { serviceReasons.append(issue) }
-                else { startupReasons.append(issue) }
+                recordFailure("Could not enumerate \(directory.path): \(String(cString: strerror(errno)))",
+                              isService: directory.isService)
                 continue
             }
             if listing.exceededLimit {
-                if directory.isService { serviceReasons.append("\(directory.path) exceeded the 1,024-entry scan bound.") }
-                else { startupReasons.append("\(directory.path) exceeded the 1,024-entry scan bound.") }
+                recordFailure("\(directory.path) exceeded the 1,024-entry scan bound.",
+                              isService: directory.isService)
             }
             for name in listing.names.sorted(by: { $0.localizedStandardCompare($1) == .orderedAscending }) {
-                    let url = URL(fileURLWithPath: directory.path, isDirectory: true).appendingPathComponent(name)
-                    guard url.pathExtension == "plist" else { continue }
-                    let data: Data
-                    let propertyList: [String: Any]
-                    do {
-                        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-                        guard (attributes[.size] as? NSNumber)?.intValue ?? 0 <= 1_048_576 else {
-                            let issue = "Skipped \(url.path): plist exceeds the 1 MiB read bound."
-                            if directory.isService { serviceReasons.append(issue) }
-                            else { startupReasons.append(issue) }
-                            continue
-                        }
-                        data = try Data(contentsOf: url, options: [.mappedIfSafe])
-                        let value = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
-                        guard let dictionary = value as? [String: Any] else { continue }
-                        propertyList = dictionary
-                    } catch {
-                        let issue = "Could not read \(url.path): \(error.localizedDescription)"
-                        if directory.isService { serviceReasons.append(issue) }
-                        else { startupReasons.append(issue) }
+                guard isPropertyListName(name) else { continue }
+                let url = URL(fileURLWithPath: directory.path, isDirectory: true).appendingPathComponent(name)
+                let data: Data
+                let propertyList: [String: Any]
+                do {
+                    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                    guard (attributes[.size] as? NSNumber)?.intValue ?? 0 <= 1_048_576 else {
+                        recordFailure("Skipped \(url.path): plist exceeds the 1 MiB read bound.",
+                                      isService: directory.isService)
                         continue
                     }
+                    data = try Data(contentsOf: url, options: [.mappedIfSafe])
+                    let value = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
+                    guard let dictionary = value as? [String: Any] else {
+                        recordFailure("Could not parse \(url.path) as a property-list dictionary.",
+                                      isService: directory.isService)
+                        continue
+                    }
+                    propertyList = dictionary
+                } catch {
+                    recordFailure("Could not read \(url.path): \(error.localizedDescription)",
+                                  isService: directory.isService)
+                    continue
+                }
 
-                    let label = propertyList["Label"] as? String ?? url.deletingPathExtension().lastPathComponent
-                    let program = programPath(from: propertyList)
-                    let isRunning = program.map(runningPaths.contains) ?? false
-                    if let program { programPaths[url.path] = program }
-                    let entry = DiscoveredEntrySnapshot(
-                        id: url.path, kind: directory.kind, name: label, path: url.path,
-                        ownerUID: ownerUID(at: url.path),
-                        state: isRunning ? .running : .unknown,
-                        detail: program == nil ? "Program path is not declared." : nil)
-                    if directory.isService { services.append(entry) }
-                    else { startup.append(entry) }
+                let label = propertyList["Label"] as? String ?? url.deletingPathExtension().lastPathComponent
+                let program = programPath(from: propertyList)
+                let isRunning = program.map(runningPaths.contains) ?? false
+                if let program { programPaths[url.path] = program }
+                let entry = DiscoveredEntrySnapshot(
+                    id: url.path, kind: directory.kind, name: label, path: url.path,
+                    ownerUID: ownerUID(at: url.path),
+                    state: isRunning ? .running : .unknown,
+                    detail: program == nil ? "Program path is not declared." : nil)
+                if directory.isService { services.append(entry) }
+                else { startup.append(entry) }
             }
         }
 
         if !scannedAnyDirectory {
-            startupReasons.append("No startup-item directories were readable.")
-            serviceReasons.append("No service directories were readable.")
+            startupReasons.append("No startup-item directories were found.")
+            serviceReasons.append("No service directories were found.")
         }
         return LaunchDiscoveryResult(
             startupItems: startup.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
             services: services.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
-            startupCoverage: DiscoveryCoverage(complete: false, reasons: startupReasons),
-            serviceCoverage: DiscoveryCoverage(complete: false, reasons: serviceReasons),
+            startupCoverage: coverage(hadFailure: startupHadFailure, reasons: startupReasons),
+            serviceCoverage: coverage(hadFailure: serviceHadFailure, reasons: serviceReasons),
             programPaths: programPaths)
+    }
+
+    static func isPropertyListName(_ name: String) -> Bool {
+        (name as NSString).pathExtension.caseInsensitiveCompare("plist") == .orderedSame
+    }
+
+    static func coverage(hadFailure: Bool, reasons: [String]) -> DiscoveryCoverage {
+        DiscoveryCoverage(complete: !hadFailure, reasons: reasons)
     }
 
     private static func programPath(from dictionary: [String: Any]) -> String? {

@@ -215,6 +215,8 @@ private final class PageHostViewController: NSViewController {
     private let dependencies: AppDependencies
     private var currentPage: DashboardPage?
     private var currentController: NSViewController?
+    private var cachedControllers: [DashboardPage: NSViewController] = [:]
+    private var currentConstraints: [NSLayoutConstraint] = []
     private var latestSnapshot: MonitoringSnapshot?
 
     init(dependencies: AppDependencies) {
@@ -239,39 +241,56 @@ private final class PageHostViewController: NSViewController {
     func show(page: DashboardPage) {
         guard currentPage != page else { return }
         currentPage = page
-        currentController?.view.removeFromSuperview()
-        currentController?.removeFromParent()
+        detachCurrentController()
+        let controller = cachedControllers[page] ?? makeController(for: page)
+        cachedControllers[page] = controller
+        attach(controller)
+        currentController = controller
+        if let latestSnapshot {
+            (controller as? SnapshotUpdating)?.update(snapshot: latestSnapshot)
+        }
+    }
+
+    private func makeController(for page: DashboardPage) -> NSViewController {
         let context = PageDependencies(
             monitoringStore: dependencies.monitoringStore,
             processActions: dependencies.processActions,
             integrations: dependencies.integrations,
             fixtureMode: dependencies.fixtureMode
         )
-        let controller: NSViewController
         switch page {
-        case .processes: controller = ProcessesViewController(dependencies: context)
-        case .performance: controller = PerformanceViewController(dependencies: context)
-        case .history: controller = HistoryViewController(dependencies: context)
-        case .startup: controller = InventoryViewController(kind: .startup, dependencies: context)
-        case .users: controller = UsersViewController()
-        case .details: controller = DetailsViewController()
-        case .services: controller = InventoryViewController(kind: .services, dependencies: context)
-        case .settings: controller = SettingsViewController(dependencies: context)
+        case .processes: return ProcessesViewController(dependencies: context)
+        case .performance: return PerformanceViewController(dependencies: context)
+        case .history: return HistoryViewController(dependencies: context)
+        case .startup: return InventoryViewController(kind: .startup, dependencies: context)
+        case .users: return UsersViewController()
+        case .details: return DetailsViewController()
+        case .services: return InventoryViewController(kind: .services, dependencies: context)
+        case .settings: return SettingsViewController(dependencies: context)
         }
+    }
+
+    private func attach(_ controller: NSViewController) {
         addChild(controller)
         let pageView = controller.view
         pageView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(pageView)
-        NSLayoutConstraint.activate([
+        currentConstraints = [
             pageView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             pageView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             pageView.topAnchor.constraint(equalTo: view.topAnchor),
             pageView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        ])
-        currentController = controller
-        if let latestSnapshot {
-            (controller as? SnapshotUpdating)?.update(snapshot: latestSnapshot)
-        }
+        ]
+        NSLayoutConstraint.activate(currentConstraints)
+    }
+
+    private func detachCurrentController() {
+        guard let controller = currentController else { return }
+        NSLayoutConstraint.deactivate(currentConstraints)
+        currentConstraints = []
+        controller.view.removeFromSuperview()
+        controller.removeFromParent()
+        currentController = nil
     }
 }
 

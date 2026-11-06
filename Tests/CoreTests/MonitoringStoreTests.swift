@@ -45,6 +45,24 @@ final class MonitoringStoreTests: XCTestCase {
         XCTAssertFalse(store.isRunning)
     }
 
+    func testStopDuringHistoryRecordDoesNotPublishTheStaleSnapshot() async {
+        let history = SuspendedRecordingHistoryStore()
+        let store = DefaultMonitoringStore(collector: StaticCollector(), historyStore: history)
+        var callbacks = 0
+        store.onSnapshot = { _ in callbacks += 1 }
+        store.start(interval: .fiveSeconds)
+        let refresh = Task { await store.refreshNow() }
+
+        await history.waitForRecordStart()
+        store.stop()
+        await history.releaseRecord()
+        await refresh.value
+
+        XCTAssertNil(store.latestSnapshot)
+        XCTAssertTrue(store.graphSamples.isEmpty)
+        XCTAssertEqual(callbacks, 0)
+    }
+
     func testHistoryResetFailureIsReturnedToTheCaller() async {
         let expected = HistoryTestError.storageUnavailable
         let history = FailingHistoryStore(error: expected)

@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 
 private enum AppearanceMode: String, CaseIterable {
     case system
@@ -303,7 +304,7 @@ final class SettingsViewController: NSViewController {
         case .unavailable: helperButton.isEnabled = false
         default: helperButton.isEnabled = true
         }
-        removeHelperButton.isEnabled = status.helper == .available || status.helper == .requiresApproval
+        removeHelperButton.isEnabled = canRemoveHelper(status.helper)
         loginItemState.stringValue = describe(status.loginItem)
         switch status.loginItem {
         case .enabled:
@@ -339,6 +340,19 @@ final class SettingsViewController: NSViewController {
         case .unavailable:
             updateCheckButton.isEnabled = false
             updateInstallButton.isEnabled = false
+        }
+    }
+
+    private func canRemoveHelper(_ status: IntegrationAvailability) -> Bool {
+        switch status {
+        case .available, .requiresApproval, .failed:
+            return true
+        case .notConfigured:
+            return false
+        case .unavailable:
+            // A registered daemon can be stuck unavailable (for example after a
+            // handshake failure) and still needs to remain removable.
+            return SMAppService.daemon(plistName: helperMachService + ".plist").status != .notRegistered
         }
     }
 

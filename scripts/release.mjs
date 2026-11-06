@@ -10,16 +10,18 @@ import { buildRelease } from "./build.mjs";
 import { runPreflight, sparkleCredentialSources } from "./release-preflight.mjs";
 import { artifactManifestPath, createArtifactManifest, createSession, validateArtifactManifest, verifySession } from "./release-session.mjs";
 
+const githubSecrets = ["GH_TOKEN", "GITHUB_TOKEN"];
+
 function ghResult(args) {
-  return run("gh", args, { capture: true, allowFailure: true });
+  return run("gh", args, { capture: true, allowFailure: true, allowSecrets: githubSecrets });
 }
 
 function ghRun(args) {
-  return run("gh", args);
+  return run("gh", args, { allowSecrets: githubSecrets });
 }
 
 function ghOutput(args) {
-  return output("gh", args);
+  return output("gh", args, { allowSecrets: githubSecrets });
 }
 
 export function expectedDraftTarget(info, commit) {

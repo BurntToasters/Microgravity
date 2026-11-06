@@ -38,6 +38,9 @@ argument alone cannot switch a production build to fixture data.
   and swap, disk and network throughput, and GPU/energy only when supported.
   Graphs label units and provide a short definition. Unsupported and temporarily
   unavailable metrics have distinct states from a measured zero.
+- CPU percentages are normalized across logical cores: a process consuming one
+  full core reports `100 / N` percent on an N-core system, and a fully saturated
+  system totals approximately 100 percent.
 - Pausing sampling retains the last sample and labels it as paused/stale. The
   configured refresh interval is 0.5, 1, 2, or 5 seconds.
 - App History displays at most 30 days of measured application totals. Missing

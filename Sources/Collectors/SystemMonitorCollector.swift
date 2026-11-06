@@ -41,6 +41,13 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         let result: LaunchDiscoveryResult
     }
 
+    private struct CachedBundleMetadata {
+        let bundleID: String?
+        let title: String
+    }
+
+    private static let bundleMetadataCacheLimit = 256
+
     private let advancedCollector: (any AdvancedMetricsCollecting)?
     private var systemCounters = CounterDeltaTracker<CounterKey>()
     private var processCounters = CounterDeltaTracker<ProcessCounterKey>()
@@ -49,6 +56,8 @@ public actor SystemMonitorCollector: MonitoringCollecting {
     private var pressureLevel: MemoryPressureLevel?
     private var pressureTimestamp: Date?
     private var cachedLaunchDiscovery: CachedLaunchDiscovery?
+    private var bundleMetadataCache: [String: CachedBundleMetadata] = [:]
+    private var bundleMetadataOrder: [String] = []
 
     public init(advancedCollector: (any AdvancedMetricsCollecting)? = nil) {
         self.advancedCollector = advancedCollector
@@ -384,8 +393,10 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                 receiveTotalBytes: MetricReading(value: Double(data.receive), unit: .bytes, timestamp: timestamp),
                 transmitTotalBytes: MetricReading(value: Double(data.transmit), unit: .bytes, timestamp: timestamp)))
         }
-        let receive = combineRates(interfaces.map(\.receiveBytesPerSecond), unit: .bytesPerSecond, timestamp: timestamp)
-        let transmit = combineRates(interfaces.map(\.transmitBytesPerSecond), unit: .bytesPerSecond, timestamp: timestamp)
+        let receive = Self.combineRates(interfaces.map(\.receiveBytesPerSecond), unit: .bytesPerSecond,
+                                        timestamp: timestamp)
+        let transmit = Self.combineRates(interfaces.map(\.transmitBytesPerSecond), unit: .bytesPerSecond,
+                                         timestamp: timestamp)
         return (receive, transmit, interfaces)
     }
 
@@ -535,7 +546,12 @@ public actor SystemMonitorCollector: MonitoringCollecting {
 
         for process in processes.sorted(by: { $0.id.pid < $1.id.pid }) {
             guard let (root, bundlePath, bundleID, title) = appRoot(for: process, byID: byID) else { continue }
-            let appID = "bundle:\(bundleID ?? bundlePath)|\(bundlePath)"
+            let appID: String
+            if let bundleID, !bundleID.isEmpty {
+                appID = "bundle:\(bundleID)"
+            } else {
+                appID = "bundle:\(bundlePath)"
+            }
             let history = ApplicationHistoryIdentity(id: appID, name: title,
                                                      executablePath: bundlePath,
                                                      association: .applicationBundle)
@@ -600,16 +616,16 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             id: root.id, title: title, ownerUID: root.ownerUID, executablePath: history.executablePath,
             association: association, historyIdentity: history,
             members: members.map(\.id),
-            cpuPercent: combineRates(members.map(\.cpuPercent), unit: .percent, timestamp: timestamp),
-            memoryBytes: combineRates(members.map(\.memoryBytes), unit: .bytes, timestamp: timestamp),
-            diskReadBytesPerSecond: combineRates(members.map(\.diskReadBytesPerSecond),
-                                                 unit: .bytesPerSecond, timestamp: timestamp),
-            diskWriteBytesPerSecond: combineRates(members.map(\.diskWriteBytesPerSecond),
-                                                  unit: .bytesPerSecond, timestamp: timestamp),
-            networkReceiveBytesPerSecond: combineRates(members.map { $0.advancedMetrics[.processNetworkReceive] ??
+            cpuPercent: Self.combineRates(members.map(\.cpuPercent), unit: .percent, timestamp: timestamp),
+            memoryBytes: Self.combineRates(members.map(\.memoryBytes), unit: .bytes, timestamp: timestamp),
+            diskReadBytesPerSecond: Self.combineRates(members.map(\.diskReadBytesPerSecond),
+                                                      unit: .bytesPerSecond, timestamp: timestamp),
+            diskWriteBytesPerSecond: Self.combineRates(members.map(\.diskWriteBytesPerSecond),
+                                                       unit: .bytesPerSecond, timestamp: timestamp),
+            networkReceiveBytesPerSecond: Self.combineRates(members.map { $0.advancedMetrics[.processNetworkReceive] ??
                 MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp, reason: .unsupported) },
                 unit: .bytesPerSecond, timestamp: timestamp),
-            networkTransmitBytesPerSecond: combineRates(members.map { $0.advancedMetrics[.processNetworkTransmit] ??
+            networkTransmitBytesPerSecond: Self.combineRates(members.map { $0.advancedMetrics[.processNetworkTransmit] ??
                 MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp, reason: .unsupported) },
                 unit: .bytesPerSecond, timestamp: timestamp))
     }
@@ -626,19 +642,32 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                       parent.executablePath.flatMap(applicationBundlePath) == bundlePath {
                     root = parent
                 }
-                let bundle = Bundle(url: URL(fileURLWithPath: bundlePath))
-                let bundleID = bundle?.bundleIdentifier
-                let defaultTitle = URL(fileURLWithPath: bundlePath).deletingPathExtension().lastPathComponent
-                let title = bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
-                    ?? bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
-                    ?? defaultTitle
-                return (root, bundlePath, bundleID, title)
+                let metadata = bundleMetadata(at: bundlePath)
+                return (root, bundlePath, metadata.bundleID, metadata.title)
             }
             guard let parentID = candidate.parentIdentity, let parent = byID[parentID],
                   parent.ownerUID == candidate.ownerUID else { break }
             current = parent
         }
         return nil
+    }
+
+    private func bundleMetadata(at bundlePath: String) -> CachedBundleMetadata {
+        if let cached = bundleMetadataCache[bundlePath] { return cached }
+        let bundle = Bundle(url: URL(fileURLWithPath: bundlePath))
+        let bundleID = bundle?.bundleIdentifier
+        let defaultTitle = URL(fileURLWithPath: bundlePath).deletingPathExtension().lastPathComponent
+        let title = bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? defaultTitle
+        let metadata = CachedBundleMetadata(bundleID: bundleID, title: title)
+        if bundleMetadataOrder.count >= Self.bundleMetadataCacheLimit {
+            let evicted = bundleMetadataOrder.removeFirst()
+            bundleMetadataCache.removeValue(forKey: evicted)
+        }
+        bundleMetadataOrder.append(bundlePath)
+        bundleMetadataCache[bundlePath] = metadata
+        return metadata
     }
 
     private func applicationBundlePath(_ executablePath: String) -> String? {
@@ -675,16 +704,26 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         }
     }
 
-    private func combineRates(_ readings: [MetricReading], unit: MetricUnit, timestamp: Date) -> MetricReading {
+    nonisolated static func combineRates(_ readings: [MetricReading], unit: MetricUnit,
+                                         timestamp: Date) -> MetricReading {
         guard !readings.isEmpty else {
             return MetricReading(unavailable: unit, timestamp: timestamp, reason: .notCollected)
         }
-        if let unavailable = readings.first(where: { !$0.isAvailable }) {
+        let availableValues = readings.compactMap(\.value)
+        guard !availableValues.isEmpty else {
+            let unavailable = readings.first(where: { !$0.isAvailable })
             return MetricReading(unavailable: unit, timestamp: timestamp,
-                                 reason: unavailable.unavailableReason ?? .collectionFailed,
-                                 detail: unavailable.detail)
+                                 reason: unavailable?.unavailableReason ?? .collectionFailed,
+                                 detail: unavailable?.detail)
         }
-        return MetricReading(value: readings.compactMap(\.value).reduce(0, +), unit: unit, timestamp: timestamp)
+        let total = availableValues.reduce(0, +)
+        let unavailableCount = readings.count - availableValues.count
+        if unavailableCount > 0 {
+            return MetricReading(value: total, unit: unit, timestamp: timestamp,
+                                 unavailableReason: nil,
+                                 detail: "Partial: \(unavailableCount) of \(readings.count) members unavailable")
+        }
+        return MetricReading(value: total, unit: unit, timestamp: timestamp)
     }
 
     private func startMemoryPressureSourceIfNeeded() {
@@ -753,5 +792,16 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                                       detail: unavailable?.detail)
         }
         return MetricAvailability(available: true)
+    }
+}
+
+private extension MetricReading {
+    init(value: Double, unit: MetricUnit, timestamp: Date,
+         unavailableReason: MetricUnavailableReason?, detail: String?) {
+        self.value = value
+        self.unit = unit
+        self.timestamp = timestamp
+        self.unavailableReason = unavailableReason
+        self.detail = detail
     }
 }

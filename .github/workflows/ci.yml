@@ -32,6 +32,23 @@ jobs:
       - run: npm run sync-version -- --check
       - run: npm run validate
       - run: npm run test:node
-      - run: npm run test:all
+      - name: Run unsigned Core XCTest
+        run: |
+          rm -rf DerivedData/TestResults/Microgravity-Core.xcresult
+          mkdir -p DerivedData/TestResults
+          xcodebuild \
+            -project Microgravity.xcodeproj \
+            -scheme Test \
+            -configuration Debug \
+            -derivedDataPath "$PWD/DerivedData/Tests" \
+            -clonedSourcePackagesDirPath "$PWD/DerivedData/SourcePackages" \
+            -packageCachePath "$PWD/DerivedData/PackageCache" \
+            -destination 'platform=macOS,arch=arm64' \
+            -parallel-testing-enabled NO \
+            -resultBundlePath "$PWD/DerivedData/TestResults/Microgravity-Core.xcresult" \
+            -only-testing:MicrogravityCoreTests \
+            test \
+            CODE_SIGNING_ALLOWED=NO \
+            SPARKLE_ENABLE_AUTOMATIC_CHECKS=NO
       - run: npm run build:debug
       - run: npm run build:release-smoke

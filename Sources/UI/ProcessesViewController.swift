@@ -324,10 +324,10 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
                 cell.configure(text: group.title, accessibilityID: item.accessibilityID, group: true,
                                expanded: expandedGroups.contains(group.id),
                                toggleIdentifier: "process.group.toggle.\(slug(group.title))",
-                               target: self, action: #selector(toggleGroup(_:)))
+                               groupIdentity: group.id, target: self, action: #selector(toggleGroup(_:)))
             case .process(let process):
                 cell.configure(text: process.name, accessibilityID: item.accessibilityID, group: false, expanded: false,
-                               toggleIdentifier: nil, target: nil, action: nil)
+                               toggleIdentifier: nil, groupIdentity: nil, target: nil, action: nil)
             }
             return cell
         }
@@ -463,6 +463,21 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
     }
 
     @objc private func toggleGroup(_ sender: NSButton) {
+        // Walk up to the containing cell view; `tableView.row(for:)` returns
+        // -1 for buttons nested inside table cell views on current macOS.
+        var view: NSView? = sender
+        while let current = view {
+            if let cell = current as? ProcessNameCellView, let identity = cell.groupIdentity {
+                if expandedGroups.contains(identity) {
+                    expandedGroups.remove(identity)
+                } else {
+                    expandedGroups.insert(identity)
+                }
+                rebuildRows(preservingSelection: true)
+                return
+            }
+            view = current.superview
+        }
         let row = tableView.row(for: sender)
         guard visibleRows.indices.contains(row), case .group(let group) = visibleRows[row] else { return }
         if expandedGroups.contains(group.id) {
@@ -585,11 +600,14 @@ private final class ProcessNameCellView: NSTableCellView {
 
     required init?(coder: NSCoder) { nil }
 
+    private(set) var groupIdentity: ProcessIdentity?
+
     func configure(text: String, accessibilityID: String, group: Bool, expanded: Bool, toggleIdentifier: String?,
-                   target: AnyObject?, action: Selector?) {
+                   groupIdentity: ProcessIdentity?, target: AnyObject?, action: Selector?) {
+        self.groupIdentity = group ? groupIdentity : nil
         nameField.stringValue = text
         nameField.font = .systemFont(ofSize: 12, weight: group ? .semibold : .regular)
-        nameField.setAccessibilityIdentifier(accessibilityID + ".name")
+        nameField.setAccessibilityIdentifier(accessibilityID)
         disclosure.isHidden = !group
         if let toggleIdentifier {
             disclosure.setAccessibilityIdentifier(toggleIdentifier)

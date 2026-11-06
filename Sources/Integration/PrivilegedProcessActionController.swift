@@ -15,9 +15,9 @@ actor PrivilegedProcessActionController: ProcessActioning {
         guard let authorization = await MainActor.run(body: { Self.authorize() }) else {
             return ProcessActionResult(identity: identity, force: force, outcome: .rejected(.permissionDenied, detail: "Administrator authorization was not granted."))
         }
-        let target = HelperTarget(pid: identity.pid, seconds: identity.startTime.secondsSinceEpoch,
-                                  microseconds: identity.startTime.microseconds, owner: 0, protected: false)
-        guard let request = try? JSONEncoder().encode(HelperTerminationRequest(version: helperProtocolVersion, target: target, force: force)) else {
+        let target = HelperTargetIdentity(pid: identity.pid, seconds: identity.startTime.secondsSinceEpoch,
+                                          microseconds: identity.startTime.microseconds)
+        guard let request = try? JSONEncoder().encode(HelperTerminationPayload(version: helperProtocolVersion, target: target, force: force)) else {
             return ProcessActionResult(identity: identity, force: force, outcome: .rejected(.helperUnavailable, detail: "Could not encode request."))
         }
         let result = await Self.send(request, authorization: authorization, requirement: requirement)

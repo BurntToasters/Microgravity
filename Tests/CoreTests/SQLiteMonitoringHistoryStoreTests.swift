@@ -176,6 +176,105 @@ final class SQLiteMonitoringHistoryStoreTests: XCTestCase {
         XCTAssertTrue(appSummaries.isEmpty)
     }
 
+    func testVersionTwoDatabaseAddsMissingApplicationColumnsWithoutDroppingTotals() async throws {
+        let databaseURL = try temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: databaseURL.deletingLastPathComponent()) }
+        let day = Int64(Date(timeIntervalSince1970: 1_800_000_000).timeIntervalSince1970 / 86_400) * 86_400
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        let legacySQL = """
+        CREATE TABLE daily_totals (
+            day_start INTEGER PRIMARY KEY NOT NULL, cpu_seconds REAL,
+            disk_read_bytes INTEGER, disk_write_bytes INTEGER,
+            network_receive_bytes INTEGER, network_transmit_bytes INTEGER,
+            sample_count INTEGER NOT NULL DEFAULT 0, gaps INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO daily_totals(day_start,cpu_seconds,disk_read_bytes,disk_write_bytes,
+            network_receive_bytes,network_transmit_bytes,sample_count,gaps)
+            VALUES(\(day),12.5,10,20,30,40,3,1);
+        CREATE TABLE application_daily_totals (
+            day_start INTEGER NOT NULL, application_id TEXT NOT NULL,
+            application_name TEXT NOT NULL, executable_path TEXT,
+            cpu_seconds REAL, disk_read_bytes INTEGER, disk_write_bytes INTEGER,
+            network_receive_bytes INTEGER, network_transmit_bytes INTEGER,
+            sample_count INTEGER NOT NULL DEFAULT 0, gaps INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(day_start, application_id)
+        );
+        INSERT INTO application_daily_totals(day_start,application_id,application_name,
+            executable_path,cpu_seconds,disk_read_bytes,disk_write_bytes,
+            network_receive_bytes,network_transmit_bytes,sample_count,gaps)
+            VALUES(\(day),'bundle:com.example.legacy','Legacy','/Applications/Legacy.app',
+            7.5,1,2,3,4,2,0);
+        PRAGMA user_version = 2;
+        """
+        XCTAssertEqual(sqlite3_exec(database, legacySQL, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(database)
+
+        let history = SQLiteMonitoringHistoryStore(databaseURL: databaseURL)
+        let summaries = try await history.summaries(lastDays: 30,
+                                                    through: Date(timeIntervalSince1970: TimeInterval(day)))
+        let appSummaries = try await history.applicationSummaries(lastDays: 30,
+                                                                  through: Date(timeIntervalSince1970: TimeInterval(day)))
+        XCTAssertEqual(summaries.first?.cpuSeconds, 12.5)
+        XCTAssertEqual(summaries.first?.sampleCount, 3)
+        XCTAssertEqual(summaries.first?.counterResets, 0, "new columns must be added with defaults")
+        XCTAssertEqual(appSummaries.count, 1)
+        XCTAssertEqual(appSummaries.first?.cpuSeconds, 7.5)
+        XCTAssertEqual(appSummaries.first?.application.name, "Legacy")
+        XCTAssertEqual(appSummaries.first?.application.association, .standalone,
+                       "application rows from before the association column default to standalone")
+    }
+
+    func testUnknownOlderSchemaFailsClosed() async throws {
+        let databaseURL = try temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: databaseURL.deletingLastPathComponent()) }
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        let unknownSQL = """
+        CREATE TABLE daily_totals (legacy_timestamp INTEGER PRIMARY KEY, cpu_seconds REAL);
+        PRAGMA user_version = 1;
+        """
+        XCTAssertEqual(sqlite3_exec(database, unknownSQL, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(database)
+
+        let history = SQLiteMonitoringHistoryStore(databaseURL: databaseURL)
+        do {
+            _ = try await history.summaries(lastDays: 30, through: Date())
+            XCTFail("an unrecognized older schema must not reach runtime column errors")
+        } catch {
+            XCTAssertEqual(error as? MonitoringHistoryError, .unsupportedSchema(1))
+        }
+    }
+
+    func testMultipleApplicationTotalsAreBoundPerRowWithinOneTick() async throws {
+        let databaseURL = try temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: databaseURL.deletingLastPathComponent()) }
+        let history = SQLiteMonitoringHistoryStore(databaseURL: databaseURL)
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let processes = (0..<3).map { offset in
+            ProcessIdentity(pid: pid_t(1000 + offset),
+                            startTime: .init(secondsSinceEpoch: 1_800_000_000, microseconds: 0))
+        }
+        let groups = processes.enumerated().map { index, process in
+            appGroup(id: "bundle:com.example.app\(index)|/Applications/App\(index).app",
+                     name: "App \(index)", process: process)
+        }
+
+        try await history.record(snapshot: snapshotWithGroups(groups, at: start))
+        try await history.record(snapshot: snapshotWithGroups(groups, at: start.addingTimeInterval(1)))
+
+        let summaries = try await history.applicationSummaries(lastDays: 30,
+                                                               through: start.addingTimeInterval(1))
+        XCTAssertEqual(summaries.count, groups.count)
+        for group in groups {
+            let summary = summaries.first { $0.application.id == group.historyIdentity.id }
+            XCTAssertEqual(summary?.application.name, group.historyIdentity.name)
+            XCTAssertEqual(summary?.sampleCount, 2)
+            XCTAssertEqual(summary?.cpuSeconds ?? 0, 2, accuracy: 0.0001)
+            XCTAssertEqual(summary?.diskReadBytes, 40)
+        }
+    }
+
     func testHistoryStorageFailureSurfacesAsAnError() async throws {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("microgravity-history-is-directory-\(UUID().uuidString)", isDirectory: true)

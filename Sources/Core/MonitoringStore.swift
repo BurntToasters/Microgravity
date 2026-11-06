@@ -93,6 +93,7 @@ public final class DefaultMonitoringStore: MonitoringStore {
             }
         }
 
+        guard generation == publicationGeneration, !isPaused else { return }
         latestSnapshot = snapshot
         graphSamples.append(MonitoringGraphSample(snapshot: snapshot))
         if graphSamples.count > Self.maximumGraphSamples {

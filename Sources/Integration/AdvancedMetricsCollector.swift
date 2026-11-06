@@ -44,24 +44,35 @@ extension HelperSamplingClient: AdvancedSamplingClient {}
 /// Callers receive a cached snapshot immediately; readings retain capture timestamps.
 actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
     private let client: any AdvancedSamplingClient
+    private let now: @Sendable () -> Date
+    private let processIdentities: @Sendable () -> [Int32: ProcessIdentity]
     private var network = AdvancedNetworkAccumulator()
     private var cache = AdvancedMetricsSnapshot(capabilities: Dictionary(uniqueKeysWithValues:
         [MetricKind.processNetwork, .processNetworkReceive, .processNetworkTransmit, .processGPUTime, .gpu, .energy]
             .map { ($0, MetricAvailability(available: false, reason: .warmingUp)) }))
-    private var lastStart: Date?
     private var lastCompleted: Date?
     private var inFlight = false
+    private var refreshRequestCount = 0
 
-    init(client: any AdvancedSamplingClient = HelperSamplingClient()) { self.client = client }
+    init(client: any AdvancedSamplingClient = HelperSamplingClient(),
+         now: @escaping @Sendable () -> Date = { Date() },
+         processIdentities: (@Sendable () -> [Int32: ProcessIdentity])? = nil) {
+        self.client = client
+        self.now = now
+        self.processIdentities = processIdentities ?? { Self.identities() }
+    }
 
     func collectAdvancedMetrics(at timestamp: Date) async -> AdvancedMetricsSnapshot {
-        let now = Date()
-        if !inFlight && (lastStart == nil || now.timeIntervalSince(lastStart!) >= 5 || now < lastStart!) {
+        let currentTime = now()
+        let refreshDue = lastCompleted.map {
+            currentTime.timeIntervalSince($0) >= 5 || currentTime < $0
+        } ?? true
+        if !inFlight && refreshDue {
             inFlight = true
-            lastStart = now
+            refreshRequestCount += 1
             Task { await self.refresh() }
         }
-        if let completed = lastCompleted, now.timeIntervalSince(completed) > 30 {
+        if let completed = lastCompleted, currentTime.timeIntervalSince(completed) > 30 {
             let unavailable = MetricAvailability(available: false, reason: .collectionFailed, detail: "Advanced sample is stale")
             return AdvancedMetricsSnapshot(capabilities: Dictionary(uniqueKeysWithValues:
                 [MetricKind.processNetwork, .processNetworkReceive, .processNetworkTransmit, .processGPUTime, .gpu, .energy].map { ($0, unavailable) }))
@@ -69,20 +80,22 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
         return cache
     }
 
+    func refreshRequestCountForTesting() -> Int { refreshRequestCount }
+
     private func refresh() async {
-        let before = Self.identities()
+        let before = processIdentities()
         async let networkResponse = client.sample(.nettop)
         async let powerResponse = client.sample(.powermetrics)
         let net = await networkResponse
-        let after = Self.identities()
+        let after = processIdentities()
         let power = await powerResponse
-        let afterPower = Self.identities()
-        let now = Date()
+        let afterPower = processIdentities()
+        let responseTime = now()
         var perProcess: [ProcessIdentity: [MetricKind: MetricReading]] = [:]
         var capabilities: [MetricKind: MetricAvailability] = [:]
         let networkKinds: [MetricKind] = [.processNetwork, .processNetworkReceive, .processNetworkTransmit]
         if net.error == nil, let data = net.output, data.count <= AdvancedMetricsParser.maximumBytes,
-           abs(now.timeIntervalSince(net.capturedAt)) <= 30,
+           abs(responseTime.timeIntervalSince(net.capturedAt)) <= 30,
            let text = String(data: data, encoding: .utf8), AdvancedMetricsParser.hasNettopHeader(text) {
             perProcess = network.update(AdvancedMetricsParser.nettop(text), before: before, after: after, at: net.capturedAt)
             for kind in networkKinds {
@@ -91,11 +104,10 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
                     : MetricAvailability(available: true)
             }
         } else {
-            network = AdvancedNetworkAccumulator()
             for kind in networkKinds { capabilities[kind] = MetricAvailability(available: false, reason: .collectionFailed, detail: net.error ?? "Network sample unavailable or invalid") }
         }
         var system: [MetricKind: MetricReading] = [:]
-        if power.error == nil, let data = power.output, abs(now.timeIntervalSince(power.capturedAt)) <= 30 {
+        if power.error == nil, let data = power.output, abs(responseTime.timeIntervalSince(power.capturedAt)) <= 30 {
             let parsed = AdvancedMetricsParser.power(data)
             if let percent = parsed.gpuPercent {
                 system[.gpu] = MetricReading(value: percent, unit: .percent, timestamp: power.capturedAt)
@@ -124,7 +136,7 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
             }
         }
         cache = AdvancedMetricsSnapshot(system: system, perProcess: perProcess, capabilities: capabilities)
-        lastCompleted = Date()
+        lastCompleted = now()
         inFlight = false
     }
 

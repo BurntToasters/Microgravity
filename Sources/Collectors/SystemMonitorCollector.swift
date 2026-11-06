@@ -41,6 +41,11 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         let result: LaunchDiscoveryResult
     }
 
+    private struct CachedUserDiscovery {
+        let refreshedAt: Date
+        let result: UserDiscoveryResult
+    }
+
     private struct CachedBundleMetadata {
         let bundleID: String?
         let title: String
@@ -56,6 +61,7 @@ public actor SystemMonitorCollector: MonitoringCollecting {
     private var pressureLevel: MemoryPressureLevel?
     private var pressureTimestamp: Date?
     private var cachedLaunchDiscovery: CachedLaunchDiscovery?
+    private var cachedUserDiscovery: CachedUserDiscovery?
     private var bundleMetadataCache: [String: CachedBundleMetadata] = [:]
     private var bundleMetadataOrder: [String] = []
 
@@ -106,7 +112,7 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         }
         let groups = buildProcessGroups(processes, timestamp: timestamp)
         let inventory = discoverLaunchEntries(processes: processes, at: timestamp)
-        let sessions = discoverUsers()
+        let sessions = discoverUsers(at: timestamp)
 
         var advancedReadings = advanced.system
         if advancedReadings[.gpu] == nil {
@@ -261,12 +267,16 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         let memoryAvailable: MetricReading
         let memoryTotal: MetricReading
         if memoryOK, physicalBytes > 0 {
-            let pageBytes = UInt64(pageSize)
-            let availablePages = UInt64(stats.free_count) + UInt64(stats.speculative_count)
-            let availableBytes = min(physicalBytes, availablePages * pageBytes)
-            memoryAvailable = MetricReading(value: Double(availableBytes), unit: .bytes, timestamp: timestamp)
+            let breakdown = Self.memoryBreakdown(
+                physicalBytes: physicalBytes,
+                pageBytes: UInt64(pageSize),
+                internalPages: UInt64(stats.internal_page_count),
+                purgeablePages: UInt64(stats.purgeable_count),
+                wirePages: UInt64(stats.wire_count),
+                compressorPages: UInt64(stats.compressor_page_count))
+            memoryAvailable = MetricReading(value: Double(breakdown.availableBytes), unit: .bytes, timestamp: timestamp)
             memoryTotal = MetricReading(value: Double(physicalBytes), unit: .bytes, timestamp: timestamp)
-            memoryUsed = MetricReading(value: Double(physicalBytes - availableBytes), unit: .bytes, timestamp: timestamp)
+            memoryUsed = MetricReading(value: Double(breakdown.usedBytes), unit: .bytes, timestamp: timestamp)
         } else {
             let reason: MetricUnavailableReason = physicalResult == 0 ? .collectionFailed : .permissionDenied
             memoryUsed = MetricReading(unavailable: .bytes, timestamp: timestamp, reason: reason)
@@ -774,8 +784,25 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         return result
     }
 
-    private func discoverUsers() -> UserDiscoveryResult {
-        UserDiscovery.collect()
+    private func discoverUsers(at timestamp: Date) -> UserDiscoveryResult {
+        let refreshInterval: TimeInterval = 20
+        if let cachedUserDiscovery {
+            let age = timestamp.timeIntervalSince(cachedUserDiscovery.refreshedAt)
+            if age >= 0, age < refreshInterval { return cachedUserDiscovery.result }
+        }
+        let result = UserDiscovery.collect()
+        cachedUserDiscovery = CachedUserDiscovery(refreshedAt: timestamp, result: result)
+        return result
+    }
+
+    static func memoryBreakdown(physicalBytes: UInt64, pageBytes: UInt64,
+                                internalPages: UInt64, purgeablePages: UInt64,
+                                wirePages: UInt64, compressorPages: UInt64) -> (usedBytes: UInt64, availableBytes: UInt64) {
+        let nonReclaimableInternal = internalPages - min(internalPages, purgeablePages)
+        let usedPages = nonReclaimableInternal + wirePages + compressorPages
+        let (rawUsedBytes, overflow) = usedPages.multipliedReportingOverflow(by: pageBytes)
+        let usedBytes = overflow ? physicalBytes : min(physicalBytes, rawUsedBytes)
+        return (usedBytes, physicalBytes - usedBytes)
     }
 
     private static func availability(for reading: MetricReading?) -> MetricAvailability {

@@ -3,7 +3,7 @@ import AppKit
 @MainActor
 final class ProcessesViewController: NSViewController, SnapshotUpdating,
                                     NSTableViewDataSource, NSTableViewDelegate,
-                                    NSSearchFieldDelegate {
+                                    NSSearchFieldDelegate, NSMenuDelegate {
     private enum Row {
         case group(ProcessGroupSnapshot)
         case process(ProcessSnapshot)
@@ -15,19 +15,6 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
             }
         }
 
-        var accessibilityID: String {
-            switch self {
-            case .group(let group): return "process.group.\(Self.slug(group.title))"
-            case .process(let process): return "process.row.\(process.id.pid)"
-            }
-        }
-
-        private static func slug(_ value: String) -> String {
-            let normalized = value.lowercased().map { character -> Character in
-                character.isLetter || character.isNumber ? character : "-"
-            }
-            return String(normalized).split(separator: "-").joined(separator: "-")
-        }
     }
 
     private enum SortField: String {
@@ -52,6 +39,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
     private var currentSnapshot: MonitoringSnapshot?
     private var processByIdentity: [ProcessIdentity: ProcessSnapshot] = [:]
     private var groups: [ProcessGroupSnapshot] = []
+    private var groupSlugCounts: [String: Int] = [:]
     private var visibleRows: [Row] = []
     private var expandedGroups = Set<ProcessIdentity>()
     private var selectedIdentity: ProcessIdentity?
@@ -146,6 +134,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
         currentSnapshot = snapshot
         processByIdentity = Dictionary(uniqueKeysWithValues: snapshot.processes.map { ($0.id, $0) })
         groups = sortedGroups(snapshot.processGroups)
+        groupSlugCounts = Dictionary(grouping: groups, by: { slug($0.title) }).mapValues(\.count)
         freshnessLabel.stringValue = dependencies.monitoringStore.isPaused
             ? "Paused · last sample \(UIFormat.time(snapshot.timestamp))"
             : "Updated \(UIFormat.time(snapshot.timestamp))"
@@ -187,6 +176,10 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
             tableView.addTableColumn(column)
         }
         tableView.sortDescriptors = [NSSortDescriptor(key: SortField.cpu.rawValue, ascending: false)]
+        let menu = NSMenu()
+        menu.delegate = self
+        menu.autoenablesItems = false
+        tableView.menu = menu
     }
 
     private func rebuildRows(preservingSelection: Bool) {
@@ -280,12 +273,12 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
 
     private func groupAdvancedValue(_ group: ProcessGroupSnapshot, kind: MetricKind) -> Double? {
         let readings = group.members.compactMap { processByIdentity[$0]?.advancedMetrics[kind]?.value }
-        guard !group.members.isEmpty, readings.count == group.members.count else { return nil }
+        guard !readings.isEmpty else { return nil }
         return readings.reduce(0, +)
     }
 
     private func advancedDescription(_ kind: MetricKind, value: Double?) -> String {
-        let unit: MetricUnit = kind == .processNetwork ? .bytesPerSecond : .percent
+        let unit: MetricUnit = kind == .processNetwork ? .bytesPerSecond : .seconds
         let timestamp = currentSnapshot?.timestamp ?? Date()
         if let value { return UIFormat.metric(MetricReading(value: value, unit: unit, timestamp: timestamp)) }
         let capability = currentSnapshot?.capabilities[kind]
@@ -315,42 +308,46 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
         guard visibleRows.indices.contains(row), let tableColumn else { return nil }
         let item = visibleRows[row]
         let key = tableColumn.identifier.rawValue
+        let itemID = accessibilityID(for: item)
         if key == SortField.name.rawValue {
-            let cell = ProcessNameCellView()
-            cell.identifier = NSUserInterfaceItemIdentifier("process.name-cell")
-            cell.setAccessibilityIdentifier(item.accessibilityID)
+            let reuseIdentifier = ProcessNameCellView.reuseIdentifier
+            let cell = tableView.makeView(withIdentifier: reuseIdentifier, owner: self) as? ProcessNameCellView
+                ?? ProcessNameCellView(frame: .zero)
+            cell.identifier = reuseIdentifier
+            cell.setAccessibilityIdentifier(itemID + ".cell.name")
             switch item {
             case .group(let group):
-                cell.configure(text: group.title, accessibilityID: item.accessibilityID, group: true,
+                cell.configure(text: group.title, accessibilityID: itemID, group: true,
                                expanded: expandedGroups.contains(group.id),
-                               toggleIdentifier: "process.group.toggle.\(slug(group.title))",
+                               toggleIdentifier: toggleAccessibilityID(for: group),
                                groupIdentity: group.id, target: self, action: #selector(toggleGroup(_:)))
             case .process(let process):
-                cell.configure(text: process.name, accessibilityID: item.accessibilityID, group: false, expanded: false,
+                cell.configure(text: process.name, accessibilityID: itemID, group: false, expanded: false,
                                toggleIdentifier: nil, groupIdentity: nil, target: nil, action: nil)
             }
             return cell
         }
 
-        let text = NSTextField(labelWithString: value(for: item, column: key))
-        text.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-        text.alignment = key == SortField.user.rawValue ? .left : .right
-        text.lineBreakMode = .byTruncatingTail
-        text.setAccessibilityIdentifier(item.accessibilityID + "." + key)
-        text.wantsLayer = true
-        text.layer?.cornerRadius = 4
-        text.layer?.backgroundColor = heatmapColor(for: item, column: key).cgColor
-        let wrapper = NSTableCellView()
-        wrapper.identifier = NSUserInterfaceItemIdentifier(item.accessibilityID + "." + key)
-        wrapper.setAccessibilityIdentifier(item.accessibilityID + "." + key)
-        text.translatesAutoresizingMaskIntoConstraints = false
-        wrapper.addSubview(text)
-        NSLayoutConstraint.activate([
-            text.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor, constant: 7),
-            text.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor, constant: -7),
-            text.centerYAnchor.constraint(equalTo: wrapper.centerYAnchor)
-        ])
-        return wrapper
+        let reuseIdentifier = NSUserInterfaceItemIdentifier("process.cell.\(key)")
+        let cell = tableView.makeView(withIdentifier: reuseIdentifier, owner: self) as? ProcessValueCellView
+            ?? ProcessValueCellView(frame: .zero)
+        cell.identifier = reuseIdentifier
+        cell.configure(
+            value: value(for: item, column: key),
+            rowAccessibilityID: itemID,
+            column: key,
+            alignment: key == SortField.user.rawValue ? .left : .right,
+            backgroundColor: heatmapColor(for: item, column: key)
+        )
+        return cell
+    }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        let view = NSTableRowView()
+        if visibleRows.indices.contains(row) {
+            view.setAccessibilityIdentifier(accessibilityID(for: visibleRows[row]))
+        }
+        return view
     }
 
     private func value(for row: Row, column: String) -> String {
@@ -447,19 +444,20 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
         rebuildRows(preservingSelection: true)
     }
 
-    func tableView(_ tableView: NSTableView, menuForRow row: Int) -> NSMenu? {
-        guard visibleRows.indices.contains(row) else { return nil }
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let row = tableView.clickedRow >= 0 ? tableView.clickedRow : tableView.selectedRow
+        guard visibleRows.indices.contains(row) else { return }
         tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        let menu = NSMenu()
+        let valid = selectedIdentity.map { processByIdentity[$0] != nil } ?? false
         let quit = NSMenuItem(title: "Quit Process", action: #selector(quitSelectedProcess), keyEquivalent: "")
         quit.target = self
-        quit.isEnabled = selectedIdentity.map { processByIdentity[$0] != nil } ?? false
+        quit.isEnabled = valid
         menu.addItem(quit)
         let force = NSMenuItem(title: "Force Quit…", action: #selector(forceQuitSelectedProcess), keyEquivalent: "")
         force.target = self
-        force.isEnabled = quit.isEnabled
+        force.isEnabled = valid
         menu.addItem(force)
-        return menu
     }
 
     @objc private func toggleGroup(_ sender: NSButton) {
@@ -568,12 +566,33 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
             .split(separator: "-").joined(separator: "-")
     }
 
+    private func accessibilityID(for row: Row) -> String {
+        switch row {
+        case .group(let group):
+            let base = "process.group.\(slug(group.title))"
+            return (groupSlugCounts[slug(group.title)] ?? 0) > 1 ? "\(base).\(identitySuffix(group.id))" : base
+        case .process(let process):
+            return "process.row.\(process.id.pid)"
+        }
+    }
+
+    private func toggleAccessibilityID(for group: ProcessGroupSnapshot) -> String {
+        let base = "process.group.toggle.\(slug(group.title))"
+        return (groupSlugCounts[slug(group.title)] ?? 0) > 1 ? "\(base).\(identitySuffix(group.id))" : base
+    }
+
+    private func identitySuffix(_ identity: ProcessIdentity) -> String {
+        "pid-\(identity.pid)-start-\(identity.startTime.secondsSinceEpoch)-\(identity.startTime.microseconds)"
+    }
+
 }
 
 @MainActor
 private final class ProcessNameCellView: NSTableCellView {
-    private let disclosure = NSButton(title: "", target: nil, action: nil)
+    static let reuseIdentifier = NSUserInterfaceItemIdentifier("process.cell.name")
+    private let disclosure = ProcessDisclosureButton(title: "", target: nil, action: nil)
     private let nameField = NSTextField(labelWithString: "")
+    private var nameLeadingConstraint: NSLayoutConstraint!
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         disclosure.isBordered = false
@@ -592,10 +611,11 @@ private final class ProcessNameCellView: NSTableCellView {
             disclosure.centerYAnchor.constraint(equalTo: centerYAnchor),
             disclosure.widthAnchor.constraint(equalToConstant: 20),
             disclosure.heightAnchor.constraint(equalToConstant: 20),
-            nameField.leadingAnchor.constraint(equalTo: disclosure.trailingAnchor, constant: 3),
             nameField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
             nameField.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
+        nameLeadingConstraint = nameField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 27)
+        NSLayoutConstraint.activate([nameLeadingConstraint])
     }
 
     required init?(coder: NSCoder) { nil }
@@ -607,18 +627,55 @@ private final class ProcessNameCellView: NSTableCellView {
         self.groupIdentity = group ? groupIdentity : nil
         nameField.stringValue = text
         nameField.font = .systemFont(ofSize: 12, weight: group ? .semibold : .regular)
-        nameField.setAccessibilityIdentifier(accessibilityID)
+        nameField.setAccessibilityIdentifier(accessibilityID + ".name")
+        nameLeadingConstraint.constant = group ? 27 : 43
         disclosure.isHidden = !group
-        if let toggleIdentifier {
-            disclosure.setAccessibilityIdentifier(toggleIdentifier)
-            disclosure.identifier = NSUserInterfaceItemIdentifier(toggleIdentifier)
-        }
-        if let target, let action {
-            disclosure.target = target
-            disclosure.action = action
-        }
+        disclosure.setAccessibilityIdentifier(toggleIdentifier)
+        disclosure.identifier = NSUserInterfaceItemIdentifier(toggleIdentifier ?? "process.disclosure.hidden")
+        disclosure.target = target
+        disclosure.action = action
         let symbol = expanded ? "chevron.down" : "chevron.right"
         disclosure.image = NSImage(systemSymbolName: symbol, accessibilityDescription: expanded ? "Collapse group" : "Expand group")
         disclosure.toolTip = expanded ? "Collapse process group" : "Expand process group"
+    }
+}
+
+@MainActor
+private final class ProcessDisclosureButton: NSButton {
+    override func accessibilityPerformPress() -> Bool {
+        guard let action else { return false }
+        _ = sendAction(action, to: target)
+        return true
+    }
+}
+
+@MainActor
+private final class ProcessValueCellView: NSTableCellView {
+    private let valueField = NSTextField(labelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        valueField.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        valueField.lineBreakMode = .byTruncatingTail
+        valueField.wantsLayer = true
+        valueField.layer?.cornerRadius = 4
+        valueField.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(valueField)
+        NSLayoutConstraint.activate([
+            valueField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
+            valueField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7),
+            valueField.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func configure(value: String, rowAccessibilityID: String, column: String,
+                   alignment: NSTextAlignment, backgroundColor: NSColor) {
+        valueField.stringValue = value
+        valueField.alignment = alignment
+        valueField.setAccessibilityIdentifier(rowAccessibilityID + "." + column)
+        valueField.layer?.backgroundColor = backgroundColor.cgColor
+        setAccessibilityIdentifier(rowAccessibilityID + ".cell." + column)
     }
 }

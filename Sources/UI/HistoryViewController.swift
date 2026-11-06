@@ -90,21 +90,41 @@ final class HistoryViewController: NSViewController, SnapshotUpdating {
         let byApplication = Dictionary(grouping: lastThirtyDays, by: { $0.application.id })
         let applications = byApplication.values.compactMap { $0.first?.application }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        let applicationSlugCounts = Dictionary(grouping: applications, by: { slug($0.name) }).mapValues(\.count)
         let totalRows = applications.map { application -> AccessibleTableRow in
             let records = byApplication[application.id] ?? []
             let gaps = records.reduce(0) { $0 + $1.gaps }
             let resets = records.reduce(0) { $0 + $1.counterResets }
             let samples = records.reduce(0) { $0 + $1.sampleCount }
-            let rowID = "history.total.\(slug(application.name))"
-            return AccessibleTableRow(id: rowID, values: [
-                application.name,
-                total(records.map(\.cpuSeconds), unit: .seconds, gapCount: gaps),
-                total(records.map { $0.diskReadBytes.map(Double.init) }, unit: .bytes, gapCount: gaps),
-                total(records.map { $0.diskWriteBytes.map(Double.init) }, unit: .bytes, gapCount: gaps),
-                total(records.map { $0.networkReceiveBytes.map(Double.init) }, unit: .bytes, gapCount: gaps),
-                total(records.map { $0.networkTransmitBytes.map(Double.init) }, unit: .bytes, gapCount: gaps),
-                "\(samples) / \(gaps) / \(resets)"
-            ])
+            let applicationSlug = slug(application.name)
+            let duplicateSuffix = (applicationSlugCounts[applicationSlug] ?? 0) > 1 ? ".application.\(application.id)" : ""
+            let rowID = "history.total.\(applicationSlug)\(duplicateSuffix)"
+            let cpuValues = records.map(\.cpuSeconds)
+            let diskReadValues = records.map { $0.diskReadBytes.map(Double.init) }
+            let diskWriteValues = records.map { $0.diskWriteBytes.map(Double.init) }
+            let networkReceiveValues = records.map { $0.networkReceiveBytes.map(Double.init) }
+            let networkTransmitValues = records.map { $0.networkTransmitBytes.map(Double.init) }
+            return AccessibleTableRow(
+                id: rowID,
+                values: [
+                    application.name,
+                    total(cpuValues, unit: .seconds, gapCount: gaps),
+                    total(diskReadValues, unit: .bytes, gapCount: gaps),
+                    total(diskWriteValues, unit: .bytes, gapCount: gaps),
+                    total(networkReceiveValues, unit: .bytes, gapCount: gaps),
+                    total(networkTransmitValues, unit: .bytes, gapCount: gaps),
+                    "\(samples) / \(gaps) / \(resets)"
+                ],
+                sortKeys: [
+                    .text(application.name),
+                    sortTotal(cpuValues),
+                    sortTotal(diskReadValues),
+                    sortTotal(diskWriteValues),
+                    sortTotal(networkReceiveValues),
+                    sortTotal(networkTransmitValues),
+                    .number(Double(samples))
+                ]
+            )
         }
         totalsModel.replaceRows(totalRows, in: totalsTable)
 
@@ -114,16 +134,35 @@ final class HistoryViewController: NSViewController, SnapshotUpdating {
             return $0.application.name.localizedStandardCompare($1.application.name) == .orderedAscending
         }.map { item -> AccessibleTableRow in
             let day = formatter.string(from: item.dayStart)
-            let gapIdentity = item.gaps > 0 ? "history.gap.\(day)" : "history.day.\(day).\(slug(item.application.name))"
-            return AccessibleTableRow(id: gapIdentity, values: [
-                day,
-                item.application.name,
-                dailyValue(item.cpuSeconds, unit: .seconds, gaps: item.gaps),
-                dailyValue(item.diskReadBytes.map(Double.init), unit: .bytes, gaps: item.gaps),
-                dailyValue(item.diskWriteBytes.map(Double.init), unit: .bytes, gaps: item.gaps),
-                "R \(dailyValue(item.networkReceiveBytes.map(Double.init), unit: .bytes, gaps: item.gaps)) · S \(dailyValue(item.networkTransmitBytes.map(Double.init), unit: .bytes, gaps: item.gaps))",
-                "\(item.sampleCount) / \(item.gaps) / \(item.counterResets)"
-            ])
+            let applicationSlug = slug(item.application.name)
+            let duplicateSuffix = (applicationSlugCounts[applicationSlug] ?? 0) > 1 ? ".application.\(item.application.id)" : ""
+            let rowID = item.gaps > 0
+                ? "history.gap.\(day).\(applicationSlug)\(duplicateSuffix)"
+                : "history.day.\(day).\(applicationSlug)\(duplicateSuffix)"
+            let diskRead = item.diskReadBytes.map(Double.init)
+            let diskWrite = item.diskWriteBytes.map(Double.init)
+            let networkValues = [item.networkReceiveBytes, item.networkTransmitBytes].compactMap { $0.map(Double.init) }
+            return AccessibleTableRow(
+                id: rowID,
+                values: [
+                    day,
+                    item.application.name,
+                    dailyValue(item.cpuSeconds, unit: .seconds, gaps: item.gaps),
+                    dailyValue(diskRead, unit: .bytes, gaps: item.gaps),
+                    dailyValue(diskWrite, unit: .bytes, gaps: item.gaps),
+                    "R \(dailyValue(item.networkReceiveBytes.map(Double.init), unit: .bytes, gaps: item.gaps)) · S \(dailyValue(item.networkTransmitBytes.map(Double.init), unit: .bytes, gaps: item.gaps))",
+                    "\(item.sampleCount) / \(item.gaps) / \(item.counterResets)"
+                ],
+                sortKeys: [
+                    .number(item.dayStart.timeIntervalSince1970),
+                    .text(item.application.name),
+                    .numeric(item.cpuSeconds),
+                    .numeric(diskRead),
+                    .numeric(diskWrite),
+                    .numeric(networkValues.isEmpty ? nil : networkValues.reduce(0, +)),
+                    .number(Double(item.sampleCount))
+                ]
+            )
         }
         dailyModel.replaceRows(dailyRows, in: dailyTable)
         let availability = snapshot.capabilities[.history]
@@ -164,6 +203,11 @@ final class HistoryViewController: NSViewController, SnapshotUpdating {
         guard let value else { return gaps > 0 ? "Missing · \(gaps) gap(s)" : "Unavailable" }
         let formatted = UIFormat.metric(MetricReading(value: value, unit: unit, timestamp: Date()))
         return gaps > 0 ? "\(formatted) · partial" : formatted
+    }
+
+    private func sortTotal(_ values: [Double?]) -> ComparableSortKey {
+        let measured = values.compactMap { $0 }.filter(\.isFinite)
+        return .numeric(measured.isEmpty ? nil : measured.reduce(0, +))
     }
 
     private func showError(_ message: String) {

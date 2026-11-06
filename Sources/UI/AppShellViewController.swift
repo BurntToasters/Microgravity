@@ -148,6 +148,7 @@ private final class SidebarViewController: NSViewController {
             let button = makeButton(page)
             buttons[page] = button
             navigation.addArrangedSubview(button)
+            button.widthAnchor.constraint(equalTo: navigation.widthAnchor).isActive = true
         }
 
         let footer = NSTextField(labelWithString: "Local system data")
@@ -195,10 +196,7 @@ private final class SidebarViewController: NSViewController {
         button.bezelStyle = .rounded
         button.setButtonType(.toggle)
         button.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            button.heightAnchor.constraint(equalToConstant: 34),
-            button.widthAnchor.constraint(equalToConstant: 224)
-        ])
+        button.heightAnchor.constraint(equalToConstant: 34).isActive = true
         button.tag = DashboardPage.allCases.firstIndex(of: page) ?? 0
         return button
     }

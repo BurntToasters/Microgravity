@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Security
 import ServiceManagement
@@ -8,6 +9,39 @@ actor PrivilegedProcessActionController: ProcessActioning {
         let localResult = await local.terminate(identity: identity, force: force)
         guard case let .rejected(reason, _) = localResult.outcome,
               reason == .differentUser || reason == .permissionDenied else { return localResult }
+        let target = HelperTargetIdentity(pid: identity.pid, seconds: identity.startTime.secondsSinceEpoch,
+                                          microseconds: identity.startTime.microseconds)
+        guard let observed = Self.observeTarget(pid: identity.pid) else {
+            return ProcessActionResult(identity: identity, force: force,
+                                       outcome: .rejected(.processExited, detail: "The target exited before administrator authorization."))
+        }
+        if let rejection = HelperTerminationPolicy.preflightRejection(observed: observed, requested: target,
+                                                                      clientPID: Int32(getpid())) {
+            let detail: String
+            let actionRejection: ProcessActionRejection
+            switch rejection {
+            case .processExited:
+                actionRejection = .processExited
+                detail = "The target exited before administrator authorization."
+            case .identityChanged:
+                actionRejection = .identityChanged
+                detail = "The target identity changed before administrator authorization."
+            case .invalidIdentity:
+                actionRejection = .invalidIdentity
+                detail = "The target identity is invalid."
+            case .currentProcess:
+                actionRejection = .currentProcess
+                detail = "The current application cannot terminate itself."
+            case .pidOne:
+                actionRejection = .pidOne
+                detail = "The launchd process cannot be terminated."
+            case .protectedProcess:
+                actionRejection = .protectedProcess
+                detail = "The target is protected or owned by root."
+            }
+            return ProcessActionResult(identity: identity, force: force,
+                                       outcome: .rejected(actionRejection, detail: detail))
+        }
         guard SMAppService.daemon(plistName: helperMachService + ".plist").status == .enabled,
               let requirement = SigningIdentity.requirement(for: helperSigningIdentifier) else {
             return ProcessActionResult(identity: identity, force: force, outcome: .rejected(.helperUnavailable, detail: "A signed and approved helper is required."))
@@ -15,8 +49,6 @@ actor PrivilegedProcessActionController: ProcessActioning {
         guard let authorization = await MainActor.run(body: { Self.authorize() }) else {
             return ProcessActionResult(identity: identity, force: force, outcome: .rejected(.permissionDenied, detail: "Administrator authorization was not granted."))
         }
-        let target = HelperTargetIdentity(pid: identity.pid, seconds: identity.startTime.secondsSinceEpoch,
-                                          microseconds: identity.startTime.microseconds)
         guard let request = try? JSONEncoder().encode(HelperTerminationPayload(version: helperProtocolVersion, target: target, force: force)) else {
             return ProcessActionResult(identity: identity, force: force, outcome: .rejected(.helperUnavailable, detail: "Could not encode request."))
         }
@@ -31,6 +63,24 @@ actor PrivilegedProcessActionController: ProcessActioning {
         }
         return ProcessActionResult(identity: identity, force: force, outcome: outcome)
     }
+
+    private static func observeTarget(pid: Int32) -> HelperTarget? {
+        guard pid > 1 else { return nil }
+        var info = proc_bsdinfo()
+        guard proc_pidinfo(pid_t(pid), PROC_PIDTBSDINFO, 0, &info,
+                           Int32(MemoryLayout<proc_bsdinfo>.size)) == MemoryLayout<proc_bsdinfo>.size else { return nil }
+        var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let pathLength = proc_pidpath(pid_t(pid), &path, UInt32(path.count))
+        let executable = pathLength > 0 ? String(cString: path) : ""
+        let protectedPath = executable.isEmpty
+            || ["/System/Library/", "/usr/libexec/", "/usr/sbin/", "/sbin/"].contains { executable.hasPrefix($0) }
+        return HelperTarget(pid: pid,
+                            seconds: Int64(info.pbi_start_tvsec),
+                            microseconds: Int32(info.pbi_start_tvusec),
+                            owner: UInt32(info.pbi_uid),
+                            protected: protectedPath || (info.pbi_flags & UInt32(PROC_FLAG_SYSTEM)) != 0)
+    }
+
     @MainActor private static func authorize() -> Data? {
         var reference: AuthorizationRef?
         guard AuthorizationCreate(nil, nil, [], &reference) == errAuthorizationSuccess, let reference else { return nil }

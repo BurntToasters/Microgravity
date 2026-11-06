@@ -1,4 +1,6 @@
 import XCTest
+import Dispatch
+import Darwin
 @testable import Microgravity
 
 final class LaunchDiscoveryTests: XCTestCase {
@@ -28,5 +30,27 @@ final class LaunchDiscoveryTests: XCTestCase {
 
         XCTAssertFalse(coverage.complete)
         XCTAssertEqual(coverage.reasons, ["Could not enumerate /Library/LaunchAgents: Permission denied"])
+    }
+
+    func testPasswordDatabaseLookupsRemainStableAcrossConcurrentCallers() {
+        let uid = UInt32(getuid())
+        guard let expectedName = PasswordDatabase.name(for: uid) else {
+            XCTFail("the current user account should be present in the password database")
+            return
+        }
+
+        let lock = NSLock()
+        var failures = 0
+        DispatchQueue.concurrentPerform(iterations: 64) { _ in
+            let name = PasswordDatabase.name(for: uid)
+            let resolvedUID = PasswordDatabase.uid(for: expectedName)
+            if name != expectedName || resolvedUID != uid {
+                lock.lock()
+                failures += 1
+                lock.unlock()
+            }
+        }
+
+        XCTAssertEqual(failures, 0)
     }
 }

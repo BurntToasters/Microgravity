@@ -209,7 +209,9 @@ final class FixtureMonitoringStore: MonitoringStore {
             )]
         )
 
-        let nowDay = Calendar(identifier: .gregorian).startOfDay(for: timestamp)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let nowDay = calendar.startOfDay(for: timestamp)
         let historyDay = nowDay.addingTimeInterval(-86_400)
         let history = [DailyHistorySummary(dayStart: historyDay, cpuSeconds: 4_320,
                                            diskReadBytes: 300_000_000, diskWriteBytes: 64_000_000,

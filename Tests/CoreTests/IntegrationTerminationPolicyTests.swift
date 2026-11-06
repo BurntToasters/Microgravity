@@ -17,4 +17,22 @@ final class IntegrationTerminationPolicyTests: XCTestCase {
         let launchd = HelperTarget(pid: 1, seconds: 10, microseconds: 3, owner: 501, protected: false)
         XCTAssertFalse(HelperTerminationPolicy.permits(launchd, requested: launchd, clientPID: 50, helperPID: 60))
     }
+
+    func testPreflightRejectsExitedReusedRootAndProtectedTargetsBeforeAuthorization() {
+        let requested = HelperTargetIdentity(pid: 42, seconds: 10, microseconds: 3)
+        XCTAssertEqual(HelperTerminationPolicy.preflightRejection(observed: nil, requested: requested,
+                                                                  clientPID: 50), HelperPreflightRejection.processExited)
+        XCTAssertEqual(HelperTerminationPolicy.preflightRejection(
+            observed: HelperTarget(pid: 42, seconds: 11, microseconds: 3, owner: 501, protected: false),
+            requested: requested, clientPID: 50), HelperPreflightRejection.identityChanged)
+        XCTAssertEqual(HelperTerminationPolicy.preflightRejection(
+            observed: HelperTarget(pid: 42, seconds: 10, microseconds: 3, owner: 0, protected: false),
+            requested: requested, clientPID: 50), HelperPreflightRejection.protectedProcess)
+        XCTAssertEqual(HelperTerminationPolicy.preflightRejection(
+            observed: HelperTarget(pid: 42, seconds: 10, microseconds: 3, owner: 501, protected: true),
+            requested: requested, clientPID: 50), HelperPreflightRejection.protectedProcess)
+        XCTAssertNil(HelperTerminationPolicy.preflightRejection(
+            observed: HelperTarget(pid: 42, seconds: 10, microseconds: 3, owner: 501, protected: false),
+            requested: requested, clientPID: 50))
+    }
 }

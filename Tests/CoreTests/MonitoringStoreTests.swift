@@ -89,6 +89,100 @@ final class MonitoringStoreTests: XCTestCase {
         XCTAssertEqual(recorded.count, 2)
         XCTAssertEqual(recorded.last?.system.cpuPercent.unavailableReason, .sleepGap,
                        "history must not integrate a rate across a paused collection interval")
+        XCTAssertEqual(store.graphSamples.last?.cpuPercent.unavailableReason, .sleepGap,
+                       "the graph must show the pause boundary too")
+
+        await store.refreshNow()
+        let afterGap = await history.recordedSnapshots().last
+        XCTAssertNotNil(afterGap?.system.cpuPercent.value,
+                        "a committed gap must not remain pending on later samples")
+    }
+
+    func testPauseGapAppearsInGraphWithoutHistoryStorageAndClearsAfterResume() async {
+        let store = DefaultMonitoringStore(collector: StaticCollector())
+
+        await store.refreshNow()
+        store.pause()
+        store.resume()
+        await store.refreshNow()
+
+        XCTAssertEqual(store.graphSamples.last?.cpuPercent.unavailableReason, .sleepGap)
+
+        await store.refreshNow()
+        XCTAssertNotNil(store.graphSamples.last?.cpuPercent.value,
+                        "the graph gap should apply to the resumed sample only")
+    }
+
+    func testHistorySummaryReadsAreThrottledAndInvalidatedByDayAndReset() async throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = calendar.date(from: DateComponents(year: 2027, month: 1, day: 15,
+                                                       hour: 23, minute: 59, second: 50))!
+        let clock = MutableTestClock(start)
+        let history = CountingHistoryStore()
+        let store = DefaultMonitoringStore(collector: StaticCollector(), historyStore: history,
+                                           now: { clock.date })
+
+        await store.refreshNow()
+        clock.advance(by: 1)
+        await store.refreshNow()
+        var reads = await history.summaryReadCount()
+        var applicationReads = await history.applicationSummaryReadCount()
+        XCTAssertEqual(reads, 1, "the 30-day query should be reused within the throttle window")
+        XCTAssertEqual(applicationReads, 1)
+
+        clock.advance(by: 10)
+        await store.refreshNow()
+        reads = await history.summaryReadCount()
+        applicationReads = await history.applicationSummaryReadCount()
+        XCTAssertEqual(reads, 2, "UTC day rollover must invalidate the cached daily totals")
+        XCTAssertEqual(applicationReads, 2)
+
+        clock.advance(by: 1)
+        await store.refreshNow()
+        reads = await history.summaryReadCount()
+        applicationReads = await history.applicationSummaryReadCount()
+        XCTAssertEqual(reads, 2)
+        XCTAssertEqual(applicationReads, 2)
+
+        try await store.resetHistory()
+        clock.advance(by: 1)
+        await store.refreshNow()
+        reads = await history.summaryReadCount()
+        applicationReads = await history.applicationSummaryReadCount()
+        XCTAssertEqual(reads, 3, "reset must force an immediate summary refresh")
+        XCTAssertEqual(applicationReads, 3)
+
+        clock.advance(by: 21)
+        await store.refreshNow()
+        reads = await history.summaryReadCount()
+        applicationReads = await history.applicationSummaryReadCount()
+        XCTAssertEqual(reads, 4, "summary data should refresh after the throttle interval")
+        XCTAssertEqual(applicationReads, 4)
+    }
+
+    func testHistorySummaryFailureRemainsVisibleUntilTheNextRetry() async {
+        let clock = MutableTestClock(Date(timeIntervalSince1970: 1_800_000_000))
+        let history = CountingHistoryStore(shouldFailReads: true)
+        let store = DefaultMonitoringStore(collector: StaticCollector(), historyStore: history,
+                                           now: { clock.date })
+
+        await store.refreshNow()
+        XCTAssertEqual(store.latestSnapshot?.capabilities[.history]?.reason, .collectionFailed)
+
+        clock.advance(by: 1)
+        await store.refreshNow()
+        XCTAssertEqual(store.latestSnapshot?.capabilities[.history]?.reason, .collectionFailed,
+                       "a cached failure must remain visible while its retry is throttled")
+        var reads = await history.summaryReadCount()
+        XCTAssertEqual(reads, 1)
+
+        await history.setShouldFailReads(false)
+        clock.advance(by: 20)
+        await store.refreshNow()
+        XCTAssertEqual(store.latestSnapshot?.capabilities[.history]?.available, true)
+        reads = await history.summaryReadCount()
+        XCTAssertEqual(reads, 2)
     }
 
     func testResetSerializesAfterAnInFlightHistoryRecord() async throws {
@@ -140,6 +234,55 @@ private actor CapturingHistoryStore: MonitoringHistoryManaging {
     func applicationSummaries(lastDays: Int, through date: Date) async throws -> [ApplicationDailyHistorySummary] { [] }
     func reset() async throws { snapshots.removeAll() }
     func recordedSnapshots() -> [MonitoringSnapshot] { snapshots }
+}
+
+private actor CountingHistoryStore: MonitoringHistoryManaging {
+    private var summariesReads = 0
+    private var applicationSummaryReads = 0
+    private var shouldFailReads: Bool
+
+    init(shouldFailReads: Bool = false) {
+        self.shouldFailReads = shouldFailReads
+    }
+
+    func record(snapshot: MonitoringSnapshot) async throws {}
+
+    func summaries(lastDays: Int, through date: Date) async throws -> [DailyHistorySummary] {
+        summariesReads += 1
+        if shouldFailReads { throw HistoryTestError.storageUnavailable }
+        return []
+    }
+
+    func applicationSummaries(lastDays: Int, through date: Date) async throws -> [ApplicationDailyHistorySummary] {
+        applicationSummaryReads += 1
+        if shouldFailReads { throw HistoryTestError.storageUnavailable }
+        return []
+    }
+
+    func reset() async throws {}
+
+    func summaryReadCount() -> Int { summariesReads }
+    func applicationSummaryReadCount() -> Int { applicationSummaryReads }
+    func setShouldFailReads(_ shouldFail: Bool) { shouldFailReads = shouldFail }
+}
+
+private final class MutableTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+
+    init(_ value: Date) { self.value = value }
+
+    var date: Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func advance(by interval: TimeInterval) {
+        lock.lock()
+        defer { lock.unlock() }
+        value = value.addingTimeInterval(interval)
+    }
 }
 
 private actor SuspendedRecordingHistoryStore: MonitoringHistoryManaging {

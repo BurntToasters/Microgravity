@@ -62,6 +62,31 @@ final class SQLiteMonitoringHistoryStoreTests: XCTestCase {
                        "the persisted collection boundary must expose the relaunch gap")
     }
 
+    func testInMemoryBaselineReloadsAfterAnotherStoreCommits() async throws {
+        let databaseURL = try temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: databaseURL.deletingLastPathComponent()) }
+        let first = SQLiteMonitoringHistoryStore(databaseURL: databaseURL)
+        let second = SQLiteMonitoringHistoryStore(databaseURL: databaseURL)
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let process = ProcessIdentity(pid: 952, startTime: .init(secondsSinceEpoch: 1_800_000_000, microseconds: 0))
+        let group = appGroup(id: "bundle:com.example.shared|/Applications/Shared.app",
+                             name: "Shared", process: process)
+
+        try await first.record(snapshot: snapshotWithGroups([group], at: start, cpuPercent: 50))
+        try await second.record(snapshot: snapshotWithGroups([group], at: start.addingTimeInterval(1), cpuPercent: 50))
+        try await first.record(snapshot: snapshotWithGroups([group], at: start.addingTimeInterval(2), cpuPercent: 50))
+        try await first.record(snapshot: snapshotWithGroups([group], at: start.addingTimeInterval(3), cpuPercent: 50))
+
+        let systemSummary = try await first.summaries(lastDays: 30,
+                                                      through: start.addingTimeInterval(3)).first
+        let applicationSummary = try await first.applicationSummaries(lastDays: 30,
+                                                                      through: start.addingTimeInterval(3)).first
+        XCTAssertEqual(systemSummary?.cpuSeconds ?? 0, 2, accuracy: 0.0001,
+                       "samples from a different store session must not be integrated into this session")
+        XCTAssertEqual(applicationSummary?.cpuSeconds ?? 0, 2, accuracy: 0.0001,
+                       "application baselines must reload with the shared collection state")
+    }
+
     func testApplicationBaselineChangesOnlyAfterTransactionCommits() async throws {
         let databaseURL = try temporaryDatabaseURL()
         defer { try? FileManager.default.removeItem(at: databaseURL.deletingLastPathComponent()) }
@@ -316,8 +341,9 @@ final class SQLiteMonitoringHistoryStoreTests: XCTestCase {
                                                          reason: .unsupported))
     }
 
-    private func snapshotWithGroups(_ groups: [ProcessGroupSnapshot], at timestamp: Date) -> MonitoringSnapshot {
-        let system = CoreTestFixtures.system(timestamp: timestamp)
+    private func snapshotWithGroups(_ groups: [ProcessGroupSnapshot], at timestamp: Date,
+                                   cpuPercent: Double = 0) -> MonitoringSnapshot {
+        let system = CoreTestFixtures.snapshot(timestamp: timestamp, cpuPercent: cpuPercent).system
         return MonitoringSnapshot(timestamp: timestamp, system: system, processes: [], processGroups: groups,
                                   startupItems: [], services: [], users: [], discoveryCoverage: [:],
                                   capabilities: [:])

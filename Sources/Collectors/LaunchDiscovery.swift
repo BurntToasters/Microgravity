@@ -158,6 +158,39 @@ struct UserDiscoveryResult {
     let coverage: DiscoveryCoverage
 }
 
+enum PasswordDatabase {
+    static func name(for uid: UInt32) -> String? {
+        var account = passwd()
+        var entry: UnsafeMutablePointer<passwd>?
+        var buffer = [CChar](repeating: 0, count: bufferSize)
+        return buffer.withUnsafeMutableBufferPointer { bytes -> String? in
+            guard let baseAddress = bytes.baseAddress,
+                  getpwuid_r(uid_t(uid), &account, baseAddress, bytes.count, &entry) == 0,
+                  let entry else { return nil }
+            return String(cString: entry.pointee.pw_name)
+        }
+    }
+
+    static func uid(for name: String) -> UInt32? {
+        return name.withCString { username -> UInt32? in
+            var account = passwd()
+            var entry: UnsafeMutablePointer<passwd>?
+            var buffer = [CChar](repeating: 0, count: bufferSize)
+            let status = buffer.withUnsafeMutableBufferPointer { bytes -> Int32 in
+                guard let baseAddress = bytes.baseAddress else { return ERANGE }
+                return getpwnam_r(username, &account, baseAddress, bytes.count, &entry)
+            }
+            guard status == 0, entry != nil else { return nil }
+            return UInt32(account.pw_uid)
+        }
+    }
+
+    private static var bufferSize: Int {
+        let suggested = sysconf(_SC_GETPW_R_SIZE_MAX)
+        return suggested > 0 ? min(max(Int(suggested), 4_096), 1_048_576) : 4_096
+    }
+}
+
 enum UserDiscovery {
     static func collect() -> UserDiscoveryResult {
         var sessions: [UInt32: Set<String>] = [:]
@@ -171,18 +204,16 @@ enum UserDiscovery {
             let record = entry.pointee
             guard record.ut_type == USER_PROCESS else { continue }
             let username = fixedString(record.ut_user)
-            guard !username.isEmpty, let account = getpwnam(username) else { continue }
-            let uid = UInt32(account.pointee.pw_uid)
+            guard !username.isEmpty, let uid = PasswordDatabase.uid(for: username),
+                  let name = PasswordDatabase.name(for: uid) else { continue }
             let terminal = fixedString(record.ut_line)
             sessions[uid, default: []].insert(terminal.isEmpty ? "login-session" : terminal)
-            names[uid] = String(cString: account.pointee.pw_name)
+            names[uid] = name
         }
         endutxent()
 
         let currentUID = UInt32(getuid())
-        if let currentAccount = getpwuid(uid_t(currentUID)) {
-            names[currentUID] = String(cString: currentAccount.pointee.pw_name)
-        }
+        if let currentName = PasswordDatabase.name(for: currentUID) { names[currentUID] = currentName }
         if sessions[currentUID] == nil { sessions[currentUID] = [] }
 
         let users = sessions.keys.sorted().compactMap { uid -> UserSessionSnapshot? in

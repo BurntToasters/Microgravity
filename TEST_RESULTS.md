@@ -4,6 +4,33 @@ Date: 2026-11-05
 Host: macOS 27.2 (Build 26B123), Xcode 27.2 (Build 27B52), arm64, Node.js 26.13.0
 VM: disposable macOS VM, GUI session logged in as `dev`
 
+## Audit remediation update — 2026-11-05
+
+Audit fixes were implemented across collector caching and transient-failure handling, helper
+termination preflight, table reuse/sorting/selection, performance graph reuse and
+pause gaps, and UTC history handling with cached SQLite baselines and throttled
+history queries. Project sync, version sync, validation, Node tests (19/19),
+debug build, universal release-smoke build, and Core XCTest (71/71) passed. Core
+result bundle: `DerivedData/TestResults/Audit-Core-20261105.xcresult`.
+
+The initial signed UI run, `DerivedData/TestResults/Audit-UI-20261105.xcresult`,
+ran 15 tests: 1 passed, 14 failed, with 52 assertions. Automation Mode is
+disabled and enabling it requires user authentication. UI extraction also found
+that AppKit exposes synthetic rows without row-view identifiers despite unique
+labels and toggles. Tests now resolve native rows through their unique labels.
+
+The final focused signed run,
+`DerivedData/TestResults/Audit-UI-Focused-20261105.xcresult`, compiled successfully
+and ran three tests. The interaction-free test for distinct native rows and unique
+labels and disclosure identifiers passed. The expansion and context-menu tests
+failed with three assertions: synthesized disclosure clicks did not expand the
+groups, leaving the expected child rows absent. The complete UI suite remains
+unverified after the query correction; interaction validation requires working
+GUI automation. No security or signing configuration was changed.
+
+The sections below preserve the earlier verification record and its original
+test counts; the results above describe this audit remediation.
+
 ## Outcome summary
 
 | Gate | Result |

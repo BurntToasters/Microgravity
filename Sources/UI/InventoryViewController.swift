@@ -110,9 +110,14 @@ final class InventoryViewController: NSViewController, SnapshotUpdating {
     func update(snapshot: MonitoringSnapshot) {
         let previousID = selectedEntry?.id
         let values = kind == .startup ? snapshot.startupItems : snapshot.services
+        let entrySlugCounts = Dictionary(grouping: values, by: { slug($0.id) }).mapValues(\.count)
+        var rowIDByEntryID: [String: String] = [:]
         entries.removeAll(keepingCapacity: true)
         let rows = values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }.map { entry -> AccessibleTableRow in
-            let rowID = "\(kind.pageIdentifier).item.\(slug(entry.id))"
+            let entrySlug = slug(entry.id)
+            let duplicateSuffix = (entrySlugCounts[entrySlug] ?? 0) > 1 ? ".entry.\(entry.id)" : ""
+            let rowID = "\(kind.pageIdentifier).item.\(entrySlug)\(duplicateSuffix)"
+            rowIDByEntryID[entry.id] = rowID
             entries[rowID] = entry
             return AccessibleTableRow(id: rowID, values: [
                 entry.name,
@@ -124,7 +129,8 @@ final class InventoryViewController: NSViewController, SnapshotUpdating {
         }
         model.replaceRows(rows, in: table)
         if let previousID,
-           let rowIndex = model.rows.firstIndex(where: { $0.id == "\(kind.pageIdentifier).item.\(slug(previousID))" }) {
+           let rowID = rowIDByEntryID[previousID],
+           let rowIndex = model.rows.firstIndex(where: { $0.id == rowID }) {
             table.selectRowIndexes(IndexSet(integer: rowIndex), byExtendingSelection: false)
         } else {
             table.deselectAll(nil)

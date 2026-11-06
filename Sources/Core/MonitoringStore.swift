@@ -3,6 +3,12 @@ import Foundation
 @MainActor
 public final class DefaultMonitoringStore: MonitoringStore {
     public static let maximumGraphSamples = 720
+    private static let historySummaryRefreshInterval: TimeInterval = 20
+
+    private struct HistorySummaryCache {
+        let summaries: [DailyHistorySummary]
+        let applicationSummaries: [ApplicationDailyHistorySummary]
+    }
 
     public private(set) var latestSnapshot: MonitoringSnapshot?
     public private(set) var graphSamples: [MonitoringGraphSample] = []
@@ -13,17 +19,32 @@ public final class DefaultMonitoringStore: MonitoringStore {
 
     private let collector: any MonitoringCollecting
     private let historyStore: (any MonitoringHistoryManaging)?
+    private let now: @Sendable () -> Date
     private var pollingTask: Task<Void, Never>?
     private var historyWriteTask: Task<Void, Error>?
     private var isCollecting = false
     private var isResettingHistory = false
     private var historyGapPending = false
+    private var graphGapPending = false
+    private var historySummaryCache: HistorySummaryCache?
+    private var historySummaryQueryTimestamp: Date?
+    private var historySummaryQueryDay: Date?
+    private var historySummaryFailure: String?
     private var publicationGeneration = 0
 
     public init(collector: any MonitoringCollecting,
                 historyStore: (any MonitoringHistoryManaging)? = nil) {
         self.collector = collector
         self.historyStore = historyStore
+        now = { Date() }
+    }
+
+    init(collector: any MonitoringCollecting,
+         historyStore: (any MonitoringHistoryManaging)? = nil,
+         now: @escaping @Sendable () -> Date) {
+        self.collector = collector
+        self.historyStore = historyStore
+        self.now = now
     }
 
     public func start(interval: MonitoringInterval = .oneSecond) {
@@ -42,6 +63,7 @@ public final class DefaultMonitoringStore: MonitoringStore {
     public func pause() {
         isPaused = true
         historyGapPending = true
+        graphGapPending = true
         publicationGeneration += 1
         pollingTask?.cancel()
         pollingTask = nil
@@ -68,13 +90,14 @@ public final class DefaultMonitoringStore: MonitoringStore {
 
         let generation = publicationGeneration
         let marksHistoryGap = historyGapPending
-        let timestamp = Date()
+        let timestamp = now()
         var snapshot = await Task.detached(priority: .utility) { [collector] in
             await collector.collect(at: timestamp)
         }.value
         guard generation == publicationGeneration, !isPaused else { return }
 
         if let historyStore {
+            invalidateHistorySummaryCacheIfNeeded(through: timestamp)
             let historySnapshot = marksHistoryGap ? snapshot.markingHistoryGap() : snapshot
             let writeTask = Task { try await historyStore.record(snapshot: historySnapshot) }
             historyWriteTask = writeTask
@@ -83,9 +106,29 @@ public final class DefaultMonitoringStore: MonitoringStore {
                 historyWriteTask = nil
                 if generation == publicationGeneration { historyGapPending = false }
                 guard generation == publicationGeneration, !isPaused else { return }
-                async let systemHistory = historyStore.summaries(lastDays: 30, through: timestamp)
-                async let appHistory = historyStore.applicationSummaries(lastDays: 30, through: timestamp)
-                snapshot = snapshot.replacingHistory(try await systemHistory, applicationHistory: try await appHistory)
+                if shouldRefreshHistorySummaries(at: timestamp) {
+                    do {
+                        async let systemHistory = historyStore.summaries(lastDays: 30, through: timestamp)
+                        async let appHistory = historyStore.applicationSummaries(lastDays: 30, through: timestamp)
+                        let summaries = try await systemHistory
+                        let applicationSummaries = try await appHistory
+                        guard generation == publicationGeneration, !isPaused else { return }
+                        historySummaryQueryTimestamp = timestamp
+                        historySummaryCache = HistorySummaryCache(summaries: summaries,
+                                                                  applicationSummaries: applicationSummaries)
+                        historySummaryFailure = nil
+                    } catch {
+                        guard generation == publicationGeneration, !isPaused else { return }
+                        historySummaryQueryTimestamp = timestamp
+                        historySummaryFailure = error.localizedDescription
+                    }
+                }
+                if let historySummaryFailure {
+                    snapshot = snapshot.replacingHistoryFailure(historySummaryFailure)
+                } else if let historySummaryCache {
+                    snapshot = snapshot.replacingHistory(historySummaryCache.summaries,
+                                                         applicationHistory: historySummaryCache.applicationSummaries)
+                }
             } catch {
                 historyWriteTask = nil
                 guard generation == publicationGeneration, !isPaused else { return }
@@ -95,10 +138,12 @@ public final class DefaultMonitoringStore: MonitoringStore {
 
         guard generation == publicationGeneration, !isPaused else { return }
         latestSnapshot = snapshot
-        graphSamples.append(MonitoringGraphSample(snapshot: snapshot))
+        graphSamples.append(MonitoringGraphSample(snapshot: graphGapPending ? snapshot.markingHistoryGap() : snapshot))
         if graphSamples.count > Self.maximumGraphSamples {
             graphSamples.removeFirst(graphSamples.count - Self.maximumGraphSamples)
         }
+        if graphGapPending { graphGapPending = false }
+        if historyStore == nil { historyGapPending = false }
         onSnapshot?(snapshot)
     }
 
@@ -112,6 +157,10 @@ public final class DefaultMonitoringStore: MonitoringStore {
         if let historyWriteTask { try? await historyWriteTask.value }
         try await historyStore.reset()
         historyGapPending = true
+        historySummaryCache = nil
+        historySummaryQueryTimestamp = nil
+        historySummaryQueryDay = nil
+        historySummaryFailure = nil
         guard let latestSnapshot else { return }
         let cleared = latestSnapshot.replacingHistory([], applicationHistory: [])
         self.latestSnapshot = cleared
@@ -133,6 +182,21 @@ public final class DefaultMonitoringStore: MonitoringStore {
             }
         }
     }
+
+    private func invalidateHistorySummaryCacheIfNeeded(through timestamp: Date) {
+        let dayStart = utcDayStart(timestamp)
+        guard historySummaryQueryDay != dayStart else { return }
+        historySummaryCache = nil
+        historySummaryQueryTimestamp = nil
+        historySummaryFailure = nil
+        historySummaryQueryDay = dayStart
+    }
+
+    private func shouldRefreshHistorySummaries(at timestamp: Date) -> Bool {
+        guard let historySummaryQueryTimestamp else { return true }
+        let elapsed = timestamp.timeIntervalSince(historySummaryQueryTimestamp)
+        return elapsed < 0 || elapsed >= Self.historySummaryRefreshInterval
+    }
 }
 
 @MainActor
@@ -145,6 +209,12 @@ public enum CoreMonitoring {
 
 extension MonitoringStore {
     public func start() { start(interval: .oneSecond) }
+}
+
+private func utcDayStart(_ date: Date) -> Date {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+    return calendar.startOfDay(for: date)
 }
 
 private extension MonitoringSnapshot {

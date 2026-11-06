@@ -72,7 +72,7 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating {
         energyState.setAccessibilityIdentifier("performance.energy.state")
 
         let cpuPanel = makeGraphPanel(title: "CPU", subtitle: "Total logical-core utilization · percent", graph: cpuGraph,
-                                      value: cpuValue, definition: "CPU time used across logical cores. Process CPU can exceed 100%.")
+                                      value: cpuValue, definition: "CPU time used across logical cores, normalized to total system capacity (0–100%).")
         let corePanel = makeCorePanel()
         let memoryPanel = makeMemoryPanel()
         let swapPanel = makeSwapPanel()
@@ -250,11 +250,31 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating {
     }
 
     private func updateCoreActivity(_ readings: [MetricReading]) {
-        coreStack.arrangedSubviews.forEach { coreStack.removeArrangedSubview($0); $0.removeFromSuperview() }
         guard !readings.isEmpty else {
+            if coreStack.arrangedSubviews.count == 1,
+               let placeholder = coreStack.arrangedSubviews.first as? NSTextField {
+                placeholder.stringValue = "Unavailable · per-core data not collected"
+                return
+            }
+            clearCoreActivityRows()
             coreStack.addArrangedSubview(UIComponents.label("Unavailable · per-core data not collected", size: 11, color: .secondaryLabelColor))
             return
         }
+
+        if coreStack.arrangedSubviews.count == readings.count,
+           coreStack.arrangedSubviews.allSatisfy({ $0 is NSStackView }) {
+            for (index, reading) in readings.enumerated() {
+                guard let row = coreStack.arrangedSubviews[index] as? NSStackView,
+                      row.arrangedSubviews.count == 3,
+                      let meter = row.arrangedSubviews[1] as? NSProgressIndicator,
+                      let text = row.arrangedSubviews[2] as? NSTextField else { continue }
+                meter.doubleValue = min(max(reading.value ?? 0, 0), 100)
+                text.stringValue = UIFormat.metric(reading)
+            }
+            return
+        }
+
+        clearCoreActivityRows()
         for (index, reading) in readings.enumerated() {
             let label = UIComponents.label("Core \(index)", size: 10, color: .secondaryLabelColor)
             label.widthAnchor.constraint(equalToConstant: 48).isActive = true
@@ -275,6 +295,10 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating {
             row.widthAnchor.constraint(greaterThanOrEqualToConstant: 250).isActive = true
             coreStack.addArrangedSubview(row)
         }
+    }
+
+    private func clearCoreActivityRows() {
+        coreStack.arrangedSubviews.forEach { coreStack.removeArrangedSubview($0); $0.removeFromSuperview() }
     }
 
     private func updateMemory(_ snapshot: MonitoringSnapshot) {
@@ -318,7 +342,8 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating {
             state.stringValue = UIFormat.metric(current)
         }
         graph.update(series: [MetricGraphSeries(name: kind.rawValue.capitalized, color: .systemPurple,
-                                                readings: graphReadings)])
+                                                readings: graphReadings)],
+                     maximum: kind == .gpu ? 100 : nil)
     }
 
     @objc private func toggleSampling() {

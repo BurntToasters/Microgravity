@@ -7,6 +7,9 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
     private let model: AccessibleTableModel
     private let search = NSSearchField()
     private var allRows: [AccessibleTableRow] = []
+    private var selectedRowID: String?
+    private var selectedProcessIdentity: ProcessIdentity?
+    private var processIdentityByRowID: [String: ProcessIdentity] = [:]
     private let capability = NSTextField(labelWithString: "Waiting for process data")
 
     init() {
@@ -26,6 +29,10 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
             TableColumnSpec("gpu", "GPU", width: 110, alignment: .right)
         ])
         super.init(nibName: nil, bundle: nil)
+        model.onSelectionChanged = { [weak self] rowID in
+            self?.selectedRowID = rowID
+            self?.selectedProcessIdentity = rowID.flatMap { self?.processIdentityByRowID[$0] }
+        }
     }
 
     required init?(coder: NSCoder) { nil }
@@ -46,7 +53,6 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
         search.target = self
         search.action = #selector(filterRows)
         (search.cell as? NSSearchFieldCell)?.sendsSearchStringImmediately = true
-        model.onSortChanged = { [weak self] in self?.filterRows() }
         let content = NSStackView(views: [header, capability, search, scrollView])
         content.orientation = .vertical
         content.alignment = .leading
@@ -76,24 +82,44 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
                 detail: networkCapability?.detail
             )
             let gpu = process.advancedMetrics[.processGPUTime] ?? MetricReading(
-                unavailable: .percent,
+                unavailable: .seconds,
                 timestamp: snapshot.timestamp,
                 reason: gpuCapability?.reason ?? .notCollected,
                 detail: gpuCapability?.detail
             )
-            return AccessibleTableRow(id: "details.process.\(process.id.pid)", values: [
-                process.name,
-                String(process.id.pid),
-                UIFormat.ownerName(process.ownerUID),
-                process.parentIdentity.map { String($0.pid) } ?? "—",
-                process.executablePath ?? "Unavailable",
-                UIFormat.metric(process.cpuPercent),
-                UIFormat.metric(process.memoryBytes),
-                "R \(UIFormat.metric(process.diskReadBytesPerSecond)) · W \(UIFormat.metric(process.diskWriteBytesPerSecond))",
-                UIFormat.metric(network),
-                UIFormat.metric(gpu)
-            ])
+            let diskValues = [process.diskReadBytesPerSecond.value, process.diskWriteBytesPerSecond.value].compactMap { $0 }
+            let diskSortKey = ComparableSortKey.numeric(diskValues.isEmpty ? nil : diskValues.reduce(0, +))
+            return AccessibleTableRow(
+                id: "details.process.\(process.id.pid)",
+                values: [
+                    process.name,
+                    String(process.id.pid),
+                    UIFormat.ownerName(process.ownerUID),
+                    process.parentIdentity.map { String($0.pid) } ?? "—",
+                    process.executablePath ?? "Unavailable",
+                    UIFormat.metric(process.cpuPercent),
+                    UIFormat.metric(process.memoryBytes),
+                    "R \(UIFormat.metric(process.diskReadBytesPerSecond)) · W \(UIFormat.metric(process.diskWriteBytesPerSecond))",
+                    UIFormat.metric(network),
+                    UIFormat.metric(gpu)
+                ],
+                sortKeys: [
+                    .text(process.name),
+                    .number(Double(process.id.pid)),
+                    .text(UIFormat.ownerName(process.ownerUID)),
+                    .numeric(process.parentIdentity.map { Double($0.pid) }),
+                    .text(process.executablePath ?? "Unavailable"),
+                    .numeric(process.cpuPercent.value),
+                    .numeric(process.memoryBytes.value),
+                    diskSortKey,
+                    .numeric(network.value),
+                    .numeric(gpu.value)
+                ]
+            )
         }
+        processIdentityByRowID = Dictionary(uniqueKeysWithValues: sorted.map {
+            ("details.process.\($0.id.pid)", $0.id)
+        })
         allRows = rows
         filterRows()
         let processAvailability = snapshot.capabilities[.processes]
@@ -105,19 +131,23 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
     }
     @objc private func filterRows() {
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        var rows = allRows.filter { row in
+        let rows = allRows.filter { row in
             query.isEmpty || row.values.contains { $0.localizedCaseInsensitiveContains(query) }
         }
-        if let descriptor = table.sortDescriptors.first,
-           let key = descriptor.key,
-           let index = table.tableColumns.firstIndex(where: { $0.identifier.rawValue == key }) {
-            rows.sort { left, right in
-                let comparison = left.values[index].localizedStandardCompare(right.values[index])
-                if comparison == .orderedSame { return left.id < right.id }
-                return descriptor.ascending ? comparison == .orderedAscending : comparison == .orderedDescending
-            }
-        }
+        let previousSelection = selectedRowID
+        let previousIdentity = selectedProcessIdentity
         model.replaceRows(rows, in: table)
+        if let previousSelection,
+           let rowIndex = model.rows.firstIndex(where: { $0.id == previousSelection }),
+           previousIdentity == nil || processIdentityByRowID[previousSelection] == previousIdentity {
+            table.selectRowIndexes(IndexSet(integer: rowIndex), byExtendingSelection: false)
+            selectedRowID = previousSelection
+            selectedProcessIdentity = processIdentityByRowID[previousSelection]
+        } else {
+            table.deselectAll(nil)
+            selectedRowID = nil
+            selectedProcessIdentity = nil
+        }
     }
 
 }

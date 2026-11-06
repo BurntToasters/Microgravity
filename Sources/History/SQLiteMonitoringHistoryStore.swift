@@ -109,6 +109,8 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
     private var database: OpaquePointer?
     private var priorSample: PriorSample?
     private var priorApplicationSamples: [String: Date] = [:]
+    private var collectionStateLoaded = false
+    private var observedDataVersion: Int32?
 
     public init(databaseURL: URL? = nil) {
         self.databaseURL = databaseURL ?? Self.defaultDatabaseURL()
@@ -128,11 +130,15 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
             try execute("DELETE FROM daily_totals WHERE day_start < \(Int64(cutoff.timeIntervalSince1970))", on: db)
             try execute("DELETE FROM application_daily_totals WHERE day_start < \(Int64(cutoff.timeIntervalSince1970))", on: db)
 
-            let storedPriorSample = try readPriorSample(on: db)
-            let storedPriorApplicationSamples = try readApplicationSamples(on: db)
-            let prior = priorSample == storedPriorSample ? priorSample : storedPriorSample
-            let priorApplications = priorSample == storedPriorSample
-                ? priorApplicationSamples : storedPriorApplicationSamples
+            let dataVersion = try readDataVersion(on: db)
+            if !collectionStateLoaded || observedDataVersion != dataVersion {
+                priorSample = try readPriorSample(on: db)
+                priorApplicationSamples = try readApplicationSamples(on: db)
+                collectionStateLoaded = true
+                observedDataVersion = dataVersion
+            }
+            let prior = priorSample
+            let priorApplications = priorApplicationSamples
             let sameSession = prior?.sessionID == sessionID
             let hasExistingTotals: Bool
             if prior == nil { hasExistingTotals = try containsStoredTotals(on: db) }
@@ -178,6 +184,8 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
             try execute("COMMIT", on: db)
             priorSample = PriorSample(timestamp: now, sessionID: sessionID)
             priorApplicationSamples = currentApplicationSamples
+            collectionStateLoaded = true
+            observedDataVersion = dataVersion
         } catch {
             try? execute("ROLLBACK", on: db)
             throw error
@@ -270,6 +278,7 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
         let db = try openDatabase()
         try execute("BEGIN IMMEDIATE", on: db)
         do {
+            let dataVersion = try readDataVersion(on: db)
             try execute("DELETE FROM daily_totals", on: db)
             try execute("DELETE FROM application_daily_totals", on: db)
             try execute("DELETE FROM monitoring_state", on: db)
@@ -277,6 +286,8 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
             try execute("COMMIT", on: db)
             priorSample = nil
             priorApplicationSamples.removeAll()
+            collectionStateLoaded = true
+            observedDataVersion = dataVersion
         } catch {
             try? execute("ROLLBACK", on: db)
             throw error
@@ -478,6 +489,15 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
         }
         return PriorSample(timestamp: Date(timeIntervalSince1970: sqlite3_column_double(statement, 0)),
                            sessionID: storedSessionID)
+    }
+
+    private func readDataVersion(on db: OpaquePointer) throws -> Int32 {
+        var statement: OpaquePointer?
+        try prepare("PRAGMA data_version", statement: &statement, on: db)
+        defer { sqlite3_finalize(statement) }
+        let code = sqlite3_step(statement)
+        guard code == SQLITE_ROW else { throw sqliteError(db, code: code) }
+        return sqlite3_column_int(statement, 0)
     }
 
     private func readApplicationSamples(on db: OpaquePointer) throws -> [String: Date] {

@@ -2,7 +2,10 @@ import AppKit
 import Darwin
 import Foundation
 
+@MainActor
 enum UIFormat {
+    private static var ownerNameCache: [UInt32: String] = [:]
+
     static func metric(_ reading: MetricReading) -> String {
         guard let value = reading.value, value.isFinite else {
             return unavailable(reading.unavailableReason, detail: reading.detail)
@@ -69,9 +72,10 @@ enum UIFormat {
 
     static func ownerName(_ uid: UInt32?) -> String {
         guard let uid else { return "Unavailable" }
-        if uid == getuid() { return NSUserName() }
-        guard let entry = getpwuid(uid_t(uid)) else { return "UID \(uid)" }
-        return String(cString: entry.pointee.pw_name)
+        if let cached = ownerNameCache[uid] { return cached }
+        let name = uid == getuid() ? NSUserName() : (PasswordDatabase.name(for: uid) ?? "UID \(uid)")
+        ownerNameCache[uid] = name
+        return name
     }
 
     private static func boundedInt64(_ value: Double) -> Int64 {

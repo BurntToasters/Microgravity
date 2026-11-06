@@ -54,6 +54,7 @@ final class UsersViewController: NSViewController, SnapshotUpdating {
     func update(snapshot: MonitoringSnapshot) {
         let processAvailability = snapshot.capabilities[.processes]
         let sorted = snapshot.users.sorted { $0.shortName.localizedStandardCompare($1.shortName) == .orderedAscending }
+        let userSlugCounts = Dictionary(grouping: sorted, by: { slug($0.shortName) }).mapValues(\.count)
         let rows = sorted.map { user -> AccessibleTableRow in
             let owned = snapshot.processes.filter { $0.ownerUID == user.uid }
             let processCount: String
@@ -66,14 +67,19 @@ final class UsersViewController: NSViewController, SnapshotUpdating {
             let memory = aggregate(owned.map(\.memoryBytes), unit: .bytes, capability: processAvailability)
             let sessionNames = user.loginSessions.isEmpty ? "No active sessions reported" : user.loginSessions.joined(separator: ", ")
             let name = user.isCurrentUser ? "\(user.shortName) (You)" : user.shortName
-            return AccessibleTableRow(id: "users.row.\(slug(user.shortName))", values: [
-                name,
-                String(user.uid),
-                sessionNames,
-                processCount,
-                cpu,
-                memory
-            ])
+            let duplicateSuffix = (userSlugCounts[slug(user.shortName)] ?? 0) > 1 ? ".uid.\(user.uid)" : ""
+            return AccessibleTableRow(
+                id: "users.row.\(slug(user.shortName))\(duplicateSuffix)",
+                values: [name, String(user.uid), sessionNames, processCount, cpu, memory],
+                sortKeys: [
+                    .text(name),
+                    .number(Double(user.uid)),
+                    .text(sessionNames),
+                    processAvailability?.available == false ? .none : .number(Double(owned.count)),
+                    aggregateSortKey(owned.map(\.cpuPercent), capability: processAvailability),
+                    aggregateSortKey(owned.map(\.memoryBytes), capability: processAvailability)
+                ]
+            )
         }
         model.replaceRows(rows, in: table)
         if let capability = snapshot.capabilities[.userSessions], !capability.available {
@@ -96,6 +102,13 @@ final class UsersViewController: NSViewController, SnapshotUpdating {
         }
         let value = UIFormat.metric(MetricReading(value: available.reduce(0, +), unit: unit, timestamp: Date()))
         return available.count == readings.count ? value : "Partial · \(value)"
+    }
+
+    private func aggregateSortKey(_ readings: [MetricReading], capability: MetricAvailability?) -> ComparableSortKey {
+        if capability?.available == false { return .none }
+        if readings.isEmpty { return capability?.available == true ? .number(0) : .none }
+        let available = readings.compactMap(\.value).filter(\.isFinite)
+        return .numeric(available.isEmpty ? nil : available.reduce(0, +))
     }
 
     private func slug(_ value: String) -> String {

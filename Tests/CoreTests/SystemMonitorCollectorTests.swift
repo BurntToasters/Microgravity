@@ -3,6 +3,26 @@ import Darwin
 @testable import Microgravity
 
 final class SystemMonitorCollectorTests: XCTestCase {
+    func testMemoryBreakdownCountsReclaimableInternalAndAvoidsCachePageOverlap() {
+        let memory = SystemMonitorCollector.memoryBreakdown(
+            physicalBytes: 10_000, pageBytes: 10,
+            internalPages: 800, purgeablePages: 200,
+            wirePages: 150, compressorPages: 50)
+
+        XCTAssertEqual(memory.usedBytes, 8_000)
+        XCTAssertEqual(memory.availableBytes, 2_000)
+    }
+
+    func testMemoryBreakdownClampsUsedBytesToPhysicalMemory() {
+        let memory = SystemMonitorCollector.memoryBreakdown(
+            physicalBytes: 1_000, pageBytes: 10,
+            internalPages: 100, purgeablePages: 0,
+            wirePages: 100, compressorPages: 100)
+
+        XCTAssertEqual(memory.usedBytes, 1_000)
+        XCTAssertEqual(memory.availableBytes, 0)
+    }
+
     func testCurrentProcessHasAReadablePhysicalFootprint() async {
         let snapshot = await SystemMonitorCollector().collect(at: Date())
         let currentPID = Int32(getpid())

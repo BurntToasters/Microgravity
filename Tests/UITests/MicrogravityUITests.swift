@@ -6,11 +6,11 @@ final class MicrogravityUITests: XCTestCase {
         let app = launchFixture()
 
         XCTAssertTrue(element("process.table", in: app).waitForExistence(timeout: 5))
-        let group = element("process.group.fixture-editor", in: app)
+        let group = row("process.group.fixture-editor", in: "process.table", app: app)
         XCTAssertTrue(group.waitForExistence(timeout: 3))
         element("process.group.toggle.fixture-editor", in: app).tap()
 
-        let child = element("process.row.410", in: app)
+        let child = row("process.row.410", in: "process.table", app: app)
         XCTAssertTrue(child.waitForExistence(timeout: 3))
         child.tap()
         XCTAssertTrue(app.staticTexts["process.selection.identity"].waitForExistence(timeout: 3))
@@ -21,8 +21,8 @@ final class MicrogravityUITests: XCTestCase {
         XCTAssertTrue(search.exists)
         search.tap()
         search.typeText("Renderer")
-        XCTAssertTrue(element("process.row.410", in: app).waitForExistence(timeout: 3))
-        XCTAssertFalse(element("process.row.620", in: app).exists)
+        XCTAssertTrue(row("process.row.410", in: "process.table", app: app).waitForExistence(timeout: 3))
+        XCTAssertFalse(row("process.row.620", in: "process.table", app: app).exists)
 
         element("process.column.cpu", in: app).tap()
         XCTAssertEqual(app.staticTexts["process.selection.identity"].label, selectedIdentity)
@@ -31,17 +31,47 @@ final class MicrogravityUITests: XCTestCase {
 
     func testDuplicateGroupTitlesExpandTheClickedGroup() {
         let app = launchFixture(arguments: ["--ui-test-duplicate-groups"])
-        let toggles = app.buttons.matching(identifier: "process.group.toggle.fixture-editor")
-        XCTAssertTrue(toggles.element(boundBy: 1).waitForExistence(timeout: 3))
-        toggles.element(boundBy: 1).tap()
-        XCTAssertTrue(element("process.row.620", in: app).waitForExistence(timeout: 3))
-        XCTAssertFalse(element("process.row.410", in: app).exists)
+        let firstGroup = row("process.group.fixture-editor.pid-410-start-1700000001-10000", in: "process.table", app: app)
+        let secondGroup = row("process.group.fixture-editor.pid-620-start-1700000003-30000", in: "process.table", app: app)
+        XCTAssertTrue(firstGroup.waitForExistence(timeout: 3))
+        XCTAssertTrue(secondGroup.waitForExistence(timeout: 3))
+        let secondToggle = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "process.group.toggle.fixture-editor.pid-620-start-")
+        ).firstMatch
+        XCTAssertTrue(secondToggle.exists)
+        secondToggle.tap()
+        XCTAssertTrue(row("process.row.620", in: "process.table", app: app).waitForExistence(timeout: 3))
+        XCTAssertFalse(row("process.row.410", in: "process.table", app: app).exists)
+    }
+
+    func testDuplicateGroupTitlesHaveDistinctNativeRowsLabelsAndToggles() {
+        let app = launchFixture(arguments: ["--ui-test-duplicate-groups"])
+        let firstID = "process.group.fixture-editor.pid-410-start-1700000001-10000"
+        let secondID = "process.group.fixture-editor.pid-620-start-1700000003-30000"
+        let firstRow = row(firstID, in: "process.table", app: app)
+        let secondRow = row(secondID, in: "process.table", app: app)
+        XCTAssertTrue(firstRow.waitForExistence(timeout: 3))
+        XCTAssertTrue(secondRow.waitForExistence(timeout: 3))
+        if firstRow.exists && secondRow.exists {
+            XCTAssertNotEqual(firstRow.frame, secondRow.frame)
+        }
+
+        let firstLabel = app.staticTexts.matching(identifier: firstID + ".name")
+        let secondLabel = app.staticTexts.matching(identifier: secondID + ".name")
+        XCTAssertEqual(firstLabel.count, 1)
+        XCTAssertEqual(secondLabel.count, 1)
+        XCTAssertNotEqual(firstLabel.firstMatch.identifier, secondLabel.firstMatch.identifier)
+
+        let firstToggleID = "process.group.toggle.fixture-editor.pid-410-start-1700000001-10000"
+        let secondToggleID = "process.group.toggle.fixture-editor.pid-620-start-1700000003-30000"
+        XCTAssertEqual(app.buttons.matching(identifier: firstToggleID).count, 1)
+        XCTAssertEqual(app.buttons.matching(identifier: secondToggleID).count, 1)
     }
 
     func testSelectionSurvivesSnapshotRefresh() {
         let app = launchFixture(arguments: ["--ui-test-refresh-pulse"])
         element("process.group.toggle.fixture-editor", in: app).tap()
-        element("process.row.410", in: app).tap()
+        row("process.row.410", in: "process.table", app: app).tap()
         let identity = app.staticTexts["process.selection.identity"].label
         let freshness = app.staticTexts["process.freshness"]
         let original = freshness.label
@@ -53,11 +83,18 @@ final class MicrogravityUITests: XCTestCase {
 
     func testProcessContextMenuTargetsRightClickedRow() {
         let app = launchFixture()
-        let group = element("process.group.fixture-editor", in: app)
+        let group = row("process.group.fixture-editor", in: "process.table", app: app)
         XCTAssertTrue(group.waitForExistence(timeout: 3))
-        group.rightClick()
-        XCTAssertTrue(app.menuItems["Quit Process"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.menuItems["Force Quit…"].exists)
+        element("process.group.toggle.fixture-editor", in: app).tap()
+        let process = row("process.row.411", in: "process.table", app: app)
+        XCTAssertTrue(process.waitForExistence(timeout: 3))
+        process.rightClick()
+        let quit = app.menuItems["Quit Process"]
+        let force = app.menuItems["Force Quit…"]
+        XCTAssertTrue(quit.waitForExistence(timeout: 3))
+        XCTAssertTrue(quit.isEnabled)
+        XCTAssertTrue(force.isEnabled)
+        XCTAssertTrue(app.staticTexts["process.selection.identity"].label.contains("pid=411"))
         app.typeKey(.escape, modifierFlags: [])
     }
 
@@ -65,7 +102,7 @@ final class MicrogravityUITests: XCTestCase {
         let app = launchFixture(arguments: ["--ui-test-stale-target"])
 
         element("process.group.toggle.fixture-editor", in: app).tap()
-        element("process.row.410", in: app).tap()
+        row("process.row.410", in: "process.table", app: app).tap()
         element("process.action.force-quit", in: app).tap()
         let confirmation = app.alerts["Confirm Force Quit"]
         XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
@@ -117,14 +154,29 @@ final class MicrogravityUITests: XCTestCase {
         attachScreenshot(app, named: "App History")
     }
 
+    func testHistorySortsFormattedTotalsByNumericValues() {
+        let app = launchFixture()
+        element("navigation.item.history", in: app).tap()
+
+        let editor = app.staticTexts["history.total.fixture-editor.application"]
+        let indexer = app.staticTexts["history.total.fixture-indexer.application"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        XCTAssertTrue(indexer.waitForExistence(timeout: 3))
+        let cpuHeader = app.descendants(matching: .any).matching(identifier: "cpu").firstMatch
+        XCTAssertTrue(cpuHeader.exists)
+        cpuHeader.tap()
+
+        XCTAssertLessThan(indexer.frame.minY, editor.frame.minY)
+    }
+
     func testStartupAndServicesAreReadOnlyAndLabelIncompleteDiscovery() {
         let app = launchFixture(arguments: ["--ui-test-incomplete-discovery"])
 
         element("navigation.item.startup", in: app).tap()
         XCTAssertTrue(element("startup.discovery-state", in: app).waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["startup.discovery-state"].label.contains("Some startup locations could not be inspected."))
-        XCTAssertTrue(element("startup.item.fixture-agent", in: app).exists)
-        element("startup.item.fixture-agent.name", in: app).tap()
+        XCTAssertTrue(row("startup.item.fixture-agent", in: "startup.table", app: app).exists)
+        row("startup.item.fixture-agent", in: "startup.table", app: app).tap()
         XCTAssertTrue(element("startup.action.reveal-path.fixture-agent", in: app).exists)
         XCTAssertFalse(element("startup.action.disable.fixture-agent", in: app).exists)
         attachScreenshot(app, named: "Startup")
@@ -141,7 +193,7 @@ final class MicrogravityUITests: XCTestCase {
 
         element("navigation.item.users", in: app).tap()
         XCTAssertTrue(element("users.table", in: app).waitForExistence(timeout: 3))
-        XCTAssertTrue(element("users.row.fixture-user", in: app).exists)
+        XCTAssertTrue(row("users.row.fixture-user", in: "users.table", column: "user", app: app).exists)
         XCTAssertTrue(app.staticTexts["users.row.fixture-user.process-count"].exists)
         XCTAssertTrue(app.staticTexts["users.row.fixture-user.memory"].exists)
         XCTAssertFalse(element("users.action.manage-account", in: app).exists)
@@ -162,6 +214,22 @@ final class MicrogravityUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["details.process.410.network"].label.contains("Unsupported"))
         XCTAssertFalse(element("details.group.fixture-editor", in: app).exists)
         attachScreenshot(app, named: "Details")
+    }
+
+    func testDetailsKeepsSelectedProcessAcrossSnapshotRefresh() {
+        let app = launchFixture(arguments: ["--ui-test-refresh-pulse"])
+        element("navigation.item.details", in: app).tap()
+        let selectedRow = row("details.process.410", in: "details.table", app: app)
+        XCTAssertTrue(selectedRow.waitForExistence(timeout: 3))
+        selectedRow.tap()
+        XCTAssertTrue(selectedRow.isSelected)
+
+        let capability = app.staticTexts["details.capability-state"]
+        let original = capability.label
+        let changed = expectation(for: NSPredicate(format: "label != %@", original), evaluatedWith: capability)
+        wait(for: [changed], timeout: 16)
+
+        XCTAssertTrue(row("details.process.410", in: "details.table", app: app).isSelected)
     }
 
     func testSettingsExposeSupportedChoicesAndUnavailableIntegrationsHonestly() {
@@ -222,6 +290,13 @@ final class MicrogravityUITests: XCTestCase {
 
     private func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+    }
+
+    private func row(_ identifier: String, in tableIdentifier: String, column: String = "name",
+                     app: XCUIApplication) -> XCUIElement {
+        // AppKit publishes synthetic NSTableView rows without the row view's AX identifier, so resolve the native row through its identified label.
+        app.tables.matching(identifier: tableIdentifier).firstMatch.descendants(matching: .tableRow)
+            .containing(.staticText, identifier: identifier + "." + column).firstMatch
     }
 
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {

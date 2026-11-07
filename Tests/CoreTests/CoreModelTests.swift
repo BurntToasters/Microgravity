@@ -17,6 +17,31 @@ final class CoreModelTests: XCTestCase {
         XCTAssertTrue(measuredZero.isAvailable)
     }
 
+    func testMetricReadingDecodesLegacyDataWithoutPartialFlag() throws {
+        let legacy = Data(#"{"value":12.5,"unit":"bytesPerSecond","timestamp":1800000000,"unavailableReason":null,"detail":"legacy"}"#.utf8)
+
+        let reading = try JSONDecoder().decode(MetricReading.self, from: legacy)
+
+        XCTAssertEqual(reading.value, 12.5)
+        XCTAssertEqual(reading.detail, "legacy")
+        XCTAssertFalse(reading.isPartial)
+        XCTAssertNil(reading.measurementInterval)
+    }
+
+    func testPartialMetricReadingCodableRoundTrip() throws {
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let reading = MetricReading(value: 12.5, unit: .bytesPerSecond, timestamp: timestamp,
+                                    detail: "one interface unavailable", isPartial: true,
+                                    measurementInterval: DateInterval(start: timestamp.addingTimeInterval(-5),
+                                                                      end: timestamp))
+
+        let decoded = try JSONDecoder().decode(MetricReading.self, from: JSONEncoder().encode(reading))
+
+        XCTAssertEqual(decoded, reading)
+        XCTAssertTrue(decoded.isPartial)
+        XCTAssertEqual(decoded.measurementInterval?.duration, 5)
+    }
+
     func testPIDReuseHasDifferentProcessIdentity() {
         let old = ProcessIdentity(pid: 415, startTime: .init(secondsSinceEpoch: 1_800_000_000, microseconds: 4))
         let reused = ProcessIdentity(pid: 415, startTime: .init(secondsSinceEpoch: 1_800_000_001, microseconds: 4))

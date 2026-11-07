@@ -203,13 +203,31 @@ export function validateWorkspace({ release = false, bundle = null } = {}) {
   add(failures, infoPlist.includes("$(SPARKLE_ENABLE_AUTOMATIC_CHECKS)"), "Sparkle automatic checks must be controlled by build configuration");
   add(failures, versionConfig.includes("SPARKLE_ENABLE_AUTOMATIC_CHECKS = NO"), "Sparkle automatic checks must default off until a public key is configured");
   add(failures, versionConfig.includes("SPARKLE_PUBLIC_KEY = $(MICROGRAVITY_SPARKLE_PUBLIC_KEY)"), "Sparkle public key must come from Microgravity environment configuration");
+  const feedValue = versionConfig.match(/^SPARKLE_FEED_URL\s*=(.*)$/m)?.[1]?.trim() ?? "";
+  add(failures, feedValue !== "" && !feedValue.includes("//"), "SPARKLE_FEED_URL must escape // so xcconfig does not truncate it");
+  add(failures, /^https:\/\/github\.com\/BurntToasters\/Microgravity\/releases\/latest\/download\/appcast(?:-beta)?\.xml$/.test(feedValue.replaceAll("$()", "")), "SPARKLE_FEED_URL must decode to a GitHub releases appcast URL");
   add(failures, fs.existsSync(path.join(root, "Microgravity.entitlements")), "app entitlements file is missing");
   add(failures, fs.existsSync(path.join(root, "MicrogravityHelper.entitlements")), "helper entitlements file is missing");
 
   checkHelperPlist(path.join(root, "resources/helper/run.rosie.microgravity.helper.plist"), failures);
   const upstreamPath = path.join(root, "vendor/Sparkle/UPSTREAM");
   const upstream = fs.existsSync(upstreamPath) ? fs.readFileSync(upstreamPath, "utf8") : "";
-  add(failures, /VERSION=2\.9\.1\b/.test(upstream), "vendored Sparkle source must record upstream version 2.9.1");
+  const upstreamFields = Object.fromEntries([...upstream.matchAll(/^([A-Z0-9_]+)=(.*)$/gm)].map((match) => [match[1], match[2]]));
+  const sparkleVersion = upstreamFields.VERSION;
+  add(failures, sparkleVersion === "2.9.6", "vendored Sparkle must use patched upstream version 2.9.6");
+  add(failures, upstreamFields.SOURCE === "https://codeload.github.com/sparkle-project/Sparkle/tar.gz/refs/tags/2.9.6", "Sparkle source provenance must point to the 2.9.6 upstream tag archive");
+  add(failures, upstreamFields.RELEASE_ARCHIVE === "https://github.com/sparkle-project/Sparkle/releases/download/2.9.6/Sparkle-2.9.6.tar.xz", "Sparkle helper provenance must point to the 2.9.6 upstream release archive");
+  add(failures, /^[a-f0-9]{64}$/.test(upstreamFields.SOURCE_SHA256 ?? "") && /^[a-f0-9]{64}$/.test(upstreamFields.RELEASE_ARCHIVE_SHA256 ?? ""), "Sparkle upstream archive hashes must be recorded");
+  const sparklePackagePath = path.join(root, "vendor/Sparkle/Package.swift");
+  const sparklePackage = fs.existsSync(sparklePackagePath) ? fs.readFileSync(sparklePackagePath, "utf8") : "";
+  const packageSparkleVersion = sparklePackage.match(/MARKETING_VERSION[^\n]*?([0-9]+\.[0-9]+\.[0-9]+)/)?.[1];
+  const packageSparkleBuild = sparklePackage.match(/CURRENT_PROJECT_VERSION[^\n]*?([0-9]+)/)?.[1];
+  const helperInfoPath = path.join(root, "vendor/Sparkle/Helpers/Updater.app/Contents/Info.plist");
+  const helperInfo = fs.existsSync(helperInfoPath) ? fs.readFileSync(helperInfoPath, "utf8") : "";
+  const helperSparkleVersion = helperInfo.match(/<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/)?.[1];
+  const helperSparkleBuild = helperInfo.match(/<key>CFBundleVersion<\/key>\s*<string>([^<]+)<\/string>/)?.[1];
+  add(failures, packageSparkleVersion === sparkleVersion && helperSparkleVersion === sparkleVersion, "Sparkle package source and bundled Updater helper versions must match upstream");
+  add(failures, !!packageSparkleBuild && packageSparkleBuild === helperSparkleBuild, "Sparkle package source and bundled Updater helper build numbers must match");
   add(failures, fs.existsSync(path.join(root, "resources/licenses/Sparkle-LICENSE.txt")), "Sparkle license notices are missing");
 
   const projectPath = path.join(root, "Microgravity.xcodeproj/project.pbxproj");

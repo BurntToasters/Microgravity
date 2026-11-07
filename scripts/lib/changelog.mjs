@@ -3,10 +3,13 @@ import { fail } from "./core.mjs";
 const changelogTitle = "# Microgravity changelog\n\n";
 
 export function changelogSection(version, contents) {
-  const start = contents.search(new RegExp(`^## ${version.replaceAll(".", "\\.")}(?:\\s|$)`, "m"));
-  if (start < 0) fail(`CHANGELOG.md has no ${version} release section.`);
-  const next = contents.slice(start).search(/^## \S/m);
-  return contents.slice(start, next < 0 ? undefined : start + next).trim();
+  const heading = new RegExp(`^## ${version.replaceAll(".", "\\.")}(?:\\s|$)`, "m");
+  const match = heading.exec(contents);
+  if (!match) fail(`CHANGELOG.md has no ${version} release section.`);
+  const start = match.index;
+  const next = contents.slice(start + match[0].length).search(/^## \S/m);
+  const end = next < 0 ? undefined : start + match[0].length + next;
+  return contents.slice(start, end).trim();
 }
 
 export function releaseNotes(info, contents) {

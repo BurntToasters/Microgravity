@@ -13,6 +13,12 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating {
     private let swapGraph = MetricGraphView()
     private let pauseButton = NSButton(title: "Pause Sampling", target: nil, action: nil)
     private let cpuValue = NSTextField(labelWithString: "—")
+    private let diskReadValue = NSTextField(labelWithString: "Read: —")
+    private let diskWriteValue = NSTextField(labelWithString: "Write: —")
+    private let diskScale = NSTextField(labelWithString: "Scale maximum: no data")
+    private let networkReceiveValue = NSTextField(labelWithString: "Receive: —")
+    private let networkSendValue = NSTextField(labelWithString: "Send: —")
+    private let networkScale = NSTextField(labelWithString: "Scale maximum: no data")
     private let memoryState = NSTextField(labelWithString: "Waiting for sample")
     private let memoryValue = NSTextField(labelWithString: "—")
     private let swapValue = NSTextField(labelWithString: "—")
@@ -54,7 +60,9 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating {
         cpuGraph.setAccessibilityIdentifier("performance.graph.cpu-total")
         cpuGraph.setAccessibilityLabel("Total CPU usage percentage over time")
         diskGraph.setAccessibilityIdentifier("performance.graph.disk")
+        diskGraph.setAccessibilityLabel("Disk throughput graph")
         networkGraph.setAccessibilityIdentifier("performance.graph.network")
+        networkGraph.setAccessibilityLabel("Network throughput graph")
         gpuGraph.setAccessibilityIdentifier("performance.graph.gpu")
         energyGraph.setAccessibilityIdentifier("performance.graph.energy")
         coreGraph.setAccessibilityIdentifier("performance.graph.cpu-cores")
@@ -63,6 +71,18 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating {
 
         cpuValue.font = .systemFont(ofSize: 22, weight: .semibold)
         cpuValue.setAccessibilityIdentifier("performance.cpu-total.value")
+        diskReadValue.setAccessibilityIdentifier("performance.disk.read.value")
+        diskWriteValue.setAccessibilityIdentifier("performance.disk.write.value")
+        diskScale.setAccessibilityIdentifier("performance.graph.disk.scale")
+        networkReceiveValue.setAccessibilityIdentifier("performance.network.receive.value")
+        networkSendValue.setAccessibilityIdentifier("performance.network.send.value")
+        networkScale.setAccessibilityIdentifier("performance.graph.network.scale")
+        [diskReadValue, diskWriteValue, networkReceiveValue, networkSendValue].forEach {
+            $0.usesSingleLineMode = true
+            $0.lineBreakMode = .byTruncatingTail
+            $0.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            $0.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        }
         memoryValue.font = .systemFont(ofSize: 18, weight: .medium)
         memoryValue.setAccessibilityIdentifier("performance.memory.value")
         memoryState.font = .systemFont(ofSize: 12, weight: .medium)
@@ -77,9 +97,11 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating {
         let memoryPanel = makeMemoryPanel()
         let swapPanel = makeSwapPanel()
         let diskPanel = makeGraphPanel(title: "Disk throughput", subtitle: "Read and write · bytes per second", graph: diskGraph,
-                                       value: nil, definition: "Measured device read and write throughput.")
+                                       value: nil, definition: "Measured device read and write throughput.",
+                                       currentValues: makeThroughputValueRow(diskReadValue, diskWriteValue), scaleLabel: diskScale)
         let networkPanel = makeGraphPanel(title: "Network throughput", subtitle: "Received and sent · bytes per second", graph: networkGraph,
-                                          value: nil, definition: "Measured interface bytes received and sent per second.")
+                                          value: nil, definition: "Measured interface bytes received and sent per second.",
+                                          currentValues: makeThroughputValueRow(networkReceiveValue, networkSendValue), scaleLabel: networkScale)
         let gpuPanel = makeGraphPanel(title: "GPU activity", subtitle: "Provider-reported unit", graph: gpuGraph,
                                       value: gpuState, definition: "GPU activity is shown only when a provider reports it.")
         let energyPanel = makeGraphPanel(title: "Energy", subtitle: "Provider-reported unit", graph: energyGraph,
@@ -147,14 +169,41 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating {
                               })
         }
         coreGraph.update(series: coreSeries, maximum: 100)
+        let diskRead = samples.map(\.diskReadBytesPerSecond)
+        let diskWrite = samples.map(\.diskWriteBytesPerSecond)
+        let diskPresentation = ThroughputGraphPresentation(
+            graphName: "Disk throughput", subjectName: "disk", firstName: "Read", first: snapshot.system.diskReadBytesPerSecond,
+            firstHistory: diskRead, secondName: "Write", second: snapshot.system.diskWriteBytesPerSecond,
+            secondHistory: diskWrite)
+        diskReadValue.stringValue = diskPresentation.firstValueText
+        diskReadValue.setAccessibilityLabel(diskPresentation.firstAccessibilityLabel)
+        diskWriteValue.stringValue = diskPresentation.secondValueText
+        diskWriteValue.setAccessibilityLabel(diskPresentation.secondAccessibilityLabel)
+        diskScale.stringValue = diskPresentation.scaleText
+        diskScale.setAccessibilityLabel(diskPresentation.scaleAccessibilityLabel)
+        diskGraph.setAccessibilityLabel(diskPresentation.accessibilitySummary)
         diskGraph.update(series: [
-            MetricGraphSeries(name: "Read", color: .systemBlue, readings: samples.map(\.diskReadBytesPerSecond)),
-            MetricGraphSeries(name: "Write", color: .systemOrange, readings: samples.map(\.diskWriteBytesPerSecond))
-        ])
+            MetricGraphSeries(name: "Read", color: .systemBlue, readings: diskRead),
+            MetricGraphSeries(name: "Write", color: .systemOrange, readings: diskWrite)
+        ], maximum: diskPresentation.graphMaximum)
+
+        let networkReceive = samples.map(\.networkReceiveBytesPerSecond)
+        let networkSend = samples.map(\.networkTransmitBytesPerSecond)
+        let networkPresentation = ThroughputGraphPresentation(
+            graphName: "Network throughput", subjectName: "network", firstName: "Receive", first: snapshot.system.networkReceiveBytesPerSecond,
+            firstHistory: networkReceive, secondName: "Send", second: snapshot.system.networkTransmitBytesPerSecond,
+            secondHistory: networkSend)
+        networkReceiveValue.stringValue = networkPresentation.firstValueText
+        networkReceiveValue.setAccessibilityLabel(networkPresentation.firstAccessibilityLabel)
+        networkSendValue.stringValue = networkPresentation.secondValueText
+        networkSendValue.setAccessibilityLabel(networkPresentation.secondAccessibilityLabel)
+        networkScale.stringValue = networkPresentation.scaleText
+        networkScale.setAccessibilityLabel(networkPresentation.scaleAccessibilityLabel)
+        networkGraph.setAccessibilityLabel(networkPresentation.accessibilitySummary)
         networkGraph.update(series: [
-            MetricGraphSeries(name: "Receive", color: .systemBlue, readings: samples.map(\.networkReceiveBytesPerSecond)),
-            MetricGraphSeries(name: "Send", color: .systemOrange, readings: samples.map(\.networkTransmitBytesPerSecond))
-        ])
+            MetricGraphSeries(name: "Receive", color: .systemBlue, readings: networkReceive),
+            MetricGraphSeries(name: "Send", color: .systemOrange, readings: networkSend)
+        ], maximum: networkPresentation.graphMaximum)
         updateCoreActivity(snapshot.system.perCoreCPUPercent)
         updateMemory(snapshot)
         updateSwap(snapshot)
@@ -202,6 +251,7 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating {
 
     private func makeGraphPanel(title: String, subtitle: String, graph: MetricGraphView,
                                 value: NSTextField?, definition: String,
+                                currentValues: NSView? = nil, scaleLabel: NSTextField? = nil,
                                 titleLabel: NSTextField? = nil, definitionLabel: NSTextField? = nil) -> NSView {
         let details = NSStackView()
         details.orientation = .vertical
@@ -209,11 +259,25 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating {
         details.spacing = 4
         details.addArrangedSubview(definitionLabel ?? UIComponents.label(definition, size: 10, color: .secondaryLabelColor))
         if let value { details.addArrangedSubview(value) }
+        if let currentValues { details.addArrangedSubview(currentValues) }
         graph.translatesAutoresizingMaskIntoConstraints = false
         graph.heightAnchor.constraint(equalToConstant: 64).isActive = true
         graph.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
         details.addArrangedSubview(graph)
+        if let currentValues {
+            currentValues.widthAnchor.constraint(equalTo: graph.widthAnchor).isActive = true
+        }
+        if let scaleLabel { details.addArrangedSubview(scaleLabel) }
         return UIComponents.card(title: title, subtitle: subtitle, titleLabel: titleLabel, content: details)
+    }
+
+    private func makeThroughputValueRow(_ first: NSTextField, _ second: NSTextField) -> NSStackView {
+        let row = NSStackView(views: [first, second])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.distribution = .fillEqually
+        row.spacing = 8
+        return row
     }
 
     private func makeCorePanel() -> NSView {
@@ -353,6 +417,37 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating {
             dependencies.monitoringStore.pause()
         }
         if let snapshot { update(snapshot: snapshot) }
+    }
+}
+
+@MainActor
+struct ThroughputGraphPresentation {
+    let firstValueText: String
+    let secondValueText: String
+    let firstAccessibilityLabel: String
+    let secondAccessibilityLabel: String
+    let graphMaximum: Double
+    let scaleText: String
+    let scaleAccessibilityLabel: String
+    let accessibilitySummary: String
+
+    init(graphName: String, subjectName: String, firstName: String, first: MetricReading, firstHistory: [MetricReading],
+         secondName: String, second: MetricReading, secondHistory: [MetricReading]) {
+        firstValueText = "\(firstName): \(UIFormat.metric(first))"
+        secondValueText = "\(secondName): \(UIFormat.metric(second))"
+        firstAccessibilityLabel = "Current \(subjectName) \(firstName) throughput"
+        secondAccessibilityLabel = "Current \(subjectName) \(secondName) throughput"
+        scaleAccessibilityLabel = "\(graphName) graph scale maximum"
+
+        let values = (firstHistory + secondHistory).compactMap(\.value).filter { $0.isFinite && $0 >= 0 }
+        graphMaximum = max(values.max() ?? 1, 0.0001)
+        scaleText = values.isEmpty
+            ? "Scale maximum: no data"
+            : "Scale maximum: \(UIFormat.bytesPerSecond(graphMaximum))"
+        let current = "Current \(firstName): \(UIFormat.metric(first)); current \(secondName): \(UIFormat.metric(second))"
+        accessibilitySummary = values.isEmpty
+            ? "\(graphName) graph. No graph samples have available data. \(current). Scale maximum: no data."
+            : "\(graphName) graph. \(current). \(scaleText)."
     }
 }
 

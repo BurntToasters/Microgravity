@@ -4,6 +4,85 @@ Date: 2026-11-05
 Host: macOS 27.2 (Build 26B123), Xcode 27.2 (Build 27B52), arm64, Node.js 26.13.0
 VM: disposable macOS VM, GUI session logged in as `dev`
 
+## Audit remediation and resource-buffer correction — 2026-11-05
+
+The original seven accepted fixes remain implemented:
+
+| Area | Correction |
+| --- | --- |
+| Nettop CSV parsing | Accept unlabeled process columns and an optional trailing empty field while retaining labeled layouts and strict parsing. |
+| Release feeds | Include a signed stable-to-beta fallback; exclude the mutable beta mirror from immutable checksums while binding the initial fallback in the manifest. |
+| History write recovery | Mark the next successful record as a gap after a failed write so rates are not extrapolated across the loss. |
+| Midnight accounting | Split system and application totals across the UTC boundary, conserve byte rounding, and count endpoint samples and metadata once. |
+| Partial measurements | Add backward-compatible `MetricReading.isPartial` and propagate it through groups, users, UI, and history gaps without converting missing values to zero. |
+| Plist bounds | Inspect the opened target, cap reads at 1 MiB plus an overflow byte, support bounded symlinks safely, and reject non-regular files. |
+| Disk sorting | Keep missing or incomplete pairs distinct from zero and last in both sort directions. |
+
+An additional P1 was confirmed in `proc_pid_rusage`: the old call passed the
+address of a pointer slot instead of storage for the full `rusage_info_v4`
+result. A safe heap-canary reproduction proved the syscall wrote directly into
+that destination. The call now receives a full-sized result buffer whose
+lifetime covers the call. Original tests could pass by stack-layout coincidence;
+a broader source run reproduced the zero-footprint failure before the fix and
+passed after it. No history schema migration or backfill was added; existing
+history is retained.
+
+| Gate | Result and evidence |
+| --- | --- |
+| Node suite | `npm run test:node`: 22 passed, 0 failed. |
+| Core source XCTest | 103 passed, 0 failed using `python3 DerivedData/AuditValidation/run-core-source-tests.py`; log: `DerivedData/AuditValidation/core-source-tests.log`. This independently compiles and runs the actual Core test classes against current source, omits the app entry point and unused native dependency factory, and is not a passing standard hosted Xcode gate. |
+| Hosted Core XCTest | 99 passed in an earlier batch before the final UI and buffer fixes. Final unsigned, signed, and fresh-DerivedData attempts stalled before the test main in `dyld`/`__open`; stack samples confirmed the stall and the manager interrupted the runs. Logs: `/tmp/microgravity-remediation-core-final-retry1.log`, `/tmp/microgravity-remediation-core-final-signed.log`, `/tmp/microgravity-remediation-core-fresh.log`; samples: `/tmp/microgravity-remediation-core-host.sample`, `/tmp/microgravity-remediation-signed-host.sample`, `/tmp/microgravity-remediation-fresh-host.sample`. Do not count the source run as a final hosted Core pass or claim full `npm run test:all` passed. |
+| AppKit source run | 12 passed, including four new UI regressions; log: `/tmp/microgravity-remediation-ui-standalone.log`. Native signed UI runtime was not run after final fixes: `automationmodetool` reports Automation Mode disabled and enabling it requires authentication. No security settings were changed. |
+| Builds | `npm run build:debug` and `npm run build:release-smoke` passed; logs: `/tmp/microgravity-remediation-debug.log` and `/tmp/microgravity-remediation-release.log`. Signed `build-for-testing` passed with the absolute DerivedData/test/SwiftPM paths from `TASK.md`, `CODE_SIGNING_ALLOWED=YES`, Apple Development identity, `DEVELOPMENT_TEAM=FYJZP8B2KG`, `SPARKLE_ENABLE_AUTOMATIC_CHECKS=NO`, and `MICROGRAVITY_SKIP_EMBED_SIGNING=0`; log: `/tmp/microgravity-remediation-signed-build.log`. Final app and UI-runner signatures verified with `codesign --verify --deep --strict` (exit 0). This was not distribution signing or notarization. |
+| Other checks | Project/version sync, `npm run validate`, and `git diff --check` passed. Live `nettop` parsing accepted 14 rows; a bounded small link was accepted, oversized links and FIFOs rejected, and a midnight 100-byte/day probe preserved its samples. |
+
+Still unverified: live helper authorization, end-to-end UI interaction, notarization/distribution signing, real appcast delivery, VoiceOver behavior, and long-running usage. All work remains uncommitted; no pushes, releases, or security-setting changes were made.
+
+## Fresh audit fixes — 2026-11-05
+
+Implemented all nine findings from the fresh audit. Network collection now reads
+64-bit `NET_RT_IFLIST2` counters with bounded parsing, and per-process advanced
+metrics preserve provider failure reasons. Release and preflight GitHub commands
+share token-aware wrappers; generic child processes still strip those tokens.
+
+Process selection now distinguishes group rows from child rows while retaining
+full process identity. Cached Settings controls refresh on appearance, interval
+changes update the sampling text immediately, and pending login-item approval
+opens the Login Items settings panel. Integration status refreshes on app
+activation. History includes the oldest retained UTC day. Resumed graph samples
+mark available GPU and power readings as gaps without changing live readings.
+Disk and network cards show current throughput, scale maxima, and accessibility
+summaries, with bounded value rows for long unavailable details.
+
+Verification results:
+
+| Gate | Result |
+| --- | --- |
+| Project sync, version sync, validation | Pass |
+| Node tests | 20 passed, 0 failed |
+| Debug build | Pass |
+| Universal Release smoke build | Pass |
+| Core XCTest, including AppKit controller regressions | 87 passed, 0 failed |
+| Live 64-bit interface reader smoke check | Pass; 10 interface records |
+| Signed UI XCTest | 2 passed, 14 failed; 48 assertion failures |
+
+Core result bundle:
+`DerivedData/TestResults/Fresh-Fixes-Core-20261105.xcresult`.
+Signed UI result bundle:
+`DerivedData/TestResults/Fresh-Fixes-UI-20261105.xcresult`.
+
+The signed UI suite compiled and ran all 16 tests. Window-close behavior and the
+interaction-free native-row identity test passed. Navigation and disclosure taps
+still did not produce the expected page changes or child rows in this VM.
+Automation Mode remains disabled and requires user authentication to enable.
+End-to-end GUI interactions remain unverified; direct AppKit controller tests
+cover selection refresh/sorting/collapse/PID reuse, Settings state and approval
+routing, UTC history boundaries, and throughput presentation. No signing or
+security configuration was weakened.
+
+The following sections preserve results from the preceding audit and earlier
+verification sessions.
+
 ## Audit remediation update — 2026-11-05
 
 Audit fixes were implemented across collector caching and transient-failure handling, helper

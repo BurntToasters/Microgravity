@@ -95,13 +95,8 @@ final class UsersViewController: NSViewController, SnapshotUpdating {
         guard !readings.isEmpty else {
             return capability?.available == true ? "0" : UIFormat.availability(capability)
         }
-        let available = readings.compactMap(\.value).filter(\.isFinite)
-        guard !available.isEmpty else {
-            let reason = readings.first(where: { $0.value == nil })?.unavailableReason
-            return UIFormat.unavailable(reason)
-        }
-        let value = UIFormat.metric(MetricReading(value: available.reduce(0, +), unit: unit, timestamp: Date()))
-        return available.count == readings.count ? value : "Partial · \(value)"
+        let aggregate = SystemMonitorCollector.combineRates(readings, unit: unit, timestamp: Date())
+        return UIFormat.metric(aggregate)
     }
 
     private func aggregateSortKey(_ readings: [MetricReading], capability: MetricAvailability?) -> ComparableSortKey {

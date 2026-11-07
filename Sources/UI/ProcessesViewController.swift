@@ -4,6 +4,11 @@ import AppKit
 final class ProcessesViewController: NSViewController, SnapshotUpdating,
                                     NSTableViewDataSource, NSTableViewDelegate,
                                     NSSearchFieldDelegate, NSMenuDelegate {
+    private enum RowSelection: Equatable {
+        case group(ProcessIdentity)
+        case process(ProcessIdentity)
+    }
+
     private enum Row {
         case group(ProcessGroupSnapshot)
         case process(ProcessSnapshot)
@@ -12,6 +17,13 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
             switch self {
             case .group(let group): return group.id
             case .process(let process): return process.id
+            }
+        }
+
+        var selection: RowSelection {
+            switch self {
+            case .group(let group): return .group(group.id)
+            case .process(let process): return .process(process.id)
             }
         }
 
@@ -43,6 +55,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
     private var visibleRows: [Row] = []
     private var expandedGroups = Set<ProcessIdentity>()
     private var selectedIdentity: ProcessIdentity?
+    private var selectedRow: RowSelection?
     private var sortField: SortField = .cpu
     private var sortAscending = false
 
@@ -183,7 +196,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
     }
 
     private func rebuildRows(preservingSelection: Bool) {
-        let oldSelection = preservingSelection ? selectedIdentity : nil
+        let oldSelection = preservingSelection ? selectedRow : nil
         visibleRows.removeAll(keepingCapacity: true)
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         for group in groups {
@@ -205,11 +218,13 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
             }
         }
         tableView.reloadData()
-        if let oldSelection, let rowIndex = visibleRows.firstIndex(where: { $0.identity == oldSelection }) {
+        if let oldSelection, let rowIndex = visibleRows.firstIndex(where: { $0.selection == oldSelection }) {
             tableView.selectRowIndexes(IndexSet(integer: rowIndex), byExtendingSelection: false)
-            selectedIdentity = oldSelection
+            selectedRow = oldSelection
+            selectedIdentity = visibleRows[rowIndex].identity
             updateSelectionDetails()
         } else {
+            selectedRow = nil
             selectedIdentity = nil
             tableView.deselectAll(nil)
             updateSelectionDetails()
@@ -219,6 +234,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
     private func sortedGroups(_ input: [ProcessGroupSnapshot]) -> [ProcessGroupSnapshot] {
         input.sorted { left, right in
             let order: ComparisonResult
+            var directionIsAlreadyApplied = false
             switch sortField {
             case .name:
                 order = left.title.localizedStandardCompare(right.title)
@@ -233,20 +249,25 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
             case .disk:
                 let leftValue = groupDiskTotal(for: left)
                 let rightValue = groupDiskTotal(for: right)
-                order = compare(leftValue, rightValue)
+                order = compareDisk(leftValue, rightValue, ascending: sortAscending)
+                directionIsAlreadyApplied = true
             case .network:
-                order = compare(groupAdvancedValue(left, kind: .processNetwork), groupAdvancedValue(right, kind: .processNetwork))
+                order = compare(groupAdvancedReading(left, kind: .processNetwork).value,
+                                groupAdvancedReading(right, kind: .processNetwork).value)
             case .gpu:
-                order = compare(groupAdvancedValue(left, kind: .processGPUTime), groupAdvancedValue(right, kind: .processGPUTime))
+                order = compare(groupAdvancedReading(left, kind: .processGPUTime).value,
+                                groupAdvancedReading(right, kind: .processGPUTime).value)
             }
             if order == .orderedSame { return left.id.pid < right.id.pid }
-            return sortAscending ? order == .orderedAscending : order == .orderedDescending
+            return directionIsAlreadyApplied ? order == .orderedAscending
+                : (sortAscending ? order == .orderedAscending : order == .orderedDescending)
         }
     }
 
     private func sortedProcesses(_ input: [ProcessSnapshot]) -> [ProcessSnapshot] {
         input.sorted { left, right in
             let order: ComparisonResult
+            var directionIsAlreadyApplied = false
             switch sortField {
             case .name:
                 order = left.name.localizedStandardCompare(right.name)
@@ -259,36 +280,72 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
             case .memory:
                 order = compare(left.memoryBytes.value, right.memoryBytes.value)
             case .disk:
-                order = compare((left.diskReadBytesPerSecond.value ?? 0) + (left.diskWriteBytesPerSecond.value ?? 0),
-                                (right.diskReadBytesPerSecond.value ?? 0) + (right.diskWriteBytesPerSecond.value ?? 0))
+                order = compareDisk(processDiskTotal(for: left), processDiskTotal(for: right),
+                                    ascending: sortAscending)
+                directionIsAlreadyApplied = true
             case .network:
                 order = compare(left.advancedMetrics[.processNetwork]?.value, right.advancedMetrics[.processNetwork]?.value)
             case .gpu:
                 order = compare(left.advancedMetrics[.processGPUTime]?.value, right.advancedMetrics[.processGPUTime]?.value)
             }
             if order == .orderedSame { return left.id.pid < right.id.pid }
-            return sortAscending ? order == .orderedAscending : order == .orderedDescending
+            return directionIsAlreadyApplied ? order == .orderedAscending
+                : (sortAscending ? order == .orderedAscending : order == .orderedDescending)
         }
     }
 
-    private func groupAdvancedValue(_ group: ProcessGroupSnapshot, kind: MetricKind) -> Double? {
-        let readings = group.members.compactMap { processByIdentity[$0]?.advancedMetrics[kind]?.value }
-        guard !readings.isEmpty else { return nil }
-        return readings.reduce(0, +)
+    private func groupAdvancedReading(_ group: ProcessGroupSnapshot, kind: MetricKind) -> MetricReading {
+        let timestamp = currentSnapshot?.timestamp ?? Date()
+        guard !group.members.isEmpty else { return missingAdvancedReading(kind, timestamp: timestamp) }
+        let readings = group.members.map { identity in
+            processByIdentity[identity]?.advancedMetrics[kind]
+                ?? missingAdvancedReading(kind, timestamp: timestamp)
+        }
+        return SystemMonitorCollector.combineRates(readings, unit: advancedUnit(kind), timestamp: timestamp)
     }
 
-    private func advancedDescription(_ kind: MetricKind, value: Double?) -> String {
-        let unit: MetricUnit = kind == .processNetwork ? .bytesPerSecond : .seconds
+    private func advancedDescription(_ kind: MetricKind, reading: MetricReading?) -> String {
         let timestamp = currentSnapshot?.timestamp ?? Date()
-        if let value { return UIFormat.metric(MetricReading(value: value, unit: unit, timestamp: timestamp)) }
+        return UIFormat.metric(reading ?? missingAdvancedReading(kind, timestamp: timestamp))
+    }
+
+    private func missingAdvancedReading(_ kind: MetricKind, timestamp: Date) -> MetricReading {
         let capability = currentSnapshot?.capabilities[kind]
-        return UIFormat.unavailable(capability?.reason ?? .notCollected, detail: capability?.detail)
+        return MetricReading(
+            unavailable: advancedUnit(kind), timestamp: timestamp,
+            reason: capability?.available == false ? (capability?.reason ?? .notCollected) : .notCollected,
+            detail: capability?.available == false ? capability?.detail : nil)
+    }
+
+    private func advancedUnit(_ kind: MetricKind) -> MetricUnit {
+        kind == .processNetwork ? .bytesPerSecond : .seconds
     }
 
     private func groupDiskTotal(for group: ProcessGroupSnapshot) -> Double? {
-        guard let read = group.diskReadBytesPerSecond.value,
-              let write = group.diskWriteBytesPerSecond.value else { return nil }
-        return read + write
+        diskTotal(read: group.diskReadBytesPerSecond, write: group.diskWriteBytesPerSecond)
+    }
+
+    private func processDiskTotal(for process: ProcessSnapshot) -> Double? {
+        diskTotal(read: process.diskReadBytesPerSecond, write: process.diskWriteBytesPerSecond)
+    }
+
+    private func diskTotal(read: MetricReading, write: MetricReading) -> Double? {
+        guard let readValue = read.value, readValue.isFinite,
+              let writeValue = write.value, writeValue.isFinite else { return nil }
+        let total = readValue + writeValue
+        return total.isFinite ? total : nil
+    }
+
+    private func compareDisk(_ lhs: Double?, _ rhs: Double?, ascending: Bool) -> ComparisonResult {
+        switch (lhs, rhs) {
+        case (nil, nil): return .orderedSame
+        case (nil, _): return .orderedDescending
+        case (_, nil): return .orderedAscending
+        case let (left?, right?):
+            if left == right { return .orderedSame }
+            let leftComesFirst = ascending ? left < right : left > right
+            return leftComesFirst ? .orderedAscending : .orderedDescending
+        }
     }
 
     private func compare(_ lhs: Double?, _ rhs: Double?) -> ComparisonResult {
@@ -359,8 +416,8 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
             case SortField.cpu.rawValue: return UIFormat.metric(group.cpuPercent)
             case SortField.memory.rawValue: return UIFormat.metric(group.memoryBytes)
             case SortField.disk.rawValue: return groupDiskDescription(group)
-            case SortField.network.rawValue: return advancedDescription(.processNetwork, value: groupAdvancedValue(group, kind: .processNetwork))
-            case SortField.gpu.rawValue: return advancedDescription(.processGPUTime, value: groupAdvancedValue(group, kind: .processGPUTime))
+            case SortField.network.rawValue: return advancedDescription(.processNetwork, reading: groupAdvancedReading(group, kind: .processNetwork))
+            case SortField.gpu.rawValue: return advancedDescription(.processGPUTime, reading: groupAdvancedReading(group, kind: .processGPUTime))
             default: return ""
             }
         case .process(let process):
@@ -371,8 +428,8 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
             case SortField.memory.rawValue: return UIFormat.metric(process.memoryBytes)
             case SortField.disk.rawValue:
                 return "R \(UIFormat.metric(process.diskReadBytesPerSecond)) · W \(UIFormat.metric(process.diskWriteBytesPerSecond))"
-            case SortField.network.rawValue: return process.advancedMetrics[.processNetwork].map(UIFormat.metric) ?? advancedDescription(.processNetwork, value: nil)
-            case SortField.gpu.rawValue: return process.advancedMetrics[.processGPUTime].map(UIFormat.metric) ?? advancedDescription(.processGPUTime, value: nil)
+            case SortField.network.rawValue: return advancedDescription(.processNetwork, reading: process.advancedMetrics[.processNetwork])
+            case SortField.gpu.rawValue: return advancedDescription(.processGPUTime, reading: process.advancedMetrics[.processGPUTime])
             default: return ""
             }
         }
@@ -400,11 +457,14 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
     func tableViewSelectionDidChange(_ notification: Notification) {
         let rowIndex = tableView.selectedRow
         guard visibleRows.indices.contains(rowIndex) else {
+            selectedRow = nil
             selectedIdentity = nil
             updateSelectionDetails()
             return
         }
-        selectedIdentity = visibleRows[rowIndex].identity
+        let row = visibleRows[rowIndex]
+        selectedRow = row.selection
+        selectedIdentity = row.identity
         updateSelectionDetails()
     }
 
@@ -424,6 +484,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
             selectionSummary.stringValue = "\(group.title) · \(UIFormat.ownerName(group.ownerUID)) · Actions target this process only."
         } else {
             selectionSummary.stringValue = "This process is no longer in the latest snapshot."
+            selectedRow = nil
             selectedIdentity = nil
         }
         let valid = selectedIdentity.map { processByIdentity[$0] != nil } ?? false
@@ -556,6 +617,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating,
     }
 
     private func clearSelection() {
+        selectedRow = nil
         selectedIdentity = nil
         tableView.deselectAll(nil)
         updateSelectionDetails()

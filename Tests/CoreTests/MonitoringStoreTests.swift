@@ -98,6 +98,41 @@ final class MonitoringStoreTests: XCTestCase {
                         "a committed gap must not remain pending on later samples")
     }
 
+    func testFailedHistoryWriteEstablishesGapBeforeResumingIntegration() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("microgravity-history-recovery-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appendingPathComponent("history.sqlite")
+        let history = FailOnSecondRecordHistoryStore(databaseURL: databaseURL)
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let clock = MutableTestClock(start)
+        let store = DefaultMonitoringStore(collector: RateSequenceCollector([10, 100, 90, 20]),
+                                           historyStore: history, now: { clock.date })
+
+        await store.refreshNow()
+        clock.advance(by: 1)
+        await store.refreshNow()
+        XCTAssertEqual(store.latestSnapshot?.capabilities[.history]?.reason, .collectionFailed)
+        clock.advance(by: 1)
+        await store.refreshNow()
+        XCTAssertEqual(store.latestSnapshot?.system.cpuPercent.value, 90,
+                       "the live reading remains available while its history interval is marked incomplete")
+        clock.advance(by: 1)
+        await store.refreshNow()
+
+        let summary = try await history.summaries(lastDays: 30, through: clock.date).first
+        XCTAssertEqual(summary?.sampleCount, 3, "the failed write is not committed")
+        XCTAssertEqual(summary?.gaps, 1, "the recovery sample records the failed-write boundary")
+        XCTAssertEqual(summary?.cpuSeconds ?? 0, 0.8, accuracy: 0.0001,
+                       "only the post-recovery 20% sample may contribute one second of CPU")
+        XCTAssertEqual(summary?.diskReadBytes, 20,
+                       "the changing rates during the failed interval must not inflate history")
+        XCTAssertEqual(summary?.diskWriteBytes, 20)
+        XCTAssertEqual(summary?.networkReceiveBytes, 20)
+        XCTAssertEqual(summary?.networkTransmitBytes, 20)
+    }
+
     func testPauseGapAppearsInGraphWithoutHistoryStorageAndClearsAfterResume() async {
         let store = DefaultMonitoringStore(collector: StaticCollector())
 
@@ -111,6 +146,70 @@ final class MonitoringStoreTests: XCTestCase {
         await store.refreshNow()
         XCTAssertNotNil(store.graphSamples.last?.cpuPercent.value,
                         "the graph gap should apply to the resumed sample only")
+    }
+
+    func testPauseGapMarksAvailableAdvancedGraphReadingsWithoutChangingLiveSnapshot() async {
+        let gpu = AdvancedValue.available(42, .percent)
+        let energy = AdvancedValue.available(12.5, .watts)
+        let store = DefaultMonitoringStore(collector: AdvancedStaticCollector(gpu: gpu, energy: energy))
+
+        await store.refreshNow()
+        store.pause()
+        store.resume()
+        await store.refreshNow()
+
+        XCTAssertEqual(store.graphSamples.last?.advancedMetrics[.gpu]?.unavailableReason, .sleepGap)
+        XCTAssertEqual(store.graphSamples.last?.advancedMetrics[.energy]?.unavailableReason, .sleepGap)
+        XCTAssertEqual(store.latestSnapshot?.advancedMetrics[.gpu]?.value, 42,
+                       "the live snapshot must retain the collected GPU value")
+        XCTAssertEqual(store.latestSnapshot?.advancedMetrics[.energy]?.value, 12.5,
+                       "the live snapshot must retain the collected power value")
+
+        await store.refreshNow()
+        XCTAssertEqual(store.graphSamples.last?.advancedMetrics[.gpu]?.value, 42)
+        XCTAssertEqual(store.graphSamples.last?.advancedMetrics[.energy]?.value, 12.5,
+                       "only the first resumed graph sample should be marked as a gap")
+    }
+
+    func testPauseGapMarksAdvancedGraphReadingsWithHistoryStorageOnly() async {
+        let history = CapturingHistoryStore()
+        let store = DefaultMonitoringStore(
+            collector: AdvancedStaticCollector(gpu: .available(42, .percent), energy: .available(12.5, .watts)),
+            historyStore: history)
+
+        await store.refreshNow()
+        store.pause()
+        store.resume()
+        await store.refreshNow()
+
+        XCTAssertEqual(store.graphSamples.last?.advancedMetrics[.gpu]?.unavailableReason, .sleepGap)
+        XCTAssertEqual(store.graphSamples.last?.advancedMetrics[.energy]?.unavailableReason, .sleepGap)
+        let recorded = await history.recordedSnapshots()
+        XCTAssertEqual(recorded.last?.system.cpuPercent.unavailableReason, .sleepGap)
+        XCTAssertEqual(recorded.last?.advancedMetrics[.gpu]?.value, 42,
+                       "history gap semantics for advanced readings remain unchanged")
+        XCTAssertEqual(recorded.last?.advancedMetrics[.energy]?.value, 12.5)
+
+        await store.refreshNow()
+        XCTAssertEqual(store.graphSamples.last?.advancedMetrics[.gpu]?.value, 42)
+        XCTAssertEqual(store.graphSamples.last?.advancedMetrics[.energy]?.value, 12.5)
+    }
+
+    func testPauseGapPreservesReasonsForUnavailableAdvancedReadings() async {
+        let store = DefaultMonitoringStore(collector: AdvancedStaticCollector(
+            gpu: .unavailable(.percent, .permissionDenied),
+            energy: .unavailable(.watts, .unsupported)))
+
+        store.pause()
+        store.resume()
+        await store.refreshNow()
+
+        XCTAssertNil(store.graphSamples.last?.advancedMetrics[.gpu]?.value)
+        XCTAssertEqual(store.graphSamples.last?.advancedMetrics[.gpu]?.unavailableReason, .permissionDenied)
+        XCTAssertNil(store.graphSamples.last?.advancedMetrics[.energy]?.value)
+        XCTAssertEqual(store.graphSamples.last?.advancedMetrics[.energy]?.unavailableReason, .unsupported)
+        XCTAssertEqual(store.latestSnapshot?.advancedMetrics[.gpu]?.unavailableReason, .permissionDenied)
+        XCTAssertEqual(store.latestSnapshot?.advancedMetrics[.energy]?.unavailableReason, .unsupported)
     }
 
     func testHistorySummaryReadsAreThrottledAndInvalidatedByDayAndReset() async throws {
@@ -211,6 +310,53 @@ private actor StaticCollector: MonitoringCollecting {
     }
 }
 
+private enum AdvancedValue: Sendable {
+    case available(Double, MetricUnit)
+    case unavailable(MetricUnit, MetricUnavailableReason)
+
+    func reading(at timestamp: Date) -> MetricReading {
+        switch self {
+        case let .available(value, unit): MetricReading(value: value, unit: unit, timestamp: timestamp)
+        case let .unavailable(unit, reason): MetricReading(unavailable: unit, timestamp: timestamp, reason: reason)
+        }
+    }
+}
+
+private actor AdvancedStaticCollector: MonitoringCollecting {
+    private let gpu: AdvancedValue
+    private let energy: AdvancedValue
+
+    init(gpu: AdvancedValue, energy: AdvancedValue) {
+        self.gpu = gpu
+        self.energy = energy
+    }
+
+    func collect(at timestamp: Date) async -> MonitoringSnapshot {
+        let base = CoreTestFixtures.snapshot(timestamp: timestamp)
+        return MonitoringSnapshot(timestamp: timestamp, system: base.system, processes: base.processes,
+                                  processGroups: base.processGroups, startupItems: base.startupItems,
+                                  services: base.services, users: base.users,
+                                  discoveryCoverage: base.discoveryCoverage, capabilities: base.capabilities,
+                                  advancedMetrics: [.gpu: gpu.reading(at: timestamp),
+                                                    .energy: energy.reading(at: timestamp)])
+    }
+}
+
+private actor RateSequenceCollector: MonitoringCollecting {
+    private let rates: [Double]
+    private var index = 0
+
+    init(_ rates: [Double]) { self.rates = rates }
+
+    func collect(at timestamp: Date) async -> MonitoringSnapshot {
+        let rate = rates[min(index, rates.count - 1)]
+        index += 1
+        return CoreTestFixtures.snapshot(timestamp: timestamp, cpuPercent: rate,
+                                         diskReadRate: rate, diskWriteRate: rate,
+                                         networkReceiveRate: rate, networkTransmitRate: rate)
+    }
+}
+
 private enum HistoryTestError: Error, Equatable {
     case storageUnavailable
 }
@@ -264,6 +410,31 @@ private actor CountingHistoryStore: MonitoringHistoryManaging {
     func summaryReadCount() -> Int { summariesReads }
     func applicationSummaryReadCount() -> Int { applicationSummaryReads }
     func setShouldFailReads(_ shouldFail: Bool) { shouldFailReads = shouldFail }
+}
+
+private actor FailOnSecondRecordHistoryStore: MonitoringHistoryManaging {
+    private let store: SQLiteMonitoringHistoryStore
+    private var recordAttempts = 0
+
+    init(databaseURL: URL) {
+        store = SQLiteMonitoringHistoryStore(databaseURL: databaseURL)
+    }
+
+    func record(snapshot: MonitoringSnapshot) async throws {
+        recordAttempts += 1
+        if recordAttempts == 2 { throw HistoryTestError.storageUnavailable }
+        try await store.record(snapshot: snapshot)
+    }
+
+    func summaries(lastDays: Int, through date: Date) async throws -> [DailyHistorySummary] {
+        try await store.summaries(lastDays: lastDays, through: date)
+    }
+
+    func applicationSummaries(lastDays: Int, through date: Date) async throws -> [ApplicationDailyHistorySummary] {
+        try await store.applicationSummaries(lastDays: lastDays, through: date)
+    }
+
+    func reset() async throws { try await store.reset() }
 }
 
 private final class MutableTestClock: @unchecked Sendable {

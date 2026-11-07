@@ -10,6 +10,15 @@ final class CounterDeltaTrackerTests: XCTestCase {
         XCTAssertEqual(tracker.update(160, for: "disk", at: date(2)), .delta(value: 60, elapsed: 2))
     }
 
+    func testDeltaReadingCarriesItsActualMeasurementInterval() {
+        let timestamp = date(12)
+        let reading = CounterDeltaResult.delta(value: 60, elapsed: 3)
+            .reading(unit: .bytesPerSecond, timestamp: timestamp) { Double($0) / $1 }
+
+        XCTAssertEqual(reading.value, 20)
+        XCTAssertEqual(reading.measurementInterval, DateInterval(start: date(9), end: timestamp))
+    }
+
     func testCounterResetRebasesInsteadOfReportingNegativeOrHugeRate() {
         var tracker = CounterDeltaTracker<String>()
         _ = tracker.update(1_000, for: "en0", at: date(0))
@@ -26,12 +35,20 @@ final class CounterDeltaTrackerTests: XCTestCase {
         XCTAssertEqual(tracker.update(9_025, for: "disk", at: date(12)), .delta(value: 25, elapsed: 1))
     }
 
-    func testInvalidTimestampDoesNotReplaceGoodBaseline() {
+    func testDuplicateTimestampDoesNotReplaceGoodBaseline() {
+        var tracker = CounterDeltaTracker<String>()
+        _ = tracker.update(100, for: "disk", at: date(5))
+
+        XCTAssertEqual(tracker.update(150, for: "disk", at: date(5)), .invalidTimestamp)
+        XCTAssertEqual(tracker.update(160, for: "disk", at: date(6)), .delta(value: 60, elapsed: 1))
+    }
+
+    func testTimestampRollbackRebaselinesSoNextForwardSampleRecovers() {
         var tracker = CounterDeltaTracker<String>()
         _ = tracker.update(100, for: "disk", at: date(5))
 
         XCTAssertEqual(tracker.update(150, for: "disk", at: date(4)), .invalidTimestamp)
-        XCTAssertEqual(tracker.update(160, for: "disk", at: date(6)), .delta(value: 60, elapsed: 1))
+        XCTAssertEqual(tracker.update(160, for: "disk", at: date(6)), .delta(value: 10, elapsed: 2))
     }
 
     func testReusedPIDStartsASeparateCounterStream() {

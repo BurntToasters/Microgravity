@@ -49,8 +49,8 @@ let package = Package(
                 .define("GENERATE_APPCAST_BUILD_LEGACY_DSA_SUPPORT", to: "0"),
                 // String constants the library references at runtime. We don't embed XPC services.
                 .define("SPARKLE_BUNDLE_IDENTIFIER", to: "\"org.sparkle-project.Sparkle\""),
-                .define("CURRENT_PROJECT_VERSION", to: "\"2054\""),
-                .define("MARKETING_VERSION", to: "\"2.9.1\""),
+                .define("CURRENT_PROJECT_VERSION", to: "\"2061\""),
+                .define("MARKETING_VERSION", to: "\"2.9.6\""),
                 .define("SPARKLE_RELAUNCH_TOOL_NAME", to: "\"Autoupdate\""),
                 .define("SPARKLE_INSTALLER_PROGRESS_TOOL_NAME", to: "\"Updater\""),
                 .define("SPARKLE_INSTALLER_PROGRESS_TOOL_BUNDLE_ID", to: "\"org.sparkle-project.Sparkle.Updater\""),

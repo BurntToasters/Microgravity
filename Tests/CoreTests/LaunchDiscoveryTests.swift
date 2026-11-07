@@ -32,6 +32,50 @@ final class LaunchDiscoveryTests: XCTestCase {
         XCTAssertEqual(coverage.reasons, ["Could not enumerate /Library/LaunchAgents: Permission denied"])
     }
 
+    func testBoundedReaderReadsRegularFilesAndSmallSymlinksAndRejectsOversizedFiles() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let smallData = Data("small plist fixture".utf8)
+        let target = directory.appendingPathComponent("target.plist")
+        XCTAssertTrue(FileManager.default.createFile(atPath: target.path, contents: smallData))
+        XCTAssertEqual(try LaunchDiscovery.readBoundedRegularFile(at: target.path), smallData)
+
+        let smallSymlink = directory.appendingPathComponent("small-link.plist")
+        try FileManager.default.createSymbolicLink(at: smallSymlink, withDestinationURL: target)
+        XCTAssertEqual(try LaunchDiscovery.readBoundedRegularFile(at: smallSymlink.path), smallData)
+
+        let boundaryData = Data(repeating: 65, count: LaunchDiscovery.maximumPlistBytes)
+        let boundaryFile = directory.appendingPathComponent("boundary.plist")
+        XCTAssertTrue(FileManager.default.createFile(atPath: boundaryFile.path, contents: boundaryData))
+        XCTAssertEqual(try LaunchDiscovery.readBoundedRegularFile(at: boundaryFile.path).count,
+                       LaunchDiscovery.maximumPlistBytes)
+
+        let oversizedData = Data(repeating: 66, count: LaunchDiscovery.maximumPlistBytes + 1)
+        let oversizedTarget = directory.appendingPathComponent("oversized-target.plist")
+        XCTAssertTrue(FileManager.default.createFile(atPath: oversizedTarget.path, contents: oversizedData))
+        XCTAssertThrowsError(try LaunchDiscovery.readBoundedRegularFile(at: oversizedTarget.path))
+
+        let oversizedSymlink = directory.appendingPathComponent("oversized-link.plist")
+        try FileManager.default.createSymbolicLink(at: oversizedSymlink, withDestinationURL: oversizedTarget)
+        XCTAssertThrowsError(try LaunchDiscovery.readBoundedRegularFile(at: oversizedSymlink.path))
+    }
+
+    func testBoundedReaderRejectsFIFOsAndOtherNonregularFilesWithoutBlocking() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let fifo = directory.appendingPathComponent("fixture.plist")
+        let fifoStatus = fifo.path.withCString { mkfifo($0, mode_t(S_IRUSR | S_IWUSR)) }
+        XCTAssertEqual(fifoStatus, 0)
+        XCTAssertThrowsError(try LaunchDiscovery.readBoundedRegularFile(at: fifo.path))
+        XCTAssertThrowsError(try LaunchDiscovery.readBoundedRegularFile(at: directory.path))
+    }
+
     func testPasswordDatabaseLookupsRemainStableAcrossConcurrentCallers() {
         let uid = UInt32(getuid())
         guard let expectedName = PasswordDatabase.name(for: uid) else {

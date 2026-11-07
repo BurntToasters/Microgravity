@@ -2,4 +2,4 @@ MARKETING_VERSION = 0.1.0
 CURRENT_PROJECT_VERSION = 1
 SPARKLE_PUBLIC_KEY = $(MICROGRAVITY_SPARKLE_PUBLIC_KEY)
 SPARKLE_ENABLE_AUTOMATIC_CHECKS = NO
-SPARKLE_FEED_URL = https://github.com/BurntToasters/Microgravity/releases/latest/download/appcast.xml
+SPARKLE_FEED_URL = https:/$()/github.com/BurntToasters/Microgravity/releases/latest/download/appcast.xml

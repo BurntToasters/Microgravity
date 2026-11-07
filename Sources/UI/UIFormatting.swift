@@ -10,24 +10,28 @@ enum UIFormat {
         guard let value = reading.value, value.isFinite else {
             return unavailable(reading.unavailableReason, detail: reading.detail)
         }
+        let formatted: String
         switch reading.unit {
         case .percent:
-            return String(format: "%.1f%%", locale: .current, value)
+            formatted = String(format: "%.1f%%", locale: .current, value)
         case .bytes:
-            return ByteCountFormatter.string(fromByteCount: boundedInt64(value), countStyle: .memory)
+            formatted = ByteCountFormatter.string(fromByteCount: boundedInt64(value), countStyle: .memory)
         case .bytesPerSecond:
-            return bytesPerSecond(value)
+            formatted = bytesPerSecond(value)
         case .count:
-            return String(format: "%.0f", locale: .current, value)
+            formatted = String(format: "%.0f", locale: .current, value)
         case .seconds:
-            return String(format: "%.1f s", locale: .current, value)
+            formatted = String(format: "%.1f s", locale: .current, value)
         case .watts:
-            return String(format: "%.3g W", locale: .current, value)
+            formatted = String(format: "%.3g W", locale: .current, value)
         case .joules:
-            return String(format: "%.3g J", locale: .current, value)
+            formatted = String(format: "%.3g J", locale: .current, value)
         case .wattHours:
-            return String(format: "%.3g Wh", locale: .current, value)
+            formatted = String(format: "%.3g Wh", locale: .current, value)
         }
+        guard reading.isPartial else { return formatted }
+        let detail = reading.detail.flatMap { $0.isEmpty ? nil : $0 }
+        return [formatted, "partial", detail].compactMap { $0 }.joined(separator: " · ")
     }
 
     static func bytesPerSecond(_ value: Double) -> String {

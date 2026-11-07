@@ -3,25 +3,24 @@ import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { appcastFilename, writeAppcast } from "./lib/appcast.mjs";
+import { appcastFilename, copyStableAppcastAsBetaFallback, writeAppcast } from "./lib/appcast.mjs";
 import { releaseNotes as formatReleaseNotes } from "./lib/changelog.mjs";
 import { output, repository, repositoryUrl, root, run, sha256File, versionInfo } from "./lib/core.mjs";
+import { githubOutput, githubRun } from "./lib/github.mjs";
 import { buildRelease } from "./build.mjs";
-import { runPreflight, sparkleCredentialSources } from "./release-preflight.mjs";
+import { draftTargetProblem, runPreflight, sparkleCredentialSources } from "./release-preflight.mjs";
 import { artifactManifestPath, createArtifactManifest, createSession, validateArtifactManifest, verifySession } from "./release-session.mjs";
 
-const githubSecrets = ["GH_TOKEN", "GITHUB_TOKEN"];
-
 function ghResult(args) {
-  return run("gh", args, { capture: true, allowFailure: true, allowSecrets: githubSecrets });
+  return githubRun(args, { capture: true, allowFailure: true });
 }
 
 function ghRun(args) {
-  return run("gh", args, { allowSecrets: githubSecrets });
+  return githubRun(args);
 }
 
 function ghOutput(args) {
-  return output("gh", args, { allowSecrets: githubSecrets });
+  return githubOutput(args);
 }
 
 export function expectedDraftTarget(info, commit) {
@@ -35,21 +34,41 @@ export function betaMirrorTarget(channel, latestStableTag) {
 }
 
 export function feedFilenames(channel) {
-  return [appcastFilename(channel)];
+  return channel === "stable" ? [appcastFilename("stable"), appcastFilename("beta")] : [appcastFilename("beta")];
 }
 
+export function releaseAssetPlan(info) {
+  const archiveName = `Microgravity-${info.version}.zip`;
+  const canonicalFeedName = appcastFilename(info.channel);
+  const feedNames = feedFilenames(info.channel);
+  const checksummedNames = [archiveName, canonicalFeedName];
+  const contentNames = [archiveName, ...feedNames, "SHA256SUMS"];
+  return {
+    archiveName,
+    canonicalFeedName,
+    feedNames,
+    checksummedNames,
+    contentNames,
+    assetNames: [...contentNames, ...contentNames.map((name) => `${name}.asc`)],
+    mutableFeedNames: info.channel === "stable" ? [appcastFilename("beta")] : [],
+  };
+}
+
+// Returns true when the release is already published (rebuild and upload must be skipped).
 function ensureDraft(info, commit) {
   const result = ghResult(["release", "view", info.tag, "--repo", repository, "--json", "isDraft,targetCommitish"]);
   if (result.status === 0) {
     const release = JSON.parse(result.stdout);
-    if (!release.isDraft) throw new Error(`${info.tag} is already published.`);
-    if (![commit, info.channel === "beta" ? "beta" : "main"].includes(release.targetCommitish)) throw new Error(`${info.tag} draft targets ${release.targetCommitish}, not this release commit.`);
-    return;
+    if (!release.isDraft) return true;
+    const problem = draftTargetProblem(release.targetCommitish, commit, info.tag);
+    if (problem) throw new Error(problem);
+    return false;
   }
   const draft = expectedDraftTarget(info, commit);
   const args = ["release", "create", draft.tag, "--repo", repository, "--draft", "--target", draft.target, "--title", draft.title, "--notes", `Microgravity ${info.version} release. See the tagged source and bundled notices for the corresponding GPL source and licensing information.`];
   if (draft.prerelease) args.push("--prerelease");
   ghRun(args);
+  return false;
 }
 
 export function sparkleSigningInvocation(file, { printOnly = false, verify = false, signature = null, environment = process.env } = {}) {
@@ -118,6 +137,128 @@ function writeChecksums(files, destination) {
   return destination;
 }
 
+export function prepareReleaseAssets({
+  info,
+  zip,
+  directory = path.dirname(zip),
+  notes,
+  signArchiveFile = (file) => signSparkle(file, true),
+  verifySparkleArchiveFile = verifySparkleArchive,
+  signFeedFile = (file) => signSparkle(file),
+  signGpgFile = signGpg,
+  verifyGpgFile = verifyGpg,
+  verifySparkleFeedFile = verifySparkleFeed,
+} = {}) {
+  if (!info || !zip || !notes) throw new Error("release asset preparation requires release info, archive, and notes");
+  fs.mkdirSync(directory, { recursive: true });
+  const plan = releaseAssetPlan(info);
+  const signature = signArchiveFile(zip);
+  verifySparkleArchiveFile(zip, signature);
+  const canonicalFeed = writeAppcast(directory, { info, signature, length: fs.statSync(zip).size, notes });
+  signFeedFile(canonicalFeed);
+  const feedPaths = [canonicalFeed];
+  if (info.channel === "stable") feedPaths.push(copyStableAppcastAsBetaFallback(canonicalFeed));
+  const checksumPaths = plan.checksummedNames.map((name) => path.join(directory, name));
+  const checksums = writeChecksums(checksumPaths, path.join(directory, "SHA256SUMS"));
+  const contentPaths = plan.contentNames.map((name) => path.join(directory, name));
+  const assets = [...contentPaths, ...contentPaths.map((file) => signGpgFile(file))];
+  for (const file of contentPaths) verifyGpgFile(file);
+  for (const file of feedPaths) verifySparkleFeedFile(file);
+  verifyChecksums(checksumPaths, checksums);
+  return { plan, signature, canonicalFeed, feedPaths, checksums, contentPaths, assets };
+}
+
+function appcastIdentity(xml, info, feedName, { allowDifferentBuild = false } = {}) {
+  const enclosure = xml.match(/<enclosure\b[^>]*>/)?.[0];
+  const signature = enclosure?.match(/\bsparkle:edSignature="([^"]+)"/)?.[1];
+  const feedBuild = enclosure?.match(/\bsparkle:version="([^"]+)"/)?.[1];
+  const archiveName = enclosure?.match(/\burl="[^"]*\/(Microgravity-[^/?#"]+\.zip)(?:[?#][^"]*)?"/)?.[1];
+  if (!enclosure || !signature || !feedBuild || !archiveName) throw new Error(`${feedName} is malformed or has no signed enclosure`);
+  if (!allowDifferentBuild && (archiveName !== `Microgravity-${info.version}.zip` || feedBuild !== String(info.buildNumber)))
+    throw new Error(`${feedName} does not describe ${info.tag}`);
+  return { signature, feedBuild, archiveName };
+}
+
+export function verifyReleaseAssets(info, directory, {
+  verifyGpgFile = verifyGpg,
+  verifySparkleFeedFile = verifySparkleFeed,
+  verifySparkleArchiveFile = verifySparkleArchive,
+  allowMutableBetaFeed = false,
+  requireExactAssets = false,
+} = {}) {
+  const plan = releaseAssetPlan(info);
+  for (const name of plan.assetNames) {
+    if (!fs.existsSync(path.join(directory, name))) throw new Error(`missing release asset: ${name}`);
+  }
+  if (requireExactAssets) {
+    const actual = fs.readdirSync(directory).sort();
+    if (JSON.stringify(actual) !== JSON.stringify([...plan.assetNames].sort())) throw new Error("release contains unexpected or missing assets");
+  }
+  const contentPaths = plan.contentNames.map((name) => path.join(directory, name));
+  for (const file of contentPaths) verifyGpgFile(file);
+  verifyChecksums(plan.checksummedNames.map((name) => path.join(directory, name)), path.join(directory, "SHA256SUMS"));
+
+  for (const name of plan.feedNames) {
+    const file = path.join(directory, name);
+    const xml = fs.readFileSync(file, "utf8");
+    const isMutableBetaMirror = info.channel === "stable" && name === appcastFilename("beta") && allowMutableBetaFeed;
+    const identity = appcastIdentity(xml, info, name, { allowDifferentBuild: isMutableBetaMirror });
+    verifySparkleFeedFile(file);
+    if (name !== plan.canonicalFeedName && !isMutableBetaMirror && info.channel === "stable" && xml !== fs.readFileSync(path.join(directory, plan.canonicalFeedName), "utf8"))
+      throw new Error("stable beta fallback does not match the stable appcast");
+    if (!isMutableBetaMirror) verifySparkleArchiveFile(path.join(directory, plan.archiveName), identity.signature);
+  }
+  return plan;
+}
+
+export function verifyReleaseForPublication(info, session, manifest, directory, {
+  alreadyPublished = false,
+  verifyGpgFile = verifyGpg,
+  verifySparkleFeedFile = verifySparkleFeed,
+  verifySparkleArchiveFile = verifySparkleArchive,
+} = {}) {
+  const plan = releaseAssetPlan(info);
+  const actual = fs.readdirSync(directory).sort();
+  if (JSON.stringify(actual) !== JSON.stringify([...plan.assetNames].sort())) throw new Error("draft contains unexpected or missing assets");
+  let releaseManifest = manifest;
+  if (alreadyPublished && plan.mutableFeedNames.length) {
+    if (!manifest || typeof manifest.assets !== "object" || manifest.assets === null) throw new Error("release artifact manifest does not match the session");
+    const mirrorNames = new Set(plan.mutableFeedNames.flatMap((name) => [name, `${name}.asc`]));
+    const assets = { ...manifest.assets };
+    for (const name of mirrorNames) assets[name] = sha256File(path.join(directory, name));
+    releaseManifest = { ...manifest, assets };
+  }
+  validateArtifactManifest(releaseManifest, session, directory, plan.assetNames);
+  verifyReleaseAssets(info, directory, {
+    allowMutableBetaFeed: alreadyPublished,
+    requireExactAssets: true,
+    verifyGpgFile,
+    verifySparkleFeedFile,
+    verifySparkleArchiveFile,
+  });
+  return plan;
+}
+
+// Order matters: the stable mirror upload runs before the beta leaves draft. If the upload fails, the beta is
+// still a draft and `release:mac:resume` can retry it. Re-publishing an already-published release re-uploads
+// the mirror (it is mutable) but does not touch the release's draft state.
+export function publishPreparedRelease(info, directory, {
+  runRelease = ghRun,
+  latestStableTag = () => ghOutput(["release", "view", "--repo", repository, "--json", "tagName", "--jq", ".tagName"]),
+  alreadyPublished = false,
+} = {}) {
+  const mirror = info.channel === "beta" ? betaMirrorTarget(info.channel, latestStableTag()) : null;
+  const feed = mirror ? path.join(directory, appcastFilename("beta")) : null;
+  const signature = feed ? `${feed}.asc` : null;
+  if (mirror && (!fs.existsSync(feed) || !fs.existsSync(signature))) throw new Error("verified beta feed or its GPG signature is missing");
+  if (mirror) {
+    runRelease(["release", "upload", mirror, "--repo", repository, "--clobber", feed, signature]);
+  }
+  if (!alreadyPublished) {
+    runRelease(["release", "edit", info.tag, "--repo", repository, "--draft=false", ...(info.channel === "beta" ? ["--prerelease"] : ["--latest"])]);
+  }
+}
+
 function prepare() {
   runPreflight({ release: true });
   run("npm", ["run", "test:all"]);
@@ -129,22 +270,16 @@ function continueRelease() {
   const session = verifySession();
   runPreflight({ release: true });
   const info = versionInfo();
-  ensureDraft(info, session.identity.commit);
+  if (ensureDraft(info, session.identity.commit)) {
+    console.log(`release:mac:continue: ${info.tag} already published; run release:publish to re-verify and refresh the beta mirror.`);
+    return;
+  }
   const { zip } = buildRelease();
-  const signature = signSparkle(zip, true);
-  verifySparkleArchive(zip, signature);
   const notes = formatReleaseNotes(info, fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8"));
-  const appcast = writeAppcast(path.dirname(zip), { info, signature, length: fs.statSync(zip).size, notes });
-  signSparkle(appcast);
-  const checksums = writeChecksums([zip, appcast], path.join(path.dirname(zip), "SHA256SUMS"));
-  const assets = [zip, appcast, checksums];
-  assets.push(...assets.map(signGpg));
-  for (const file of [zip, appcast, checksums]) verifyGpg(file);
-  verifySparkleFeed(appcast);
-  verifyChecksums([zip, appcast], checksums);
+  const { assets, plan } = prepareReleaseAssets({ info, zip, notes });
   const manifest = createArtifactManifest(session, assets);
   fs.writeFileSync(artifactManifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-  validateArtifactManifest(manifest, session, path.dirname(zip), assets.map((file) => path.basename(file)));
+  validateArtifactManifest(manifest, session, path.dirname(zip), plan.assetNames);
   ghRun(["release", "upload", info.tag, "--repo", repository, "--clobber", ...assets]);
   const notesFile = path.join(path.dirname(zip), "RELEASE_NOTES.md");
   fs.writeFileSync(notesFile, `${notes}\n`);
@@ -155,26 +290,19 @@ function continueRelease() {
 function publish() {
   const session = verifySession();
   const info = runPreflight({ release: true });
-  const names = [`Microgravity-${info.version}.zip`, appcastFilename(info.channel), "SHA256SUMS"];
-  const expected = [...names, ...names.map((name) => `${name}.asc`)];
+  const plan = releaseAssetPlan(info);
+  const expected = plan.assetNames;
   const manifest = JSON.parse(fs.readFileSync(artifactManifestPath, "utf8"));
   validateArtifactManifest(manifest, session, path.join(root, "dist"), expected);
+  const release = JSON.parse(ghOutput(["release", "view", info.tag, "--repo", repository, "--json", "isDraft,isPrerelease"]));
+  if (release.isPrerelease !== (info.channel === "beta")) throw new Error(`${info.tag} prerelease flag does not match the ${info.channel} channel`);
+  const alreadyPublished = !release.isDraft;
   const downloaded = fs.mkdtempSync(path.join(os.tmpdir(), "microgravity-draft-"));
   try {
     ghRun(["release", "download", info.tag, "--repo", repository, "--dir", downloaded]);
-    validateArtifactManifest(manifest, session, downloaded, expected);
-    const actual = fs.readdirSync(downloaded).sort();
-    if (JSON.stringify(actual) !== JSON.stringify([...expected].sort())) throw new Error("draft contains unexpected or missing assets");
+    verifyReleaseForPublication(info, session, manifest, downloaded, { alreadyPublished });
+    publishPreparedRelease(info, downloaded, { alreadyPublished });
   } finally { fs.rmSync(downloaded, { recursive: true, force: true }); }
-  ghRun(["release", "edit", info.tag, "--repo", repository, "--draft=false", ...(info.channel === "beta" ? ["--prerelease"] : ["--latest"])]);
-  if (info.channel === "beta") {
-    const feed = path.join(root, "dist", appcastFilename("beta"));
-    if (!fs.existsSync(feed)) throw new Error("beta appcast is missing from the prepared release assets.");
-    if (!fs.readFileSync(feed, "utf8").includes(`Microgravity-${info.version}.zip`)) throw new Error(`prepared beta appcast does not describe ${info.tag}.`);
-    const stableTag = ghOutput(["release", "view", "--repo", repository, "--json", "tagName", "--jq", ".tagName"]);
-    const mirror = betaMirrorTarget(info.channel, stableTag);
-    ghRun(["release", "upload", mirror, "--repo", repository, "--clobber", feed, signGpg(feed)]);
-  }
   console.log(`release:publish: ok (${info.tag})`);
 }
 
@@ -194,23 +322,31 @@ function verifyGpg(file, signature = `${file}.asc`) {
 }
 
 function verifyChecksums(files, checksumFile) {
-  const expected = new Map(fs.readFileSync(checksumFile, "utf8").trim().split("\n").map((line) => {
-    const [hash, filename] = line.split(/\s+/, 2);
-    return [filename, hash];
-  }));
+  const lines = fs.readFileSync(checksumFile, "utf8").trim().split("\n");
+  const expected = new Map();
+  for (const line of lines) {
+    const match = line.match(/^([a-f0-9]{64})  (.+)$/i);
+    if (!match || expected.has(match[2])) throw new Error("published checksum manifest is malformed");
+    expected.set(match[2], match[1].toLowerCase());
+  }
+  const names = files.map((file) => path.basename(file)).sort();
+  if (JSON.stringify([...expected.keys()].sort()) !== JSON.stringify(names)) throw new Error("published checksum manifest has unexpected assets");
   for (const file of files) {
-    if (expected.get(path.basename(file)) !== sha256File(file)) throw new Error(`published checksum mismatch: ${path.basename(file)}`);
+    if (expected.get(path.basename(file)) !== sha256File(file).toLowerCase()) throw new Error(`published checksum mismatch: ${path.basename(file)}`);
   }
 }
 
-async function verifyLiveFeed(info, directory, attempts = 6) {
-  const feedName = appcastFilename(info.channel);
+async function verifyLiveFeed(info, directory, feedName, { allowDifferentBuild = false, attempts = 6 } = {}) {
   const url = `${repositoryUrl}/releases/latest/download/${feedName}`;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(15_000) });
     if (response.ok) {
       const contents = await response.text();
-      if (contents.includes(`sparkle:version="${info.buildNumber}"`)) {
+      try { appcastIdentity(contents, info, feedName, { allowDifferentBuild }); } catch {
+        if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, 10_000));
+        continue;
+      }
+      if (allowDifferentBuild || contents.includes(`sparkle:version="${info.buildNumber}"`)) {
         const liveFeed = path.join(directory, `live-${feedName}`);
         fs.writeFileSync(liveFeed, contents);
         verifySparkleFeed(liveFeed);
@@ -230,18 +366,11 @@ async function verifyPublished() {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "microgravity-release-"));
   try {
     ghRun(["release", "download", info.tag, "--repo", repository, "--dir", temp]);
-    const zip = path.join(temp, `Microgravity-${info.version}.zip`);
-    const appcast = path.join(temp, appcastFilename(info.channel));
-    const checksums = path.join(temp, "SHA256SUMS");
-    for (const file of [zip, appcast, checksums]) verifyGpg(file);
-    verifyChecksums([zip, appcast], checksums);
-    const xml = fs.readFileSync(appcast, "utf8");
-    if (!xml.includes(`Microgravity-${info.version}.zip`) || !xml.includes(`sparkle:version="${info.buildNumber}"`)) throw new Error("published appcast identity mismatch");
-    const signature = xml.match(/<enclosure\b[^>]*sparkle:edSignature="([^"]+)"/)?.[1];
-    if (!signature) throw new Error("published appcast has no Sparkle archive signature");
-    verifySparkleFeed(appcast);
-    verifySparkleArchive(zip, signature);
-    await verifyLiveFeed(info, temp);
+    verifyReleaseAssets(info, temp, { allowMutableBetaFeed: info.channel === "stable", requireExactAssets: true });
+    for (const feedName of feedFilenames(info.channel)) {
+      const mutableBetaFeed = info.channel === "stable" && feedName === appcastFilename("beta");
+      await verifyLiveFeed(info, temp, feedName, { allowDifferentBuild: mutableBetaFeed });
+    }
     console.log(`release:verify:published: ok (${info.tag})`);
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });

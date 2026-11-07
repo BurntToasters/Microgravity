@@ -72,6 +72,10 @@ final class NativeSystemIntegrationAPI: NSObject, SystemIntegrationAPI, SPUUpdat
             return .completed
         } catch { onStatusChange?(); return .failed(error.localizedDescription) }
     }
+    func openLoginItemSettings() async -> IntegrationActionResult {
+        SMAppService.openSystemSettingsLoginItems()
+        return .completed
+    }
     func checkForUpdates() async -> IntegrationActionResult {
         guard updaterConfigured, let updater = updaterController?.updater else {
             return .unavailable("A valid Sparkle public key is not configured.")

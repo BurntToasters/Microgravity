@@ -56,6 +56,7 @@ public protocol SystemIntegrationAPI: AnyObject {
     func removeHelper() async -> IntegrationActionResult
     func configureHelper() async -> IntegrationActionResult
     func setLaunchAtLogin(_ enabled: Bool) async -> IntegrationActionResult
+    func openLoginItemSettings() async -> IntegrationActionResult
     func checkForUpdates() async -> IntegrationActionResult
     func installAvailableUpdate() async -> IntegrationActionResult
 }
@@ -67,6 +68,9 @@ public extension SystemIntegrationAPI {
     }
     func removeHelper() async -> IntegrationActionResult {
         .unavailable("Helper removal is not integrated.")
+    }
+    func openLoginItemSettings() async -> IntegrationActionResult {
+        .unavailable("Opening Login Items settings is not integrated.")
     }
 }
 

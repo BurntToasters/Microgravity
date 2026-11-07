@@ -23,8 +23,9 @@ public enum MonitoringHistoryError: LocalizedError, Equatable {
 /// history stores application display names and executable bundle paths so
 /// per-application totals can be attributed and presented.
 public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
-    public static let schemaVersion: Int32 = 3
+    public static let schemaVersion: Int32 = 5
     public static let retentionDays = 30
+    static let maximumRememberedMeasurementIntervalsPerStream = 128
 
     private static let dailyTotalsCreateSQL = """
     CREATE TABLE IF NOT EXISTS daily_totals (
@@ -74,12 +75,30 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
     )
     """
 
+    private static let networkMeasurementStateCreateSQL = """
+    CREATE TABLE IF NOT EXISTS network_measurement_state (
+        scope TEXT NOT NULL,
+        application_id TEXT NOT NULL DEFAULT '',
+        direction TEXT NOT NULL,
+        interval_start REAL NOT NULL,
+        interval_end REAL NOT NULL,
+        PRIMARY KEY(scope, application_id, direction, interval_start, interval_end)
+    )
+    """
+
+    private static let historyResetStateCreateSQL = """
+    CREATE TABLE IF NOT EXISTS history_reset_state (
+        state_id INTEGER PRIMARY KEY CHECK(state_id = 1),
+        reset_timestamp REAL NOT NULL
+    )
+    """
+
     private static let applicationUpsertSQL = """
     INSERT INTO application_daily_totals (
         day_start, application_id, application_name, executable_path, association,
         cpu_seconds, disk_read_bytes, disk_write_bytes, network_receive_bytes,
         network_transmit_bytes, sample_count, gaps, counter_resets
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(day_start, application_id) DO UPDATE SET
         application_name = excluded.application_name,
         executable_path = excluded.executable_path,
@@ -94,7 +113,7 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
             ELSE COALESCE(application_daily_totals.network_receive_bytes, 0) + excluded.network_receive_bytes END,
         network_transmit_bytes = CASE WHEN excluded.network_transmit_bytes IS NULL THEN application_daily_totals.network_transmit_bytes
             ELSE COALESCE(application_daily_totals.network_transmit_bytes, 0) + excluded.network_transmit_bytes END,
-        sample_count = application_daily_totals.sample_count + 1,
+        sample_count = application_daily_totals.sample_count + excluded.sample_count,
         gaps = application_daily_totals.gaps + excluded.gaps,
         counter_resets = application_daily_totals.counter_resets + excluded.counter_resets
     """
@@ -111,6 +130,7 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
     private var priorApplicationSamples: [String: Date] = [:]
     private var collectionStateLoaded = false
     private var observedDataVersion: Int32?
+    private var resetBoundary: Date?
 
     public init(databaseURL: URL? = nil) {
         self.databaseURL = databaseURL ?? Self.defaultDatabaseURL()
@@ -129,11 +149,13 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
         do {
             try execute("DELETE FROM daily_totals WHERE day_start < \(Int64(cutoff.timeIntervalSince1970))", on: db)
             try execute("DELETE FROM application_daily_totals WHERE day_start < \(Int64(cutoff.timeIntervalSince1970))", on: db)
+            try deleteExpiredNetworkMeasurements(before: cutoff, on: db)
 
             let dataVersion = try readDataVersion(on: db)
             if !collectionStateLoaded || observedDataVersion != dataVersion {
                 priorSample = try readPriorSample(on: db)
                 priorApplicationSamples = try readApplicationSamples(on: db)
+                resetBoundary = try readResetBoundary(on: db)
                 collectionStateLoaded = true
                 observedDataVersion = dataVersion
             }
@@ -150,11 +172,14 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
             } else {
                 elapsed = nil
             }
-            let hasSleepGap = prior != nil && (!sameSession || elapsed == nil)
+            let hasSleepGap = snapshot.allSystemReadings.contains { $0.unavailableReason == .sleepGap }
+            let hasGap = prior != nil && (!sameSession || elapsed == nil)
                 || hasExistingTotals
-                || snapshot.allSystemReadings.contains { $0.unavailableReason == .sleepGap }
+                || snapshot.allSystemReadings.contains {
+                    Self.isIncomplete($0.unavailableReason) || ($0.isAvailable && $0.isPartial)
+                }
             let hasCounterReset = snapshot.allSystemReadings.contains { $0.unavailableReason == .counterReset }
-            let validElapsed = elapsed
+            let validElapsed = hasSleepGap ? nil : elapsed
             let cpuSeconds: Double? = validElapsed.flatMap { interval in
                 guard let percent = snapshot.system.cpuPercent.value else { return nil }
                 return max(0, percent) / 100 * Double(max(1, snapshot.system.capacityCores)) * interval
@@ -165,20 +190,36 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
             let diskWrite = snapshot.system.diskWriteBytesPerSecond.value.flatMap { rate in
                 validElapsed.map { Self.byteTotal(rate * $0) }
             }
-            let networkReceive = snapshot.system.networkReceiveBytesPerSecond.value.flatMap { rate in
-                validElapsed.map { Self.byteTotal(rate * $0) }
-            }
-            let networkTransmit = snapshot.system.networkTransmitBytesPerSecond.value.flatMap { rate in
-                validElapsed.map { Self.byteTotal(rate * $0) }
-            }
+            let historyInterval = validElapsed.flatMap { _ in prior.map { DateInterval(start: $0.timestamp, end: now) } }
+            let networkReceive = try rateTotal(snapshot.system.networkReceiveBytesPerSecond,
+                                               fallbackInterval: historyInterval, cutoff: cutoff,
+                                               stream: .system(.receive), on: db)
+            let networkTransmit = try rateTotal(snapshot.system.networkTransmitBytesPerSecond,
+                                                fallbackInterval: historyInterval, cutoff: cutoff,
+                                                stream: .system(.transmit), on: db)
 
-            try upsert(dayStart: today, cpuSeconds: cpuSeconds, diskRead: diskRead, diskWrite: diskWrite,
-                       networkReceive: networkReceive, networkTransmit: networkTransmit,
-                       gaps: hasSleepGap ? 1 : 0, counterResets: hasCounterReset ? 1 : 0,
-                       on: db)
+            var systemTotals = dailyTotals(
+                from: historyInterval?.start, through: now,
+                cpuSeconds: cpuSeconds, diskRead: diskRead, diskWrite: diskWrite,
+                networkReceive: nil, networkTransmit: nil,
+                gaps: hasGap ? 1 : 0, counterResets: hasCounterReset ? 1 : 0)
+            systemTotals += dailyTotals(
+                from: networkReceive.interval?.start, through: networkReceive.interval?.end ?? now,
+                cpuSeconds: nil, diskRead: nil, diskWrite: nil,
+                networkReceive: networkReceive.bytes, networkTransmit: nil,
+                gaps: 0, counterResets: 0, sampleCount: 0)
+            systemTotals += dailyTotals(
+                from: networkTransmit.interval?.start, through: networkTransmit.interval?.end ?? now,
+                cpuSeconds: nil, diskRead: nil, diskWrite: nil,
+                networkReceive: nil, networkTransmit: networkTransmit.bytes,
+                gaps: 0, counterResets: 0, sampleCount: 0)
+            for totals in systemTotals where totals.dayStart >= cutoff {
+                try upsert(totals, on: db)
+            }
             let currentApplicationSamples = try recordApplicationTotals(
-                snapshot: snapshot, dayStart: today, previousSamples: priorApplications,
-                sameSession: sameSession, hasExistingTotals: hasExistingTotals, on: db)
+                snapshot: snapshot, cutoff: cutoff, previousSamples: priorApplications,
+                sameSession: sameSession,
+                hasExistingTotals: hasExistingTotals, on: db)
             try saveCollectionState(timestamp: now, applicationSamples: currentApplicationSamples,
                                     previousApplicationSamples: priorApplications, on: db)
             try execute("COMMIT", on: db)
@@ -283,9 +324,13 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
             try execute("DELETE FROM application_daily_totals", on: db)
             try execute("DELETE FROM monitoring_state", on: db)
             try execute("DELETE FROM application_sample_state", on: db)
+            try execute("DELETE FROM network_measurement_state", on: db)
+            let resetAt = Date()
+            try saveResetBoundary(resetAt, on: db)
             try execute("COMMIT", on: db)
             priorSample = nil
             priorApplicationSamples.removeAll()
+            resetBoundary = resetAt
             collectionStateLoaded = true
             observedDataVersion = dataVersion
         } catch {
@@ -364,6 +409,8 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
         try execute(Self.applicationDailyTotalsCreateSQL, on: db)
         try execute(Self.monitoringStateCreateSQL, on: db)
         try execute(Self.applicationSampleStateCreateSQL, on: db)
+        try createNetworkMeasurementState(on: db)
+        try execute(Self.historyResetStateCreateSQL, on: db)
     }
 
     private func upgradeLegacySchema(version: Int32, on db: OpaquePointer) throws {
@@ -414,6 +461,14 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
             addableColumns: [],
             createSQL: Self.applicationSampleStateCreateSQL,
             version: version, on: db)
+        try createNetworkMeasurementState(on: db)
+        try execute(Self.historyResetStateCreateSQL, on: db)
+    }
+
+    private func createNetworkMeasurementState(on db: OpaquePointer) throws {
+        try execute(Self.networkMeasurementStateCreateSQL, on: db)
+        try execute("CREATE INDEX IF NOT EXISTS network_measurement_state_end_idx " +
+                    "ON network_measurement_state(interval_end)", on: db)
     }
 
     private func upgradeTable(_ table: String, requiredColumns: Set<String>,
@@ -439,7 +494,8 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
         SELECT 1 FROM sqlite_master
         WHERE type = 'table'
           AND name IN ('daily_totals', 'application_daily_totals',
-                       'monitoring_state', 'application_sample_state')
+                       'monitoring_state', 'application_sample_state', 'network_measurement_state',
+                       'history_reset_state')
         LIMIT 1
         """, statement: &statement, on: db)
         defer { sqlite3_finalize(statement) }
@@ -516,6 +572,29 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
         }
     }
 
+    private func readResetBoundary(on db: OpaquePointer) throws -> Date? {
+        var statement: OpaquePointer?
+        try prepare("SELECT reset_timestamp FROM history_reset_state WHERE state_id = 1",
+                    statement: &statement, on: db)
+        defer { sqlite3_finalize(statement) }
+        let code = sqlite3_step(statement)
+        if code == SQLITE_DONE { return nil }
+        guard code == SQLITE_ROW else { throw sqliteError(db, code: code) }
+        return Date(timeIntervalSince1970: sqlite3_column_double(statement, 0))
+    }
+
+    private func saveResetBoundary(_ timestamp: Date, on db: OpaquePointer) throws {
+        var statement: OpaquePointer?
+        try prepare("""
+        INSERT INTO history_reset_state(state_id, reset_timestamp) VALUES(1, ?)
+        ON CONFLICT(state_id) DO UPDATE SET reset_timestamp = excluded.reset_timestamp
+        """, statement: &statement, on: db)
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, timestamp.timeIntervalSince1970)
+        let code = sqlite3_step(statement)
+        guard code == SQLITE_DONE else { throw sqliteError(db, code: code) }
+    }
+
     private func containsStoredTotals(on db: OpaquePointer) throws -> Bool {
         var statement: OpaquePointer?
         try prepare("SELECT EXISTS(SELECT 1 FROM daily_totals UNION ALL SELECT 1 FROM application_daily_totals)",
@@ -570,14 +649,209 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
         }
     }
 
-    private func upsert(dayStart: Date, cpuSeconds: Double?, diskRead: UInt64?, diskWrite: UInt64?,
-                        networkReceive: UInt64?, networkTransmit: UInt64?, gaps: Int, counterResets: Int,
-                        on db: OpaquePointer) throws {
+    private struct DailyIntervalSlice {
+        let dayStart: Date
+        let duration: TimeInterval
+    }
+
+    private struct DailyIntervalTotals {
+        let dayStart: Date
+        let cpuSeconds: Double?
+        let diskRead: UInt64?
+        let diskWrite: UInt64?
+        let networkReceive: UInt64?
+        let networkTransmit: UInt64?
+        let sampleCount: Int
+        let gaps: Int
+        let counterResets: Int
+    }
+
+    private struct NetworkRateTotal {
+        let bytes: UInt64?
+        let interval: DateInterval?
+    }
+
+    private enum NetworkMeasurementDirection: String {
+        case receive
+        case transmit
+    }
+
+    private struct NetworkMeasurementStream {
+        let scope: String
+        let applicationID: String
+        let direction: NetworkMeasurementDirection
+
+        static func system(_ direction: NetworkMeasurementDirection) -> NetworkMeasurementStream {
+            NetworkMeasurementStream(scope: "system", applicationID: "", direction: direction)
+        }
+
+        static func application(_ applicationID: String,
+                                _ direction: NetworkMeasurementDirection) -> NetworkMeasurementStream {
+            NetworkMeasurementStream(scope: "application", applicationID: applicationID,
+                                     direction: direction)
+        }
+    }
+
+    private func rateTotal(_ reading: MetricReading, fallbackInterval: DateInterval?,
+                           cutoff: Date, stream: NetworkMeasurementStream,
+                           on db: OpaquePointer) throws -> NetworkRateTotal {
+        guard let rate = reading.value else { return NetworkRateTotal(bytes: nil, interval: nil) }
+        if let measured = reading.measurementInterval {
+            guard Self.isValid(measured), measured.end > cutoff else {
+                return NetworkRateTotal(bytes: nil, interval: nil)
+            }
+            // Intervals that began before the last reset belong to traffic already discarded by reset().
+            if let resetBoundary, measured.start < resetBoundary {
+                return NetworkRateTotal(bytes: nil, interval: nil)
+            }
+            guard try rememberNetworkMeasurement(measured, stream: stream, on: db) else {
+                return NetworkRateTotal(bytes: nil, interval: nil)
+            }
+            return NetworkRateTotal(bytes: Self.byteTotal(rate * measured.duration), interval: measured)
+        }
+        guard !reading.isPartial else { return NetworkRateTotal(bytes: nil, interval: nil) }
+        guard let fallbackInterval, Self.isValid(fallbackInterval) else {
+            return NetworkRateTotal(bytes: nil, interval: nil)
+        }
+        return NetworkRateTotal(bytes: Self.byteTotal(rate * fallbackInterval.duration), interval: fallbackInterval)
+    }
+
+    private func rememberNetworkMeasurement(_ interval: DateInterval, stream: NetworkMeasurementStream,
+                                            on db: OpaquePointer) throws -> Bool {
+        var statement: OpaquePointer?
+        try prepare("""
+        INSERT OR IGNORE INTO network_measurement_state(
+            scope, application_id, direction, interval_start, interval_end
+        ) VALUES (?, ?, ?, ?, ?)
+        """, statement: &statement, on: db)
+        defer { sqlite3_finalize(statement) }
+        bind(stream.scope, to: statement, index: 1)
+        bind(stream.applicationID, to: statement, index: 2)
+        bind(stream.direction.rawValue, to: statement, index: 3)
+        sqlite3_bind_double(statement, 4, interval.start.timeIntervalSince1970)
+        sqlite3_bind_double(statement, 5, interval.end.timeIntervalSince1970)
+        let code = sqlite3_step(statement)
+        guard code == SQLITE_DONE else { throw sqliteError(db, code: code) }
+        guard sqlite3_changes(db) == 1 else { return false }
+        try trimNetworkMeasurements(for: stream, on: db)
+        return true
+    }
+
+    private func trimNetworkMeasurements(for stream: NetworkMeasurementStream, on db: OpaquePointer) throws {
+        var statement: OpaquePointer?
+        try prepare("""
+        DELETE FROM network_measurement_state
+        WHERE rowid IN (
+            SELECT rowid FROM network_measurement_state
+            WHERE scope = ? AND application_id = ? AND direction = ?
+            ORDER BY rowid DESC LIMIT -1 OFFSET ?
+        )
+        """, statement: &statement, on: db)
+        defer { sqlite3_finalize(statement) }
+        bind(stream.scope, to: statement, index: 1)
+        bind(stream.applicationID, to: statement, index: 2)
+        bind(stream.direction.rawValue, to: statement, index: 3)
+        sqlite3_bind_int64(statement, 4, Int64(Self.maximumRememberedMeasurementIntervalsPerStream))
+        let code = sqlite3_step(statement)
+        guard code == SQLITE_DONE else { throw sqliteError(db, code: code) }
+    }
+
+    private func deleteExpiredNetworkMeasurements(before cutoff: Date, on db: OpaquePointer) throws {
+        var statement: OpaquePointer?
+        try prepare("DELETE FROM network_measurement_state WHERE interval_end < ?",
+                    statement: &statement, on: db)
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, cutoff.timeIntervalSince1970)
+        let code = sqlite3_step(statement)
+        guard code == SQLITE_DONE else { throw sqliteError(db, code: code) }
+    }
+
+    private static func isValid(_ interval: DateInterval) -> Bool {
+        let duration = interval.duration
+        return duration.isFinite && duration > 0 && duration <= 30
+    }
+
+    private static func isIncomplete(_ reason: MetricUnavailableReason?) -> Bool {
+        reason == .sleepGap || reason == .collectionFailed || reason == .permissionDenied
+    }
+
+    private func dailyTotals(from start: Date?, through end: Date, cpuSeconds: Double?, diskRead: UInt64?,
+                             diskWrite: UInt64?, networkReceive: UInt64?, networkTransmit: UInt64?,
+                             gaps: Int, counterResets: Int, sampleCount: Int = 1) -> [DailyIntervalTotals] {
+        guard let start, end > start else {
+            return [DailyIntervalTotals(dayStart: utcDayStart(end), cpuSeconds: nil, diskRead: nil,
+                                        diskWrite: nil, networkReceive: nil, networkTransmit: nil,
+                                        sampleCount: sampleCount, gaps: gaps, counterResets: counterResets)]
+        }
+
+        let elapsed = end.timeIntervalSince(start)
+        let slices = intervalSlices(from: start, through: end)
+        let cpuAmounts = distribute(cpuSeconds, across: slices, over: elapsed)
+        let readAmounts = distribute(diskRead, across: slices, over: elapsed)
+        let writeAmounts = distribute(diskWrite, across: slices, over: elapsed)
+        let receiveAmounts = distribute(networkReceive, across: slices, over: elapsed)
+        let transmitAmounts = distribute(networkTransmit, across: slices, over: elapsed)
+        return slices.indices.map { index in
+            let isEndpointDay = index == slices.count - 1
+            return DailyIntervalTotals(
+                dayStart: slices[index].dayStart,
+                cpuSeconds: cpuAmounts[index], diskRead: readAmounts[index], diskWrite: writeAmounts[index],
+                networkReceive: receiveAmounts[index], networkTransmit: transmitAmounts[index],
+                sampleCount: isEndpointDay ? sampleCount : 0,
+                gaps: isEndpointDay ? gaps : 0,
+                counterResets: isEndpointDay ? counterResets : 0)
+        }
+    }
+
+    private func intervalSlices(from start: Date, through end: Date) -> [DailyIntervalSlice] {
+        var slices: [DailyIntervalSlice] = []
+        var cursor = start
+        while cursor < end {
+            let dayStart = utcDayStart(cursor)
+            let nextDay = dayStart.addingTimeInterval(86_400)
+            let segmentEnd = min(end, nextDay)
+            slices.append(DailyIntervalSlice(dayStart: dayStart,
+                                             duration: segmentEnd.timeIntervalSince(cursor)))
+            cursor = segmentEnd
+        }
+        let endpointDay = utcDayStart(end)
+        if slices.last?.dayStart != endpointDay {
+            slices.append(DailyIntervalSlice(dayStart: endpointDay, duration: 0))
+        }
+        return slices
+    }
+
+    private func distribute(_ total: Double?, across slices: [DailyIntervalSlice],
+                            over elapsed: TimeInterval) -> [Double?] {
+        guard let total else { return Array(repeating: nil, count: slices.count) }
+        var allocated = 0.0
+        return slices.indices.map { index -> Double? in
+            if index == slices.count - 1 { return max(0, total - allocated) }
+            let amount = min(max(0, total - allocated), total * slices[index].duration / elapsed)
+            allocated += amount
+            return amount
+        }
+    }
+
+    private func distribute(_ total: UInt64?, across slices: [DailyIntervalSlice],
+                            over elapsed: TimeInterval) -> [UInt64?] {
+        guard let total else { return Array(repeating: nil, count: slices.count) }
+        var allocated: UInt64 = 0
+        return slices.indices.map { index -> UInt64? in
+            if index == slices.count - 1 { return total - allocated }
+            let share = (Double(total) * slices[index].duration / elapsed).rounded(.down)
+            let amount = min(total - allocated, UInt64(max(0, share)))
+            allocated += amount
+            return amount
+        }
+    }
+
+    private func upsert(_ totals: DailyIntervalTotals, on db: OpaquePointer) throws {
         let sql = """
         INSERT INTO daily_totals (
             day_start, cpu_seconds, disk_read_bytes, disk_write_bytes,
             network_receive_bytes, network_transmit_bytes, sample_count, gaps, counter_resets
-        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(day_start) DO UPDATE SET
             cpu_seconds = CASE WHEN excluded.cpu_seconds IS NULL THEN daily_totals.cpu_seconds
                 ELSE COALESCE(daily_totals.cpu_seconds, 0) + excluded.cpu_seconds END,
@@ -589,21 +863,22 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
                 ELSE COALESCE(daily_totals.network_receive_bytes, 0) + excluded.network_receive_bytes END,
             network_transmit_bytes = CASE WHEN excluded.network_transmit_bytes IS NULL THEN daily_totals.network_transmit_bytes
                 ELSE COALESCE(daily_totals.network_transmit_bytes, 0) + excluded.network_transmit_bytes END,
-            sample_count = daily_totals.sample_count + 1,
+            sample_count = daily_totals.sample_count + excluded.sample_count,
             gaps = daily_totals.gaps + excluded.gaps,
             counter_resets = daily_totals.counter_resets + excluded.counter_resets
         """
         var statement: OpaquePointer?
         try prepare(sql, statement: &statement, on: db)
         defer { sqlite3_finalize(statement) }
-        sqlite3_bind_int64(statement, 1, Int64(dayStart.timeIntervalSince1970))
-        bind(cpuSeconds, to: statement, index: 2)
-        bind(diskRead, to: statement, index: 3)
-        bind(diskWrite, to: statement, index: 4)
-        bind(networkReceive, to: statement, index: 5)
-        bind(networkTransmit, to: statement, index: 6)
-        sqlite3_bind_int64(statement, 7, Int64(gaps))
-        sqlite3_bind_int64(statement, 8, Int64(counterResets))
+        sqlite3_bind_int64(statement, 1, Int64(totals.dayStart.timeIntervalSince1970))
+        bind(totals.cpuSeconds, to: statement, index: 2)
+        bind(totals.diskRead, to: statement, index: 3)
+        bind(totals.diskWrite, to: statement, index: 4)
+        bind(totals.networkReceive, to: statement, index: 5)
+        bind(totals.networkTransmit, to: statement, index: 6)
+        sqlite3_bind_int64(statement, 7, Int64(totals.sampleCount))
+        sqlite3_bind_int64(statement, 8, Int64(totals.gaps))
+        sqlite3_bind_int64(statement, 9, Int64(totals.counterResets))
         let code = sqlite3_step(statement)
         guard code == SQLITE_DONE else { throw sqliteError(db, code: code) }
     }
@@ -617,7 +892,7 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
         let networkTransmit: MetricReading
     }
 
-    private func recordApplicationTotals(snapshot: MonitoringSnapshot, dayStart: Date,
+    private func recordApplicationTotals(snapshot: MonitoringSnapshot, cutoff: Date,
                                          previousSamples: [String: Date], sameSession: Bool,
                                          hasExistingTotals: Bool,
                                          on db: OpaquePointer) throws -> [String: Date] {
@@ -656,39 +931,67 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
             let receive = combine(value.receive, unit: .bytesPerSecond, timestamp: snapshot.timestamp)
             let transmit = combine(value.transmit, unit: .bytesPerSecond, timestamp: snapshot.timestamp)
             let previous = previousSamples[key]
-            let interval: TimeInterval?
+            let elapsed: TimeInterval?
             if sameSession, let previous {
-                let elapsed = snapshot.timestamp.timeIntervalSince(previous)
-                interval = elapsed > 0 && elapsed <= 30 ? elapsed : nil
+                let duration = snapshot.timestamp.timeIntervalSince(previous)
+                elapsed = duration > 0 && duration <= 30 ? duration : nil
             } else {
-                interval = nil
+                elapsed = nil
             }
-            let gap = previous != nil && (!sameSession || interval == nil)
+            let readings = [cpu, read, write, receive, transmit]
+            let sourceReadings = value.cpu + value.read + value.write + value.receive + value.transmit
+            let hasSleepGap = sourceReadings.contains { $0.unavailableReason == .sleepGap }
+            let interval = hasSleepGap ? nil : elapsed
+            let applicationInterval = interval.flatMap { _ in
+                previous.map { DateInterval(start: $0, end: snapshot.timestamp) }
+            }
+            let networkReceive = try rateTotal(receive, fallbackInterval: applicationInterval, cutoff: cutoff,
+                                               stream: .application(key, .receive), on: db)
+            let networkTransmit = try rateTotal(transmit, fallbackInterval: applicationInterval, cutoff: cutoff,
+                                                stream: .application(key, .transmit), on: db)
+            let gap = previous != nil && (!sameSession || elapsed == nil)
                 || (!sameSession && hasExistingTotals)
-                || [cpu, read, write, receive, transmit].contains { $0.unavailableReason == .sleepGap }
-            let reset = [cpu, read, write, receive, transmit].contains { $0.unavailableReason == .counterReset }
+                || sourceReadings.contains { Self.isIncomplete($0.unavailableReason) }
+                || readings.contains(where: \.isPartial)
+            let reset = sourceReadings.contains { $0.unavailableReason == .counterReset }
             let cpuSeconds = cpu.value.flatMap { value in
                 interval.map { max(0, value) / 100 * Double(max(1, snapshot.system.capacityCores)) * $0 }
             }
             let readBytes = read.value.flatMap { rate in interval.map { Self.byteTotal(rate * $0) } }
             let writeBytes = write.value.flatMap { rate in interval.map { Self.byteTotal(rate * $0) } }
-            let receiveBytes = receive.value.flatMap { rate in interval.map { Self.byteTotal(rate * $0) } }
-            let transmitBytes = transmit.value.flatMap { rate in interval.map { Self.byteTotal(rate * $0) } }
-            sqlite3_bind_int64(statement, 1, Int64(dayStart.timeIntervalSince1970))
-            bind(identity.id, to: statement, index: 2)
-            bind(identity.name, to: statement, index: 3)
-            bind(identity.executablePath, to: statement, index: 4)
-            bind(identity.association.rawValue, to: statement, index: 5)
-            bind(cpuSeconds, to: statement, index: 6)
-            bind(readBytes, to: statement, index: 7)
-            bind(writeBytes, to: statement, index: 8)
-            bind(receiveBytes, to: statement, index: 9)
-            bind(transmitBytes, to: statement, index: 10)
-            sqlite3_bind_int64(statement, 11, Int64(gap ? 1 : 0))
-            sqlite3_bind_int64(statement, 12, Int64(reset ? 1 : 0))
-            let code = sqlite3_step(statement)
-            guard code == SQLITE_DONE else { throw sqliteError(db, code: code) }
-            sqlite3_reset(statement)
+            var totals = dailyTotals(
+                from: applicationInterval?.start, through: snapshot.timestamp,
+                cpuSeconds: cpuSeconds, diskRead: readBytes, diskWrite: writeBytes,
+                networkReceive: nil, networkTransmit: nil,
+                gaps: gap ? 1 : 0, counterResets: reset ? 1 : 0)
+            totals += dailyTotals(
+                from: networkReceive.interval?.start, through: networkReceive.interval?.end ?? snapshot.timestamp,
+                cpuSeconds: nil, diskRead: nil, diskWrite: nil,
+                networkReceive: networkReceive.bytes, networkTransmit: nil,
+                gaps: 0, counterResets: 0, sampleCount: 0)
+            totals += dailyTotals(
+                from: networkTransmit.interval?.start, through: networkTransmit.interval?.end ?? snapshot.timestamp,
+                cpuSeconds: nil, diskRead: nil, diskWrite: nil,
+                networkReceive: nil, networkTransmit: networkTransmit.bytes,
+                gaps: 0, counterResets: 0, sampleCount: 0)
+            for daily in totals where daily.dayStart >= cutoff {
+                sqlite3_bind_int64(statement, 1, Int64(daily.dayStart.timeIntervalSince1970))
+                bind(identity.id, to: statement, index: 2)
+                bind(identity.name, to: statement, index: 3)
+                bind(identity.executablePath, to: statement, index: 4)
+                bind(identity.association.rawValue, to: statement, index: 5)
+                bind(daily.cpuSeconds, to: statement, index: 6)
+                bind(daily.diskRead, to: statement, index: 7)
+                bind(daily.diskWrite, to: statement, index: 8)
+                bind(daily.networkReceive, to: statement, index: 9)
+                bind(daily.networkTransmit, to: statement, index: 10)
+                sqlite3_bind_int64(statement, 11, Int64(daily.sampleCount))
+                sqlite3_bind_int64(statement, 12, Int64(daily.gaps))
+                sqlite3_bind_int64(statement, 13, Int64(daily.counterResets))
+                let code = sqlite3_step(statement)
+                guard code == SQLITE_DONE else { throw sqliteError(db, code: code) }
+                sqlite3_reset(statement)
+            }
             currentApplicationSamples[key] = snapshot.timestamp
         }
         return currentApplicationSamples
@@ -698,12 +1001,45 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
         guard !readings.isEmpty else {
             return MetricReading(unavailable: unit, timestamp: timestamp, reason: .notCollected)
         }
-        if let unavailable = readings.first(where: { !$0.isAvailable }) {
+        let unavailableCount = readings.filter { !$0.isAvailable }.count
+        let availableValues = readings.compactMap(\.value)
+        let hasIncompatibleIntervals = hasIncompatibleMeasurementIntervals(readings)
+        let isPartial = readings.contains(where: \.isPartial) || hasIncompatibleIntervals
+            || (!availableValues.isEmpty && unavailableCount > 0)
+        guard !availableValues.isEmpty else {
+            let unavailable = readings.first(where: { !$0.isAvailable })
             return MetricReading(unavailable: unit, timestamp: timestamp,
-                                 reason: unavailable.unavailableReason ?? .collectionFailed,
-                                 detail: unavailable.detail)
+                                 reason: unavailable?.unavailableReason ?? .collectionFailed,
+                                 detail: unavailable?.detail, isPartial: isPartial)
         }
-        return MetricReading(value: readings.compactMap(\.value).reduce(0, +), unit: unit, timestamp: timestamp)
+        var details = readings.compactMap(\.detail)
+        if unavailableCount > 0 {
+            details.append("Partial: \(unavailableCount) of \(readings.count) members unavailable")
+        }
+        if hasIncompatibleIntervals {
+            details.append("Measurement intervals differ across contributors")
+        }
+        var seenDetails = Set<String>()
+        let detail = details.filter { seenDetails.insert($0).inserted }.joined(separator: "; ")
+        let measurementInterval = commonMeasurementInterval(readings)
+        return MetricReading(value: availableValues.reduce(0, +), unit: unit,
+                             timestamp: measurementInterval?.end ?? timestamp,
+                             detail: detail.isEmpty ? nil : detail, isPartial: isPartial,
+                             measurementInterval: measurementInterval)
+    }
+
+    private func commonMeasurementInterval(_ readings: [MetricReading]) -> DateInterval? {
+        let available = readings.filter(\.isAvailable)
+        guard let interval = available.first?.measurementInterval,
+              available.allSatisfy({ $0.measurementInterval == interval }) else { return nil }
+        return interval
+    }
+
+    private func hasIncompatibleMeasurementIntervals(_ readings: [MetricReading]) -> Bool {
+        let available = readings.filter(\.isAvailable)
+        let intervals = available.compactMap(\.measurementInterval)
+        guard !intervals.isEmpty else { return false }
+        return intervals.count != available.count || intervals.contains { $0 != intervals[0] }
     }
 
     private func execute(_ sql: String, on db: OpaquePointer) throws {
@@ -788,5 +1124,6 @@ private extension MonitoringSnapshot {
                 system.swapUsedBytes, system.swapTotalBytes, system.diskReadBytesPerSecond,
                 system.diskWriteBytesPerSecond, system.networkReceiveBytesPerSecond,
                 system.networkTransmitBytesPerSecond] + system.perCoreCPUPercent
+            + system.networkInterfaces.flatMap { [$0.receiveBytesPerSecond, $0.transmitBytesPerSecond] }
     }
 }

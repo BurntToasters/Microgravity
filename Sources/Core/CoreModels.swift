@@ -30,25 +30,58 @@ public struct MetricReading: Codable, Equatable, Sendable {
     public let timestamp: Date
     public let unavailableReason: MetricUnavailableReason?
     public let detail: String?
+    /// True when an available value only covers the contributors that were collected.
+    public let isPartial: Bool
+    /// The interval represented by a sampled rate, independent of snapshot refresh timing.
+    public let measurementInterval: DateInterval?
 
-    public init(value: Double, unit: MetricUnit, timestamp: Date) {
+    public init(value: Double, unit: MetricUnit, timestamp: Date,
+                detail: String? = nil, isPartial: Bool = false,
+                measurementInterval: DateInterval? = nil) {
         self.value = value
         self.unit = unit
         self.timestamp = timestamp
         self.unavailableReason = nil
-        self.detail = nil
+        self.detail = detail
+        self.isPartial = isPartial
+        self.measurementInterval = measurementInterval
     }
 
     public init(unavailable unit: MetricUnit, timestamp: Date,
-                reason: MetricUnavailableReason, detail: String? = nil) {
+                reason: MetricUnavailableReason, detail: String? = nil, isPartial: Bool = false,
+                measurementInterval: DateInterval? = nil) {
         self.value = nil
         self.unit = unit
         self.timestamp = timestamp
         self.unavailableReason = reason
         self.detail = detail
+        self.isPartial = isPartial
+        self.measurementInterval = measurementInterval
     }
 
     public var isAvailable: Bool { value != nil }
+
+    private enum CodingKeys: String, CodingKey {
+        case value
+        case unit
+        case timestamp
+        case unavailableReason
+        case detail
+        case isPartial
+        case measurementInterval
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        value = try container.decodeIfPresent(Double.self, forKey: .value)
+        unit = try container.decode(MetricUnit.self, forKey: .unit)
+        timestamp = try container.decode(Date.self, forKey: .timestamp)
+        unavailableReason = try container.decodeIfPresent(MetricUnavailableReason.self,
+                                                          forKey: .unavailableReason)
+        detail = try container.decodeIfPresent(String.self, forKey: .detail)
+        isPartial = try container.decodeIfPresent(Bool.self, forKey: .isPartial) ?? false
+        measurementInterval = try container.decodeIfPresent(DateInterval.self, forKey: .measurementInterval)
+    }
 }
 
 public enum MetricKind: String, Codable, Hashable, Sendable, CaseIterable {

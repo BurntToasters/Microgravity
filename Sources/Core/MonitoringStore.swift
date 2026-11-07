@@ -132,13 +132,15 @@ public final class DefaultMonitoringStore: MonitoringStore {
             } catch {
                 historyWriteTask = nil
                 guard generation == publicationGeneration, !isPaused else { return }
+                historyGapPending = true
                 snapshot = snapshot.replacingHistoryFailure(error.localizedDescription)
             }
         }
 
         guard generation == publicationGeneration, !isPaused else { return }
         latestSnapshot = snapshot
-        graphSamples.append(MonitoringGraphSample(snapshot: graphGapPending ? snapshot.markingHistoryGap() : snapshot))
+        graphSamples.append(MonitoringGraphSample(snapshot: graphGapPending
+            ? snapshot.markingHistoryGap(markingAdvancedMetrics: true) : snapshot))
         if graphSamples.count > Self.maximumGraphSamples {
             graphSamples.removeFirst(graphSamples.count - Self.maximumGraphSamples)
         }
@@ -218,7 +220,7 @@ private func utcDayStart(_ date: Date) -> Date {
 }
 
 private extension MonitoringSnapshot {
-    func markingHistoryGap() -> MonitoringSnapshot {
+    func markingHistoryGap(markingAdvancedMetrics: Bool = false) -> MonitoringSnapshot {
         func gap(_ reading: MetricReading) -> MetricReading {
             guard reading.isAvailable else { return reading }
             return MetricReading(unavailable: reading.unit, timestamp: reading.timestamp, reason: .sleepGap)
@@ -249,10 +251,12 @@ private extension MonitoringSnapshot {
                 networkReceiveBytesPerSecond: gap(group.networkReceiveBytesPerSecond),
                 networkTransmitBytesPerSecond: gap(group.networkTransmitBytesPerSecond))
         }
+        let nextAdvancedMetrics = markingAdvancedMetrics
+            ? advancedMetrics.mapValues(gap) : advancedMetrics
         return MonitoringSnapshot(timestamp: timestamp, system: nextSystem, processes: processes,
                                   processGroups: nextGroups, startupItems: startupItems, services: services,
                                   users: users, discoveryCoverage: discoveryCoverage,
-                                  capabilities: capabilities, advancedMetrics: advancedMetrics,
+                                  capabilities: capabilities, advancedMetrics: nextAdvancedMetrics,
                                   history: history, applicationHistory: applicationHistory)
     }
 

@@ -4,6 +4,12 @@ import { pathToFileURL } from "node:url";
 import { fail, root, versionInfo, writeIfChanged } from "./lib/core.mjs";
 import { expectedChangelog } from "./lib/changelog.mjs";
 
+// xcconfig treats // as a comment, so the slashes are escaped as `:/$()/`; `$()` expands to nothing.
+export function sparkleFeedValue(version) {
+  const appcast = version.includes("-beta.") ? "appcast-beta.xml" : "appcast.xml";
+  return `https:/$()/github.com/BurntToasters/Microgravity/releases/latest/download/${appcast}`;
+}
+
 export function expectedVersionConfig(base = root) {
   const { version, buildNumber } = versionInfo(base);
   return [
@@ -11,7 +17,7 @@ export function expectedVersionConfig(base = root) {
     `CURRENT_PROJECT_VERSION = ${buildNumber}`,
     "SPARKLE_PUBLIC_KEY = $(MICROGRAVITY_SPARKLE_PUBLIC_KEY)",
     "SPARKLE_ENABLE_AUTOMATIC_CHECKS = NO",
-    `SPARKLE_FEED_URL = https://github.com/BurntToasters/Microgravity/releases/latest/download/${version.includes("-beta.") ? "appcast-beta.xml" : "appcast.xml"}`,
+    `SPARKLE_FEED_URL = ${sparkleFeedValue(version)}`,
     "",
   ].join("\n");
 }

@@ -43,6 +43,10 @@ extension HelperSamplingClient: AdvancedSamplingClient {}
 /// A single in-flight helper sample is refreshed at most every five seconds.
 /// Callers receive a cached snapshot immediately; readings retain capture timestamps.
 actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
+    /// Maximum age of a helper reading, measured from its capture time to read time.
+    static let maximumSampleAge: TimeInterval = 30
+    private static let maximumClockSkew: TimeInterval = 1
+
     private let client: any AdvancedSamplingClient
     private let now: @Sendable () -> Date
     private let processIdentities: @Sendable () -> [Int32: ProcessIdentity]
@@ -72,12 +76,40 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
             refreshRequestCount += 1
             Task { await self.refresh() }
         }
-        if let completed = lastCompleted, currentTime.timeIntervalSince(completed) > 30 {
+        if let completed = lastCompleted, currentTime.timeIntervalSince(completed) > Self.maximumSampleAge {
             let unavailable = MetricAvailability(available: false, reason: .collectionFailed, detail: "Advanced sample is stale")
             return AdvancedMetricsSnapshot(capabilities: Dictionary(uniqueKeysWithValues:
                 [MetricKind.processNetwork, .processNetworkReceive, .processNetworkTransmit, .processGPUTime, .gpu, .energy].map { ($0, unavailable) }))
         }
-        return cache
+        return freshReadings(in: cache, at: currentTime)
+    }
+
+    /// Drops readings whose own capture time is older than `maximumSampleAge` (or implausibly in the future)
+    /// and marks their kinds unavailable, so a cached refresh cannot outlive its helper samples.
+    private func freshReadings(in snapshot: AdvancedMetricsSnapshot, at currentTime: Date) -> AdvancedMetricsSnapshot {
+        func isFresh(_ reading: MetricReading) -> Bool {
+            let age = currentTime.timeIntervalSince(reading.timestamp)
+            return age <= Self.maximumSampleAge && age >= -Self.maximumClockSkew
+        }
+        var system = snapshot.system
+        var perProcess = snapshot.perProcess
+        var capabilities = snapshot.capabilities
+        var staleKinds = Set<MetricKind>()
+        for (kind, reading) in snapshot.system where !isFresh(reading) {
+            system[kind] = nil
+            staleKinds.insert(kind)
+        }
+        for (identity, readings) in snapshot.perProcess {
+            for (kind, reading) in readings where !isFresh(reading) {
+                perProcess[identity]?[kind] = nil
+                staleKinds.insert(kind)
+            }
+        }
+        perProcess = perProcess.filter { !$0.value.isEmpty }
+        for kind in staleKinds {
+            capabilities[kind] = MetricAvailability(available: false, reason: .collectionFailed, detail: "Advanced sample is stale")
+        }
+        return AdvancedMetricsSnapshot(system: system, perProcess: perProcess, capabilities: capabilities)
     }
 
     func refreshRequestCountForTesting() -> Int { refreshRequestCount }
@@ -95,7 +127,7 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
         var capabilities: [MetricKind: MetricAvailability] = [:]
         let networkKinds: [MetricKind] = [.processNetwork, .processNetworkReceive, .processNetworkTransmit]
         if net.error == nil, let data = net.output, data.count <= AdvancedMetricsParser.maximumBytes,
-           abs(responseTime.timeIntervalSince(net.capturedAt)) <= 30,
+           abs(responseTime.timeIntervalSince(net.capturedAt)) <= Self.maximumSampleAge,
            let text = String(data: data, encoding: .utf8), AdvancedMetricsParser.hasNettopHeader(text) {
             perProcess = network.update(AdvancedMetricsParser.nettop(text), before: before, after: after, at: net.capturedAt)
             for kind in networkKinds {
@@ -107,7 +139,7 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
             for kind in networkKinds { capabilities[kind] = MetricAvailability(available: false, reason: .collectionFailed, detail: net.error ?? "Network sample unavailable or invalid") }
         }
         var system: [MetricKind: MetricReading] = [:]
-        if power.error == nil, let data = power.output, abs(responseTime.timeIntervalSince(power.capturedAt)) <= 30 {
+        if power.error == nil, let data = power.output, abs(responseTime.timeIntervalSince(power.capturedAt)) <= Self.maximumSampleAge {
             let parsed = AdvancedMetricsParser.power(data)
             if let percent = parsed.gpuPercent {
                 system[.gpu] = MetricReading(value: percent, unit: .percent, timestamp: power.capturedAt)

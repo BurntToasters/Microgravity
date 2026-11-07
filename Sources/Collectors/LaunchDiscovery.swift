@@ -10,6 +10,31 @@ struct LaunchDiscoveryResult {
 }
 
 enum LaunchDiscovery {
+    static let maximumPlistBytes = 1_048_576
+
+    private enum BoundedReadFailure: LocalizedError {
+        case open(Int32)
+        case inspect(Int32)
+        case notRegularFile
+        case exceedsMaximum
+        case read(Int32)
+
+        var errorDescription: String? {
+            switch self {
+            case .open(let code):
+                return "Could not open file: \(String(cString: strerror(code)))"
+            case .inspect(let code):
+                return "Could not inspect opened file: \(String(cString: strerror(code)))"
+            case .notRegularFile:
+                return "The opened path is not a regular file."
+            case .exceedsMaximum:
+                return "plist exceeds the 1 MiB read bound."
+            case .read(let code):
+                return "Could not read file: \(String(cString: strerror(code)))"
+            }
+        }
+    }
+
     private struct DirectorySpec {
         let path: String
         let kind: DiscoveredEntryKind
@@ -65,13 +90,17 @@ enum LaunchDiscovery {
                 let data: Data
                 let propertyList: [String: Any]
                 do {
-                    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-                    guard (attributes[.size] as? NSNumber)?.intValue ?? 0 <= 1_048_576 else {
-                        recordFailure("Skipped \(url.path): plist exceeds the 1 MiB read bound.",
-                                      isService: directory.isService)
-                        continue
-                    }
-                    data = try Data(contentsOf: url, options: [.mappedIfSafe])
+                    data = try readBoundedRegularFile(at: url.path)
+                } catch BoundedReadFailure.exceedsMaximum {
+                    recordFailure("Skipped \(url.path): plist exceeds the 1 MiB read bound.",
+                                  isService: directory.isService)
+                    continue
+                } catch {
+                    recordFailure("Could not read \(url.path): \(error.localizedDescription)",
+                                  isService: directory.isService)
+                    continue
+                }
+                do {
                     let value = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
                     guard let dictionary = value as? [String: Any] else {
                         recordFailure("Could not parse \(url.path) as a property-list dictionary.",
@@ -109,6 +138,36 @@ enum LaunchDiscovery {
             startupCoverage: coverage(hadFailure: startupHadFailure, reasons: startupReasons),
             serviceCoverage: coverage(hadFailure: serviceHadFailure, reasons: serviceReasons),
             programPaths: programPaths)
+    }
+
+    static func readBoundedRegularFile(at path: String) throws -> Data {
+        let descriptor = path.withCString { open($0, O_RDONLY | O_NONBLOCK | O_CLOEXEC) }
+        guard descriptor >= 0 else { throw BoundedReadFailure.open(errno) }
+        defer { close(descriptor) }
+
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0 else { throw BoundedReadFailure.inspect(errno) }
+        guard metadata.st_mode & S_IFMT == S_IFREG else { throw BoundedReadFailure.notRegularFile }
+        guard metadata.st_size <= off_t(maximumPlistBytes) else { throw BoundedReadFailure.exceedsMaximum }
+
+        let initialCapacity = metadata.st_size > 0 ? Int(metadata.st_size) : 0
+        var data = Data(capacity: initialCapacity)
+        var buffer = [UInt8](repeating: 0, count: 16 * 1024)
+        while true {
+            let remaining = maximumPlistBytes + 1 - data.count
+            guard remaining > 0 else { throw BoundedReadFailure.exceedsMaximum }
+            let count = buffer.withUnsafeMutableBytes { bytes in
+                read(descriptor, bytes.baseAddress, min(bytes.count, remaining))
+            }
+            if count == 0 { return data }
+            if count < 0 {
+                let code = errno
+                if code == EINTR { continue }
+                throw BoundedReadFailure.read(code)
+            }
+            data.append(contentsOf: buffer.prefix(count))
+            if data.count > maximumPlistBytes { throw BoundedReadFailure.exceedsMaximum }
+        }
     }
 
     static func isPropertyListName(_ name: String) -> Bool {

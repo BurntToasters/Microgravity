@@ -6,14 +6,40 @@ import IOKit.storage
 import MachO
 import SystemConfiguration
 
+struct ProcessIdentityCoverage {
+    enum Omission: Equatable {
+        case initialIdentityUnavailable
+        case revalidationUnavailable
+        case identityChanged
+    }
+
+    private(set) var omissions: [Omission] = []
+
+    var complete: Bool { omissions.isEmpty }
+
+    mutating func include(initial: ProcessIdentity?, revalidated: ProcessIdentity?) -> Bool {
+        guard let initial else {
+            omissions.append(.initialIdentityUnavailable)
+            return false
+        }
+        guard let revalidated else {
+            omissions.append(.revalidationUnavailable)
+            return false
+        }
+        guard initial == revalidated else {
+            omissions.append(.identityChanged)
+            return false
+        }
+        return true
+    }
+}
+
 public actor SystemMonitorCollector: MonitoringCollecting {
     private enum CounterKey: Hashable {
         case coreTotal(Int)
         case coreActive(Int)
         case diskRead
         case diskWrite
-        case networkReceive(String)
-        case networkTransmit(String)
     }
 
     private enum ProcessCounterKey: Hashable {
@@ -56,7 +82,7 @@ public actor SystemMonitorCollector: MonitoringCollecting {
     private let advancedCollector: (any AdvancedMetricsCollecting)?
     private var systemCounters = CounterDeltaTracker<CounterKey>()
     private var processCounters = CounterDeltaTracker<ProcessCounterKey>()
-    private var interfaceNames = Set<String>()
+    private var networkCounterTracker = NetworkInterfaceCounterTracker()
     private var memoryPressureSource: DispatchSourceMemoryPressure?
     private var pressureLevel: MemoryPressureLevel?
     private var pressureTimestamp: Date?
@@ -83,20 +109,24 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         let processes = baseProcesses.map { process in
             var values = advanced.perProcess[process.id] ?? [:]
             if values[.processGPUTime] == nil {
-                values[.processGPUTime] = MetricReading(unavailable: .seconds, timestamp: timestamp,
-                                                        reason: .unsupported)
+                values[.processGPUTime] = Self.missingAdvancedReading(.processGPUTime, unit: .seconds,
+                                                                      timestamp: timestamp, snapshot: advanced,
+                                                                      hasProvider: advancedCollector != nil)
             }
             if values[.processNetwork] == nil {
-                values[.processNetwork] = MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp,
-                                                        reason: .unsupported)
+                values[.processNetwork] = Self.missingAdvancedReading(.processNetwork, unit: .bytesPerSecond,
+                                                                      timestamp: timestamp, snapshot: advanced,
+                                                                      hasProvider: advancedCollector != nil)
             }
             if values[.processNetworkReceive] == nil {
-                values[.processNetworkReceive] = MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp,
-                                                               reason: .unsupported)
+                values[.processNetworkReceive] = Self.missingAdvancedReading(.processNetworkReceive,
+                    unit: .bytesPerSecond, timestamp: timestamp, snapshot: advanced,
+                    hasProvider: advancedCollector != nil)
             }
             if values[.processNetworkTransmit] == nil {
-                values[.processNetworkTransmit] = MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp,
-                                                               reason: .unsupported)
+                values[.processNetworkTransmit] = Self.missingAdvancedReading(.processNetworkTransmit,
+                    unit: .bytesPerSecond, timestamp: timestamp, snapshot: advanced,
+                    hasProvider: advancedCollector != nil)
             }
             return ProcessSnapshot(id: process.id, parentIdentity: process.parentIdentity,
                                    childIdentities: process.childIdentities, name: process.name,
@@ -151,7 +181,7 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             .networkThroughput: Self.availability(for: [network.receiveRate, network.transmitRate]),
             .processes: MetricAvailability(available: processResult.complete,
                                           reason: processResult.complete ? nil : .collectionFailed,
-                                          detail: processResult.complete ? nil : "Process enumeration was capped or incomplete."),
+                                          detail: processResult.complete ? nil : "Process enumeration was capped or omitted processes with unreadable, exited, or changed identities."),
             .processIO: Self.availability(for: processes.first?.diskReadBytesPerSecond),
             .startupItems: MetricAvailability(available: inventory.startupCoverage.complete,
                                               reason: inventory.startupCoverage.complete ? nil : .collectionFailed),
@@ -176,7 +206,7 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         allCapabilities.merge(advanced.capabilities) { _, incoming in incoming }
         let coverage: [String: DiscoveryCoverage] = [
             "processes": DiscoveryCoverage(complete: processResult.complete,
-                                           reasons: processResult.complete ? [] : ["Process enumeration reached its bounded limit or a process exited during collection."]),
+                                           reasons: processResult.complete ? [] : ["Process enumeration was capped or omitted processes with unreadable, exited, or changed identities."]),
             "startupItems": inventory.startupCoverage,
             "services": inventory.serviceCoverage,
             "users": sessions.coverage,
@@ -354,60 +384,15 @@ public actor SystemMonitorCollector: MonitoringCollecting {
 
     private func collectNetwork(at timestamp: Date) -> (receiveRate: MetricReading, transmitRate: MetricReading,
                                                         interfaces: [NetworkInterfaceSnapshot]) {
-        var addresses: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&addresses) == 0, let first = addresses else {
-            clearNetworkBaselines()
+        do {
+            let result = networkCounterTracker.collect(try NetworkInterfaceReader.read(), at: timestamp)
+            return (result.receiveRate, result.transmitRate, result.interfaces)
+        } catch {
+            networkCounterTracker.clear()
             let unavailable = MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp,
-                                            reason: .collectionFailed, detail: "getifaddrs failed: \(errno)")
+                                            reason: .collectionFailed, detail: String(describing: error))
             return (unavailable, unavailable, [])
         }
-        defer { freeifaddrs(addresses) }
-        var records: [String: (isUp: Bool, receive: UInt64, transmit: UInt64)] = [:]
-        var cursor: UnsafeMutablePointer<ifaddrs>? = first
-        while let current = cursor {
-            let item = current.pointee
-            if let address = item.ifa_addr, Int32(address.pointee.sa_family) == AF_LINK,
-               let rawData = item.ifa_data, let namePointer = item.ifa_name {
-                let data = rawData.assumingMemoryBound(to: if_data.self).pointee
-                let name = String(cString: namePointer)
-                records[name] = (UInt32(item.ifa_flags) & UInt32(IFF_UP) != 0,
-                                 UInt64(data.ifi_ibytes), UInt64(data.ifi_obytes))
-            }
-            cursor = item.ifa_next
-        }
-        let activeKeys = Set(records.keys)
-        for name in interfaceNames.subtracting(activeKeys) {
-            systemCounters.remove(.networkReceive(name))
-            systemCounters.remove(.networkTransmit(name))
-        }
-        interfaceNames = activeKeys
-        guard !records.isEmpty else {
-            clearNetworkBaselines()
-            let unavailable = MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp,
-                                            reason: .collectionFailed, detail: "No network interface counters found")
-            return (unavailable, unavailable, [])
-        }
-
-        var interfaces: [NetworkInterfaceSnapshot] = []
-        for (name, data) in records.sorted(by: { $0.key < $1.key }) {
-            let receiveResult = systemCounters.update(data.receive, for: .networkReceive(name), at: timestamp)
-            let transmitResult = systemCounters.update(data.transmit, for: .networkTransmit(name), at: timestamp)
-            interfaces.append(NetworkInterfaceSnapshot(
-                name: name, isUp: data.isUp,
-                receiveBytesPerSecond: receiveResult.reading(unit: .bytesPerSecond, timestamp: timestamp) {
-                    Double($0) / $1
-                },
-                transmitBytesPerSecond: transmitResult.reading(unit: .bytesPerSecond, timestamp: timestamp) {
-                    Double($0) / $1
-                },
-                receiveTotalBytes: MetricReading(value: Double(data.receive), unit: .bytes, timestamp: timestamp),
-                transmitTotalBytes: MetricReading(value: Double(data.transmit), unit: .bytes, timestamp: timestamp)))
-        }
-        let receive = Self.combineRates(interfaces.map(\.receiveBytesPerSecond), unit: .bytesPerSecond,
-                                        timestamp: timestamp)
-        let transmit = Self.combineRates(interfaces.map(\.transmitBytesPerSecond), unit: .bytesPerSecond,
-                                         timestamp: timestamp)
-        return (receive, transmit, interfaces)
     }
 
     private func collectProcesses(at timestamp: Date, capacityCores: Int) -> (processes: [RawProcess], complete: Bool) {
@@ -425,9 +410,13 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         var records: [RawProcess] = []
         records.reserveCapacity(count)
         var identities = Set<ProcessIdentity>()
+        var identityCoverage = ProcessIdentityCoverage()
 
         for rawPID in pids.prefix(count) where rawPID > 0 {
-            guard let bsd = processBSDInfo(rawPID) else { continue }
+            guard let bsd = processBSDInfo(rawPID) else {
+                _ = identityCoverage.include(initial: nil, revalidated: nil)
+                continue
+            }
             let identity = ProcessIdentity(pid: Int32(rawPID),
                                            startTime: ProcessStartTime(secondsSinceEpoch: Int64(bsd.pbi_start_tvsec),
                                                                        microseconds: Int32(bsd.pbi_start_tvusec)))
@@ -450,9 +439,9 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             }
 
             var usage = rusage_info_v4()
-            var raw: UnsafeMutableRawPointer? = withUnsafeMutablePointer(to: &usage) { UnsafeMutableRawPointer($0) }
-            let usageStatus = withUnsafeMutablePointer(to: &raw) { buffer in
-                proc_pid_rusage(rawPID, RUSAGE_INFO_V4, buffer)
+            let usageStatus = withUnsafeMutableBytes(of: &usage) { bytes in
+                proc_pid_rusage(rawPID, RUSAGE_INFO_V4,
+                                bytes.baseAddress!.assumingMemoryBound(to: rusage_info_t?.self))
             }
             let usageErrno = errno
             let usageAvailable = usageStatus == 0
@@ -480,10 +469,12 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                 diskWriteRate = MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp, reason: reason)
             }
 
-            guard let confirmed = processBSDInfo(rawPID),
-                  Int32(rawPID) == identity.pid,
-                  ProcessStartTime(secondsSinceEpoch: Int64(confirmed.pbi_start_tvsec),
-                                   microseconds: Int32(confirmed.pbi_start_tvusec)) == identity.startTime else {
+            let confirmedIdentity = processBSDInfo(rawPID).map { confirmed in
+                ProcessIdentity(pid: Int32(rawPID),
+                                startTime: ProcessStartTime(secondsSinceEpoch: Int64(confirmed.pbi_start_tvsec),
+                                                            microseconds: Int32(confirmed.pbi_start_tvusec)))
+            }
+            guard identityCoverage.include(initial: identity, revalidated: confirmedIdentity) else {
                 processCounters.remove(.cpu(identity))
                 processCounters.remove(.diskRead(identity))
                 processCounters.remove(.diskWrite(identity))
@@ -500,7 +491,8 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         processCounters.retain(Set(identities.flatMap {
             [ProcessCounterKey.cpu($0), .diskRead($0), .diskWrite($0)]
         }))
-        let complete = Int(pidBytes) / MemoryLayout<pid_t>.stride <= maximumPIDCount
+        let complete = identityCoverage.complete
+            && Int(pidBytes) / MemoryLayout<pid_t>.stride <= maximumPIDCount
             && count < pids.count
         return (records, complete)
     }
@@ -699,12 +691,15 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         process.executablePath == "/sbin/launchd" || process.name == "launchd"
     }
 
-    private func clearNetworkBaselines() {
-        for name in interfaceNames {
-            systemCounters.remove(.networkReceive(name))
-            systemCounters.remove(.networkTransmit(name))
+    private static func missingAdvancedReading(_ kind: MetricKind, unit: MetricUnit, timestamp: Date,
+                                               snapshot: AdvancedMetricsSnapshot,
+                                               hasProvider: Bool) -> MetricReading {
+        if let capability = snapshot.capabilities[kind], !capability.available {
+            return MetricReading(unavailable: unit, timestamp: timestamp,
+                                 reason: capability.reason ?? .notCollected, detail: capability.detail)
         }
-        interfaceNames.removeAll()
+        return MetricReading(unavailable: unit, timestamp: timestamp,
+                             reason: hasProvider ? .notCollected : .unsupported)
     }
 
     private static func fixedCString<T>(_ value: T) -> String {
@@ -720,20 +715,47 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             return MetricReading(unavailable: unit, timestamp: timestamp, reason: .notCollected)
         }
         let availableValues = readings.compactMap(\.value)
+        let unavailableCount = readings.count - availableValues.count
+        var isPartial = readings.contains(where: \.isPartial)
+            || (!availableValues.isEmpty && unavailableCount > 0)
         guard !availableValues.isEmpty else {
-            let unavailable = readings.first(where: { !$0.isAvailable })
+            let unavailableReadings = readings.filter { !$0.isAvailable }
+            let unavailable = unavailableReadings.first(where: {
+                $0.unavailableReason == .permissionDenied
+                    || $0.unavailableReason == .collectionFailed
+                    || $0.unavailableReason == .sleepGap
+            }) ?? unavailableReadings.first(where: { $0.unavailableReason == .counterReset })
+                ?? unavailableReadings.first(where: {
+                    $0.unavailableReason == .processExited || $0.unavailableReason == .identityChanged
+                }) ?? unavailableReadings.first
             return MetricReading(unavailable: unit, timestamp: timestamp,
                                  reason: unavailable?.unavailableReason ?? .collectionFailed,
-                                 detail: unavailable?.detail)
+                                 detail: unavailable?.detail, isPartial: isPartial)
         }
         let total = availableValues.reduce(0, +)
-        let unavailableCount = readings.count - availableValues.count
-        if unavailableCount > 0 {
-            return MetricReading(value: total, unit: unit, timestamp: timestamp,
-                                 unavailableReason: nil,
-                                 detail: "Partial: \(unavailableCount) of \(readings.count) members unavailable")
+        let availableReadings = readings.filter(\.isAvailable)
+        let measurementInterval: DateInterval?
+        if let firstInterval = availableReadings.first?.measurementInterval,
+           availableReadings.allSatisfy({ $0.measurementInterval == firstInterval }) {
+            measurementInterval = firstInterval
+        } else {
+            measurementInterval = nil
         }
-        return MetricReading(value: total, unit: unit, timestamp: timestamp)
+        let hasExplicitMeasurementInterval = availableReadings.contains { $0.measurementInterval != nil }
+        let hasIncompatibleMeasurementIntervals = hasExplicitMeasurementInterval && measurementInterval == nil
+        if hasIncompatibleMeasurementIntervals { isPartial = true }
+        var details = readings.compactMap(\.detail)
+        if unavailableCount > 0 {
+            details.append("Partial: \(unavailableCount) of \(readings.count) members unavailable")
+        }
+        if hasIncompatibleMeasurementIntervals {
+            details.append("Some rate contributors have missing or incompatible measurement intervals")
+        }
+        var seenDetails = Set<String>()
+        let detail = details.filter { seenDetails.insert($0).inserted }.joined(separator: "; ")
+        return MetricReading(value: total, unit: unit, timestamp: timestamp,
+                             detail: detail.isEmpty ? nil : detail, isPartial: isPartial,
+                             measurementInterval: measurementInterval)
     }
 
     private func startMemoryPressureSourceIfNeeded() {
@@ -819,16 +841,5 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                                       detail: unavailable?.detail)
         }
         return MetricAvailability(available: true)
-    }
-}
-
-private extension MetricReading {
-    init(value: Double, unit: MetricUnit, timestamp: Date,
-         unavailableReason: MetricUnavailableReason?, detail: String?) {
-        self.value = value
-        self.unit = unit
-        self.timestamp = timestamp
-        self.unavailableReason = unavailableReason
-        self.detail = detail
     }
 }

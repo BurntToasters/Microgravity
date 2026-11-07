@@ -30,6 +30,7 @@ final class SettingsViewController: NSViewController {
     private let loginItemButton = NSButton(title: "Turn On at Login", target: nil, action: nil)
     private let updateCheckButton = NSButton(title: "Check for Updates", target: nil, action: nil)
     private let updateInstallButton = NSButton(title: "Install Update…", target: nil, action: nil)
+    private var appActivationObserver: NSObjectProtocol?
 
     init(dependencies: PageDependencies) {
         self.dependencies = dependencies
@@ -37,6 +38,12 @@ final class SettingsViewController: NSViewController {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    deinit {
+        if let appActivationObserver {
+            NotificationCenter.default.removeObserver(appActivationObserver)
+        }
+    }
 
     override func loadView() {
         view = DynamicWindowBackgroundView()
@@ -72,13 +79,25 @@ final class SettingsViewController: NSViewController {
             header.widthAnchor.constraint(equalTo: content.widthAnchor)
         ])
         refreshSamplingState()
+        synchronizeAppearanceButtons()
+        synchronizeIntervalButtons()
         dependencies.integrations.onStatusChange = { [weak self] in self?.updateIntegrationControls() }
         updateIntegrationControls()
-        Task { [weak self] in
-            guard let self else { return }
-            await dependencies.integrations.refreshStatus()
-            updateIntegrationControls()
+        appActivationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refreshIntegrationStatus() }
         }
+    }
+
+    override func viewWillAppear() {
+        super.viewWillAppear()
+        synchronizeAppearanceButtons()
+        synchronizeIntervalButtons()
+        refreshSamplingState()
+        refreshIntegrationStatus()
     }
 
     private func makeAppearanceSection() -> NSView {
@@ -224,6 +243,7 @@ final class SettingsViewController: NSViewController {
         dependencies.monitoringStore.setInterval(interval)
         UserDefaults.standard.set(interval.rawValue, forKey: "monitoring.refreshInterval")
         synchronizeIntervalButtons()
+        refreshSamplingState()
     }
 
     @objc private func toggleSampling() {
@@ -264,13 +284,27 @@ final class SettingsViewController: NSViewController {
     }
 
     @objc private func toggleLoginItem() {
-        let enabled: Bool
         switch dependencies.integrations.status.loginItem {
-        case .enabled: enabled = false
-        default: enabled = true
+        case .requiresApproval:
+            let integrations = dependencies.integrations
+            runIntegrationAction { await integrations.openLoginItemSettings() }
+        case .enabled:
+            let integrations = dependencies.integrations
+            runIntegrationAction { await integrations.setLaunchAtLogin(false) }
+        case .disabled, .failed:
+            let integrations = dependencies.integrations
+            runIntegrationAction { await integrations.setLaunchAtLogin(true) }
+        case .unavailable:
+            break
         }
+    }
+
+    private func refreshIntegrationStatus() {
         let integrations = dependencies.integrations
-        runIntegrationAction { await integrations.setLaunchAtLogin(enabled) }
+        Task { [weak self] in
+            await integrations.refreshStatus()
+            self?.updateIntegrationControls()
+        }
     }
 
     @objc private func checkForUpdates() {

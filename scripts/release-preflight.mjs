@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { expectedBranch, output, repository, repositoryUrl, root, run, versionInfo } from "./lib/core.mjs";
+import { githubRun } from "./lib/github.mjs";
 import { releaseNotes } from "./lib/changelog.mjs";
 import { validateWorkspace } from "./validate.mjs";
 
@@ -10,6 +11,18 @@ const canonicalOrigin = new RegExp(`^(?:https://github\\.com/|git@github\\.com:)
 
 export function isCanonicalOrigin(origin) {
   return canonicalOrigin.test(origin ?? "");
+}
+
+const commitSha = /^[0-9a-f]{40}$/i;
+
+// Drafts must be created against the verified commit SHA. A branch-name target is tagged at whatever
+// the branch head is at publish time, so it is rejected even when it currently points at the same commit.
+export function draftTargetProblem(targetCommitish, commit, tag) {
+  if (!targetCommitish || targetCommitish === commit) return null;
+  if (!commitSha.test(targetCommitish)) {
+    return `${tag} draft targets branch ${targetCommitish}, not commit ${commit}; a branch-targeted draft is tagged at the branch head at publish time. Delete the draft (gh release delete ${tag} --repo ${repository} --yes) and re-run the release.`;
+  }
+  return `${tag} draft targets commit ${targetCommitish}, not this release commit ${commit}. Delete the draft and re-run the release.`;
 }
 
 export function validateRepositoryState({ version, branch, origin, status, head, remoteHead, upstream, tagHead = null, draftTarget = null }) {
@@ -21,7 +34,8 @@ export function validateRepositoryState({ version, branch, origin, status, head,
   if (upstream !== `origin/${branch}`) failures.push(`branch must track origin/${branch}`);
   if (head !== remoteHead) failures.push("HEAD is not pushed to its canonical origin branch");
   if (tagHead && tagHead !== head) failures.push(`existing v${version} tag targets another commit`);
-  if (draftTarget && ![head, branch].includes(draftTarget)) failures.push(`existing v${version} draft targets another commit`);
+  const draftProblem = draftTargetProblem(draftTarget, head, `v${version}`);
+  if (draftProblem) failures.push(draftProblem);
   return failures;
 }
 
@@ -36,6 +50,11 @@ export function sparkleCredentialSources(environment = process.env) {
 
 function optional(command, args) {
   const result = run(command, args, { capture: true, allowFailure: true });
+  return result.status === 0 ? String(result.stdout).trim() : null;
+}
+
+function optionalGitHub(args) {
+  const result = githubRun(args, { capture: true, allowFailure: true });
   return result.status === 0 ? String(result.stdout).trim() : null;
 }
 
@@ -76,7 +95,7 @@ function checkReleaseCredentials(failures) {
     const keys = optional("gpg", ["--batch", "--list-secret-keys", "--keyid-format", "LONG"]) ?? "";
     if (!keys.includes(process.env.MICROGRAVITY_GPG_KEY)) failures.push("configured GPG signing key is not available in the local key store");
   }
-  const ghStatus = run("gh", ["auth", "status", "--hostname", "github.com"], { capture: true, allowFailure: true });
+  const ghStatus = githubRun(["auth", "status", "--hostname", "github.com"], { capture: true, allowFailure: true });
   if (ghStatus.status !== 0) failures.push("GitHub CLI authentication for github.com is required");
 }
 
@@ -94,7 +113,8 @@ export function runPreflight({ release = false } = {}) {
   const branch = output("git", ["branch", "--show-current"]);
   const origin = output("git", ["remote", "get-url", "origin"]);
   const tagHead = optional("git", ["rev-list", "-n", "1", info.tag]);
-  const draftTarget = optional("gh", ["api", `repos/${repository}/releases/tags/${info.tag}`, "--jq", ".target_commitish"]);
+  // Only unpublished drafts are checked here; published releases are covered by the tagHead check.
+  const draftTarget = optionalGitHub(["api", `repos/${repository}/releases/tags/${info.tag}`, "--jq", "select(.draft) | .target_commitish"]);
   const state = {
     version: info.version,
     branch,
@@ -109,7 +129,7 @@ export function runPreflight({ release = false } = {}) {
   failures.push(...validateRepositoryState(state));
   failures.push(...buildNumberFailures(info.buildNumber, releasedBuildNumbers(info.tag)));
 
-  const stableTags = optional("gh", ["release", "list", "--repo", repository, "--json", "tagName,isDraft", "--jq", ".[] | select(.isDraft == false) | .tagName"])?.split(/\s+/).filter(Boolean) ?? [];
+  const stableTags = optionalGitHub(["release", "list", "--repo", repository, "--json", "tagName,isDraft", "--jq", ".[] | select(.isDraft == false) | .tagName"])?.split(/\s+/).filter(Boolean) ?? [];
   if (!betaReleaseAllowed(info.version, stableTags)) failures.push("beta publishing is blocked until a stable release is public");
   if (release) {
     checkReleaseCredentials(failures);

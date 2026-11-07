@@ -19,3 +19,10 @@ export function writeAppcast(directory, data, baseUrl = repositoryUrl) {
   fs.writeFileSync(destination, renderAppcast(data.info, data, baseUrl));
   return destination;
 }
+
+export function copyStableAppcastAsBetaFallback(stableAppcast) {
+  if (path.basename(stableAppcast) !== appcastFilename("stable")) throw new Error("beta fallback must copy the stable appcast");
+  const destination = path.join(path.dirname(stableAppcast), appcastFilename("beta"));
+  fs.copyFileSync(stableAppcast, destination);
+  return destination;
+}

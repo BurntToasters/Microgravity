@@ -10,7 +10,7 @@
 #import "SUAppcastItem.h"
 #import "SUHost.h"
 #import "SULocalizations.h"
-#import "SULog.h"
+#import "SUlog.h"
 
 
 #include "AppKitPrevention.h"

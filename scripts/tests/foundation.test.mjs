@@ -6,11 +6,11 @@ import test from "node:test";
 import { discoverSources, renderProject } from "../generate-project.mjs";
 import { buildNumberFailures, validateRepositoryState, sparkleCredentialSources } from "../release-preflight.mjs";
 import { gpgSigningInvocation, sparkleSigningInvocation } from "../release.mjs";
-import { childEnvironment, versionInfo } from "../lib/core.mjs";
+import { childEnvironment, root, versionInfo } from "../lib/core.mjs";
 import { checkProject, releaseSettingsFailures } from "../validate.mjs";
 import { appcastFilename, renderAppcast } from "../lib/appcast.mjs";
 import { expectedChangelog } from "../lib/changelog.mjs";
-import { expectedPackageLock } from "../sync-version.mjs";
+import { expectedPackageLock, sparkleFeedValue } from "../sync-version.mjs";
 import { validateRecord, sessionHours } from "../release-session.mjs";
 
 function temporaryProject(t) {
@@ -130,6 +130,20 @@ test("version synchronization updates both lockfile identity fields and refuses 
   assert.match(expectedChangelog("# Microgravity changelog\n\n", "0.1.0"), /^# Microgravity changelog\n\n## 0\.1\.0/m);
   assert.throws(() => expectedChangelog("Wrong title\n", "0.1.0"), /must start/);
   assert.deepEqual(versionInfo(), { version: "0.1.0", buildNumber: 1, channel: "stable", tag: "v0.1.0" });
+});
+
+test("Sparkle feed URL escapes // for xcconfig and decodes to the channel appcast", () => {
+  const stable = sparkleFeedValue("0.1.0");
+  const beta = sparkleFeedValue("0.1.0-beta.2");
+  assert.equal(stable, "https:/$()/github.com/BurntToasters/Microgravity/releases/latest/download/appcast.xml");
+  assert.equal(beta, "https:/$()/github.com/BurntToasters/Microgravity/releases/latest/download/appcast-beta.xml");
+  for (const value of [stable, beta]) {
+    assert.equal(value.includes("//"), false);
+    assert.match(value, /^https:\/\$\(\)\/github\.com\//);
+  }
+  assert.equal(stable.replaceAll("$()", ""), "https://github.com/BurntToasters/Microgravity/releases/latest/download/appcast.xml");
+  assert.equal(beta.replaceAll("$()", ""), "https://github.com/BurntToasters/Microgravity/releases/latest/download/appcast-beta.xml");
+  assert.equal(fs.readFileSync(path.join(root, "config/version.xcconfig"), "utf8").includes(`SPARKLE_FEED_URL = ${stable}\n`), true);
 });
 
 test("appcast selects the correct channel feed and binds the version, build, size, and archive signature", () => {

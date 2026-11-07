@@ -4,6 +4,12 @@ import Foundation
 // Schemas are intentionally narrow; absent or invalid measurements stay unavailable.
 enum AdvancedMetricsParser {
     static let maximumBytes = 4 * 1024 * 1024
+    private struct NettopSchema {
+        let columnCount: Int
+        let processIndex: Int
+        let receiveIndex: Int
+        let sendIndex: Int
+    }
     struct NetworkTotals: Equatable {
         let received: UInt64
         let sent: UInt64
@@ -15,34 +21,51 @@ enum AdvancedMetricsParser {
     }
     static func hasNettopHeader(_ input: String) -> Bool {
         guard input.utf8.count <= maximumBytes, let first = input.split(whereSeparator: \.isNewline).first else { return false }
-        let fields = csv(String(first))
-        return Set(fields).count == fields.count && ["interface", "bytes_in", "bytes_out"].allSatisfy(fields.contains)
+        return nettopSchema(String(first)) != nil
     }
     static func nettop(_ input: String) -> [Int32: NetworkTotals] {
         guard input.utf8.count <= maximumBytes else { return [:] }
         let lines = input.split(whereSeparator: \.isNewline)
         guard let first = lines.first else { return [:] }
-        let header = csv(String(first))
-        guard let processIndex = header.firstIndex(of: "interface"),
-              let receiveIndex = header.firstIndex(of: "bytes_in"),
-              let sendIndex = header.firstIndex(of: "bytes_out"),
-              Set(header).count == header.count else { return [:] }
+        guard let schema = nettopSchema(String(first)) else { return [:] }
         var result: [Int32: NetworkTotals] = [:]
         var ambiguous = Set<Int32>()
         var seen = Set<Int32>()
         for line in lines.dropFirst() {
-            let columns = csv(String(line))
-            guard columns.count == header.count,
-                  let suffix = columns[processIndex].split(separator: ".").last,
+            guard let columns = normalizedNettopRowColumns(csv(String(line)), expectedCount: schema.columnCount),
+                  let suffix = columns[schema.processIndex].split(separator: ".").last,
                   let pid = Int32(suffix), pid > 0 else { continue }
             guard seen.insert(pid).inserted else {
                 result.removeValue(forKey: pid); ambiguous.insert(pid); continue
             }
-            guard !ambiguous.contains(pid), let received = UInt64(columns[receiveIndex]),
-                  let sent = UInt64(columns[sendIndex]) else { continue }
+            guard !ambiguous.contains(pid), let received = UInt64(columns[schema.receiveIndex]),
+                  let sent = UInt64(columns[schema.sendIndex]) else { continue }
             result[pid] = NetworkTotals(received: received, sent: sent)
         }
         return result
+    }
+    private static func nettopSchema(_ line: String) -> NettopSchema? {
+        let header = normalizedNettopHeaderColumns(csv(line))
+        guard !header.isEmpty else { return nil }
+        if header[0].isEmpty {
+            guard header == ["", "bytes_in", "bytes_out"] else { return nil }
+            return NettopSchema(columnCount: header.count, processIndex: 0, receiveIndex: 1, sendIndex: 2)
+        }
+        guard header.allSatisfy({ !$0.isEmpty }), Set(header).count == header.count,
+              let processIndex = header.firstIndex(of: "interface"),
+              let receiveIndex = header.firstIndex(of: "bytes_in"),
+              let sendIndex = header.firstIndex(of: "bytes_out") else { return nil }
+        return NettopSchema(columnCount: header.count, processIndex: processIndex,
+                            receiveIndex: receiveIndex, sendIndex: sendIndex)
+    }
+    private static func normalizedNettopHeaderColumns(_ columns: [String]) -> [String] {
+        guard columns.last == "" else { return columns }
+        return Array(columns.dropLast())
+    }
+    private static func normalizedNettopRowColumns(_ columns: [String], expectedCount: Int) -> [String]? {
+        if columns.count == expectedCount { return columns }
+        guard columns.count == expectedCount + 1, columns.last == "" else { return nil }
+        return Array(columns.dropLast())
     }
     private static func csv(_ line: String) -> [String] {
         var fields: [String] = []

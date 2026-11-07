@@ -146,6 +146,63 @@ final class IntegrationAdvancedMetricsTests: XCTestCase {
         XCTAssertEqual(reset[replacement]?[.processNetwork]?.unavailableReason, .counterReset)
     }
 
+    func testCachedSystemReadingOlderThanThirtySecondsIsDroppedAtReadTime() async throws {
+        let clock = TestClock(Date(timeIntervalSince1970: 1_000))
+        let captured = Date(timeIntervalSince1970: 980)
+        let client = FixedAdvancedSamplingClient([.powermetrics: try gpuSample(at: captured)])
+        let collector = NativeAdvancedMetricsCollector(client: client, now: { clock.now() }, processIdentities: { [:] })
+
+        let fresh = try await waitForGPUAvailability(true, collector: collector, clock: clock)
+        XCTAssertEqual(fresh.system[.gpu]?.value, 50)
+
+        clock.set(Date(timeIntervalSince1970: 1_011))
+        let stale = await collector.collectAdvancedMetrics(at: clock.now())
+        XCTAssertNil(stale.system[.gpu], "a 31s-old GPU reading must not be served from the cache")
+        XCTAssertEqual(stale.capabilities[.gpu]?.available, false)
+        XCTAssertEqual(stale.capabilities[.gpu]?.reason, .collectionFailed)
+    }
+
+    func testFreshSystemReadingStillPassesThroughAtReadTime() async throws {
+        let clock = TestClock(Date(timeIntervalSince1970: 1_000))
+        let captured = Date(timeIntervalSince1970: 1_000)
+        let client = FixedAdvancedSamplingClient([.powermetrics: try gpuSample(at: captured)])
+        let collector = NativeAdvancedMetricsCollector(client: client, now: { clock.now() }, processIdentities: { [:] })
+
+        _ = try await waitForGPUAvailability(true, collector: collector, clock: clock)
+
+        clock.set(Date(timeIntervalSince1970: 1_020))
+        let snapshot = await collector.collectAdvancedMetrics(at: clock.now())
+        XCTAssertEqual(snapshot.capabilities[.gpu]?.available, true)
+        XCTAssertEqual(snapshot.system[.gpu]?.value, 50)
+        XCTAssertEqual(snapshot.system[.gpu]?.timestamp, captured)
+    }
+
+}
+
+private func gpuSample(at timestamp: Date) throws -> HelperSampleResponse {
+    let data = try PropertyListSerialization.data(fromPropertyList: ["gpu": ["idle_ratio": 0.5]], format: .xml, options: 0)
+    return response(.powermetrics, at: timestamp, output: data)
+}
+
+private func waitForGPUAvailability(_ available: Bool, collector: NativeAdvancedMetricsCollector,
+                                    clock: TestClock) async throws -> AdvancedMetricsSnapshot {
+    for _ in 0..<200 {
+        let snapshot = await collector.collectAdvancedMetrics(at: clock.now())
+        if snapshot.capabilities[.gpu]?.available == available { return snapshot }
+        try await Task.sleep(nanoseconds: 1_000_000)
+    }
+    XCTFail("GPU sample did not reach the expected capability state")
+    throw NSError(domain: "IntegrationAdvancedMetricsTests", code: 2)
+}
+
+private actor FixedAdvancedSamplingClient: AdvancedSamplingClient {
+    private let responses: [HelperSampleKind: HelperSampleResponse]
+
+    init(_ responses: [HelperSampleKind: HelperSampleResponse]) { self.responses = responses }
+
+    func sample(_ kind: HelperSampleKind) async -> HelperSampleResponse {
+        responses[kind] ?? response(kind, at: Date(timeIntervalSince1970: 0), error: "no queued response")
+    }
 }
 
 private func response(_ kind: HelperSampleKind, at timestamp: Date,

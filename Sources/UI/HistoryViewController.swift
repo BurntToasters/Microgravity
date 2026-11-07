@@ -85,8 +85,11 @@ final class HistoryViewController: NSViewController, SnapshotUpdating {
     }
 
     func update(snapshot: MonitoringSnapshot) {
-        let cutoff = snapshot.timestamp.addingTimeInterval(-29 * 86_400)
-        let lastThirtyDays = snapshot.applicationHistory.filter { $0.dayStart >= cutoff && $0.dayStart <= snapshot.timestamp }
+        var utcCalendar = Calendar(identifier: .gregorian)
+        utcCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let currentDay = utcCalendar.startOfDay(for: snapshot.timestamp)
+        let cutoff = utcCalendar.date(byAdding: .day, value: -29, to: currentDay)!
+        let lastThirtyDays = snapshot.applicationHistory.filter { $0.dayStart >= cutoff && $0.dayStart <= currentDay }
         let byApplication = Dictionary(grouping: lastThirtyDays, by: { $0.application.id })
         let applications = byApplication.values.compactMap { $0.first?.application }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }

@@ -29,6 +29,10 @@ struct CounterDeltaTracker<Key: Hashable> {
         }
 
         let elapsed = timestamp.timeIntervalSince(previous.timestamp)
+        if elapsed < 0 {
+            baselines[key] = Baseline(value: value, timestamp: timestamp)
+            return .invalidTimestamp
+        }
         guard elapsed > 0 else { return .invalidTimestamp }
         guard elapsed <= maximumInterval else {
             baselines[key] = Baseline(value: value, timestamp: timestamp)
@@ -73,7 +77,9 @@ extension CounterDeltaResult {
         case .baseline:
             return MetricReading(unavailable: unit, timestamp: timestamp, reason: .warmingUp)
         case let .delta(value, elapsed):
-            return MetricReading(value: valueTransform(value, elapsed), unit: unit, timestamp: timestamp)
+            return MetricReading(value: valueTransform(value, elapsed), unit: unit, timestamp: timestamp,
+                                 measurementInterval: DateInterval(
+                                    start: timestamp.addingTimeInterval(-elapsed), end: timestamp))
         case .counterReset:
             return MetricReading(unavailable: unit, timestamp: timestamp, reason: .counterReset)
         case .sleepGap:

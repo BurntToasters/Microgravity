@@ -100,7 +100,8 @@ actor PrivilegedProcessActionController: ProcessActioning {
     private static func send(_ request: Data, authorization: Data, requirement: String) async -> String {
         await withCheckedContinuation { continuation in
             let connection = NSXPCConnection(machServiceName: helperMachService, options: .privileged)
-            let reply = OneReply(continuation: continuation, connection: connection)
+            let reply = XPCSingleReply(continuation, connection: connection, timeout: 5,
+                                       timeoutValue: "Helper connection timed out.")
             connection.setCodeSigningRequirement(requirement)
             connection.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
             connection.interruptionHandler = { reply.finish("Helper connection interrupted.") }
@@ -110,29 +111,10 @@ actor PrivilegedProcessActionController: ProcessActioning {
                 reply.finish("Helper protocol unavailable."); return
             }
             proxy.terminate(request, authorization: authorization) { reply.finish($0) }
-            // A hung helper must not leak the continuation forever.
-            // OneReply.finish is lock-guarded and invalidates the
-            // connection, so the first finisher (reply, handler, timeout)
-            // wins and later finishers are no-ops.
-            DispatchQueue.global().asyncAfter(deadline: .now() + 5) { reply.finish("Helper connection timed out.") }
+            // A hung helper must not leak the continuation forever; the first
+            // finisher (reply, handler, timeout) wins.
+            reply.armTimeout()
         }
     }
 }
 
-private final class OneReply: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<String, Never>?
-    private let connection: NSXPCConnection
-    init(continuation: CheckedContinuation<String, Never>, connection: NSXPCConnection) {
-        self.continuation = continuation; self.connection = connection
-    }
-    func finish(_ value: String) {
-        lock.lock()
-        let saved = continuation
-        continuation = nil
-        lock.unlock()
-        guard let saved else { return }
-        connection.invalidate()
-        saved.resume(returning: value)
-    }
-}

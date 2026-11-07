@@ -9,50 +9,96 @@ argument alone cannot switch a production build to fixture data.
 
 ## Shell and navigation
 
-- Use a resizable native window with a persistent navigation sidebar for
-  **Processes**, **Performance**, **App History**, **Startup**, **Users**,
-  **Details**, **Services**, and **Settings**.
+- Use a resizable native window. It opens at 1280 × 820, cannot be resized below
+  960 × 600, and saves its frame between launches.
+- The window has a unified toolbar with page-specific items and a source-list
+  sidebar. The sidebar has two groups: **Monitor** (Processes, Performance, App
+  History) and **Inventory** (Startup, Users, Details, Services), with Settings
+  last. A status footer shows either "Paused" or the sampling interval, and the
+  time of the last sample.
+- Command-1 through Command-8 select the sidebar pages in sidebar order.
+  Command-Option-S toggles the sidebar. Settings is also available as
+  Command-comma.
+- The menu bar has the standard application, File, Edit, View, Window, and Help
+  menus, a Process menu for the selected process, and Check for Updates.
 - Closing the last window terminates the app. No storyboard or SwiftUI is used.
-- Sidebar items, tables, headers, graph controls, actions, and dialogs have
-  stable accessibility identifiers and keyboard focus/activation behavior.
+- Sidebar items, tables, outline rows, headers, graph controls, toolbar items,
+  actions, and dialogs have stable accessibility identifiers and keyboard
+  focus/activation behavior.
 - Selection remains attached to a stable process identity as rows are sorted or
-  refreshed. Removing/replacing a PID must clear or explicitly invalidate the
+  refreshed. Removing or replacing a PID clears or explicitly invalidates the
   old selection.
+- Confirmations (Force Quit, Reset History, and similar) are sheets attached to
+  the window that raised them, not app-modal alerts.
 
 ## Processes and Details
 
-- Processes is a searchable, sortable, resizable table with subtle resource
-  heatmaps. Related processes appear as expandable parent groups; expanding a
-  group shows its children and selecting any row exposes its stable identity.
+- Processes is a native outline view. It is searchable and sortable, with app
+  icons, subtle heat-mapped resource cells, and a grouping choice of **Group by
+  App** or **Flat List**. In grouped mode, related processes appear under an
+  expandable parent row. Expanding a group shows its children, and selecting any
+  row exposes its stable identity.
+- Partial and unavailable readings are marked with a badge and a tooltip that
+  gives the reason. A selection bar at the bottom of the page shows the selected
+  process and its available actions.
 - Details is a flat process inventory showing PID, owner, parent PID, executable
   path, CPU, memory, disk, available network and GPU columns. Unsupported fields
   are labeled unavailable; they are never presented as zero.
 - Quit asks the core to act on the selected stable identity. Force Quit requires
-  confirmation. The core must revalidate that identity at action time; if the
-  PID was reused or the target exited, the UI reports that and refreshes. Neither
-  action recursively targets child processes.
+  confirmation in a window sheet. The core must revalidate that identity at
+  action time; if the PID was reused or the target exited, the UI reports that
+  and refreshes. Neither action recursively targets child processes.
+- Rejections explain the reason in plain language. A process that belongs to
+  another user, or a system process, is described as protected rather than as an
+  error in the app.
+
+## Process action policy (privileged helper)
+
+This is the policy for signalling processes after the user approves the
+privileged helper. It was a deliberate decision for 0.1.0; the implementation
+and the Settings caption must match it.
+
+- The helper can quit processes owned by other standard users (non-root owners).
+- The helper cannot signal root-owned processes, PID 1, or processes whose
+  executable path is under `/System/Library/`, `/usr/libexec/`, `/usr/sbin/`, or
+  `/sbin/`. A process whose executable path cannot be read is also treated as
+  protected, and so is any process the OS flags as a system process.
+- The helper never signals its own process or the requesting client.
+- Settings states the limit: "Lets you quit processes owned by other standard
+  users. System and root processes stay protected."
+- Widening this policy is a product decision. It requires updating this section,
+  the Settings caption, and the helper policy tests together.
 
 ## Performance and history
 
 - Performance shows timestamped CPU total and per-core activity, memory pressure
-  and swap, disk and network throughput, and GPU/energy only when supported.
-  Graphs label units and provide a short definition. Unsupported and temporarily
-  unavailable metrics have distinct states from a measured zero.
+  and swap, disk and network throughput, and GPU/energy only when supported. A
+  metric rail with sparklines selects the detail graph. Graphs have a fill, grid
+  lines, axis labels, and a time-window picker. Missing samples are drawn as gap
+  markers. Each graph labels its units and gives a short definition.
+  Unsupported and temporarily unavailable metrics have distinct states from a
+  measured zero.
+- Network totals exclude loopback, virtual, and tunnel interfaces. Those
+  interfaces remain in the per-interface list and are marked as excluded from
+  totals.
 - CPU percentages are normalized across logical cores: a process consuming one
   full core reports `100 / N` percent on an N-core system, and a fully saturated
   system totals approximately 100 percent.
 - Pausing sampling retains the last sample and labels it as paused/stale. The
   configured refresh interval is 0.5, 1, 2, or 5 seconds.
-- App History displays at most 30 days of measured application totals. Missing
-  samples are shown as gaps, not interpolated as zero. Reset is explicit and
-  confirmed; history reset does not clear process or operating-system state.
+- App History is one outline of applications and days. It displays at most 30
+  days of measured application totals. Missing samples are shown as gaps, not
+  interpolated as zero. Reset is explicit and confirmed in a window sheet;
+  history reset does not clear process or operating-system state.
+- Pre-release builds recorded per-app CPU seconds in the wrong unit. Histories
+  from those builds must be reset before their CPU values are relied on.
 
 ## Read-only inventory
 
 - Startup and Services are inspection surfaces only. They show discovery
-  completeness, item/service identity, and known executable path. The UI may
-  reveal a path in Finder or open the relevant System Settings pane when the
-  integration supports it; it does not enable, disable, start, or stop items.
+  completeness, item/service identity, status, item kind, and known executable
+  path. The only actions are Reveal in Finder and Open Login Items Settings; the
+  UI does not enable, disable, start, or stop items.
 - Users displays active sessions and per-user process/resource aggregates. It
   offers no account-management action.
 - Incomplete discovery is visible on each relevant page. An empty list is not
@@ -61,9 +107,9 @@ argument alone cannot switch a production build to fixture data.
 
 ## Settings and integrations
 
-- Settings exposes System/Light/Dark appearance, the four refresh intervals,
-  pause/resume, confirmed history reset, and the helper, login-item, and update
-  integration states.
+- Settings is a System Settings–style form. It exposes System/Light/Dark
+  appearance, the four refresh intervals, pause/resume, confirmed history reset,
+  and the helper, login-item, and update integration states.
 - Helper setup and removal, login-item control, and updates are routed through an
   integration protocol. Controls display unavailable, failure, and approval states
   rather than implying success.
@@ -95,4 +141,8 @@ The deterministic fixture suite captures an XCTest screenshot attachment for
 each principal navigation page. Attachments belong to the `.xcresult` bundle
 produced by the native test scheme.
 
-These are acceptance criteria, not a claim of completed manual or hosted validation.
+The UI XCTest suite has not passed on any host for 0.1.0, so these cases are
+acceptance criteria that the suite does not yet verify end to end. The 0.1.0
+UI verification and its manual checklist are described in `docs/RELEASING.md`.
+These are acceptance criteria, not a claim of completed manual or hosted
+validation.

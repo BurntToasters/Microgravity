@@ -55,7 +55,7 @@ final class FixtureMonitoringStore: MonitoringStore {
         if let latestSnapshot { onSnapshot?(latestSnapshot) }
         if configuration.refreshPulse {
             Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard let self, self.isRunning, !self.isPaused else { return }
                 let snapshot = Self.makeSnapshot(configuration: self.configuration, timestamp: Date(), sampleIndex: 30)
                 self.latestSnapshot = snapshot

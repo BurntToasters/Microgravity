@@ -177,6 +177,25 @@ final class IntegrationAdvancedMetricsTests: XCTestCase {
         XCTAssertEqual(snapshot.system[.gpu]?.timestamp, captured)
     }
 
+    func testIdentityEnumerationCapIsNamedInNetworkCapabilityDetail() async throws {
+        let clock = TestClock(Date(timeIntervalSince1970: 1_000))
+        let cap = "Process list is 5242881 bytes, above the 4 MiB identity cap"
+        let client = FixedAdvancedSamplingClient([
+            .nettop: response(.nettop, at: clock.now(),
+                              output: Data("time,interface,bytes_in,bytes_out\n0,en0.42,100,200\n".utf8)),
+            .powermetrics: response(.powermetrics, at: clock.now(), error: "unsupported"),
+        ])
+        let collector = NativeAdvancedMetricsCollector(
+            client: client, now: { clock.now() },
+            processIdentityLookup: { ProcessIdentityLookup(identities: [:], failureDetail: cap) })
+
+        _ = await collector.collectAdvancedMetrics(at: clock.now())
+        let snapshot = try await waitForNetworkCapability(false, reason: .notCollected,
+                                                          collector: collector, at: clock.now())
+        XCTAssertEqual(snapshot.capabilities[.processNetwork]?.detail, cap)
+        XCTAssertEqual(snapshot.capabilities[.processNetworkReceive]?.detail, cap)
+    }
+
 }
 
 private func gpuSample(at timestamp: Date) throws -> HelperSampleResponse {

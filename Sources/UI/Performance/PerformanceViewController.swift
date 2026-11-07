@@ -1,0 +1,196 @@
+import AppKit
+
+/// Performance page, Task Manager style: a metric rail on the left and a detail card on the right.
+///
+/// The page owns selection, the detail time window and the CPU view mode. Pause/Resume and the refresh interval
+/// live in the window toolbar through `PageToolbarProviding`. Both write the same state Settings uses.
+@MainActor
+final class PerformanceViewController: NSViewController, SnapshotUpdating, PageToolbarProviding {
+    static let pauseItemIdentifier = NSToolbarItem.Identifier("Microgravity.performance.pause")
+    static let refreshItemIdentifier = NSToolbarItem.Identifier("Microgravity.performance.refreshInterval")
+
+    private let dependencies: PageDependencies
+    private let rail = MetricRailView()
+    private let detail = MetricDetailViewController()
+    private let pauseButton = NSButton(title: "Pause", target: nil, action: nil)
+    private let refreshPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+    private lazy var pauseItem: NSToolbarItem = {
+        let item = NSToolbarItem(itemIdentifier: PerformanceViewController.pauseItemIdentifier)
+        item.view = self.pauseButton
+        item.label = "Pause"
+        item.paletteLabel = "Pause Sampling"
+        item.toolTip = "Pause or resume sampling"
+        return item
+    }()
+    private lazy var refreshItem: NSToolbarItem = {
+        let item = NSToolbarItem(itemIdentifier: PerformanceViewController.refreshItemIdentifier)
+        item.view = self.refreshPopUp
+        item.label = "Refresh Interval"
+        item.paletteLabel = "Refresh Interval"
+        item.toolTip = "How often Microgravity samples the system"
+        return item
+    }()
+
+    private var snapshot: MonitoringSnapshot?
+    private(set) var selectedMetric: PerformanceMetric = .cpu
+    private(set) var detailWindow: PerformanceWindow = .oneMinute
+    private(set) var cpuMode: CPUDetailMode = .overall
+
+    init(dependencies: PageDependencies) {
+        self.dependencies = dependencies
+        super.init(nibName: nil, bundle: nil)
+        pauseButton.target = self
+        pauseButton.action = #selector(toggleSampling)
+        pauseButton.bezelStyle = .texturedRounded
+        pauseButton.setAccessibilityIdentifier("performance.action.pause")
+        refreshPopUp.addItems(withTitles: MonitoringInterval.allCases.map(SamplingControls.shortTitle))
+        refreshPopUp.target = self
+        refreshPopUp.action = #selector(changeRefreshInterval(_:))
+        refreshPopUp.setAccessibilityIdentifier("performance.refresh-interval")
+        refreshPopUp.setAccessibilityLabel("Refresh interval")
+        refreshPopUp.toolTip = "How often Microgravity samples the system"
+        // Settings and the sidebar footer change sampling too; keep the toolbar in step without waiting for a snapshot.
+        NotificationCenter.default.addObserver(self, selector: #selector(samplingStateChanged),
+                                               name: .samplingStateDidChange, object: nil)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func loadView() {
+        let page = DynamicWindowBackgroundView()
+        view = page
+
+        let header = UIComponents.header(title: "Performance", subtitle: "")
+        header.toolTip = "Live resource use. Gaps mark paused or missed samples; unavailable metrics are never drawn as zero."
+        rail.translatesAutoresizingMaskIntoConstraints = false
+        rail.onSelect = { [weak self] metric in self?.selectMetric(metric) }
+        detail.onWindowChange = { [weak self] window in
+            self?.detailWindow = window
+            self?.rerender()
+        }
+        detail.onCPUModeChange = { [weak self] mode in self?.setCPUMode(mode) }
+        addChild(detail)
+        detail.view.translatesAutoresizingMaskIntoConstraints = false
+
+        page.addSubview(header)
+        page.addSubview(rail)
+        page.addSubview(detail.view)
+        NSLayoutConstraint.activate([
+            header.leadingAnchor.constraint(equalTo: page.leadingAnchor, constant: PageLayout.horizontalInset),
+            header.topAnchor.constraint(equalTo: page.topAnchor, constant: PageLayout.topInset),
+            rail.leadingAnchor.constraint(equalTo: page.leadingAnchor, constant: PageLayout.horizontalInset),
+            rail.topAnchor.constraint(equalTo: header.bottomAnchor, constant: PageLayout.sectionSpacing),
+            rail.bottomAnchor.constraint(equalTo: page.bottomAnchor, constant: -PageLayout.bottomInset),
+            rail.widthAnchor.constraint(equalToConstant: 240),
+            detail.view.leadingAnchor.constraint(equalTo: rail.trailingAnchor, constant: 14),
+            detail.view.trailingAnchor.constraint(equalTo: page.trailingAnchor, constant: -PageLayout.horizontalInset),
+            detail.view.topAnchor.constraint(equalTo: rail.topAnchor),
+            detail.view.bottomAnchor.constraint(equalTo: rail.bottomAnchor)
+        ])
+    }
+
+    // MARK: SnapshotUpdating
+
+    func update(snapshot: MonitoringSnapshot) {
+        self.snapshot = snapshot
+        render(snapshot: snapshot)
+    }
+
+    // MARK: PageToolbarProviding
+
+    var toolbarItemIdentifiers: [NSToolbarItem.Identifier] {
+        [PerformanceViewController.pauseItemIdentifier, PerformanceViewController.refreshItemIdentifier]
+    }
+
+    func toolbarItem(for identifier: NSToolbarItem.Identifier) -> NSToolbarItem? {
+        if identifier == PerformanceViewController.pauseItemIdentifier { return pauseItem }
+        if identifier == PerformanceViewController.refreshItemIdentifier { return refreshItem }
+        return nil
+    }
+
+    // MARK: Selection and modes
+
+    /// Selects a rail metric and redraws the detail card.
+    func selectMetric(_ metric: PerformanceMetric) {
+        selectedMetric = metric
+        rerender()
+    }
+
+    /// Switches the CPU detail between the overall graph and the per-processor grid.
+    func setCPUMode(_ mode: CPUDetailMode) {
+        cpuMode = mode
+        rerender()
+    }
+
+    private func rerender() {
+        guard let snapshot else { return }
+        render(snapshot: snapshot)
+    }
+
+    private func render(snapshot: MonitoringSnapshot) {
+        let samples = dependencies.monitoringStore.graphSamples
+        rail.update(items: PerformancePresenter.railItems(snapshot: snapshot, samples: samples),
+                    selectedMetric: selectedMetric)
+        detail.update(PerformancePresenter.detail(metric: selectedMetric, snapshot: snapshot, samples: samples,
+                                                  window: detailWindow, cpuMode: cpuMode))
+        syncToolbar()
+    }
+
+    // MARK: Toolbar
+
+    private func syncToolbar() {
+        let store = dependencies.monitoringStore
+        let title = store.isPaused ? "Resume" : "Pause"
+        pauseButton.title = title
+        pauseItem.label = title
+        if let index = MonitoringInterval.allCases.firstIndex(of: store.interval) {
+            refreshPopUp.selectItem(at: index)
+        }
+    }
+
+    @objc private func toggleSampling() {
+        SamplingControls.togglePause(store: dependencies.monitoringStore)
+    }
+
+    @objc private func changeRefreshInterval(_ sender: NSPopUpButton) {
+        let intervals = MonitoringInterval.allCases
+        let index = sender.indexOfSelectedItem
+        guard intervals.indices.contains(index) else { return }
+        SamplingControls.setInterval(intervals[index], store: dependencies.monitoringStore)
+    }
+
+    @objc private func samplingStateChanged() {
+        syncToolbar()
+    }
+}
+
+@MainActor
+struct ThroughputGraphPresentation {
+    let firstValueText: String
+    let secondValueText: String
+    let firstAccessibilityLabel: String
+    let secondAccessibilityLabel: String
+    let graphMaximum: Double
+    let scaleText: String
+    let scaleAccessibilityLabel: String
+    let accessibilitySummary: String
+
+    init(graphName: String, subjectName: String, firstName: String, first: MetricReading, firstHistory: [MetricReading],
+         secondName: String, second: MetricReading, secondHistory: [MetricReading]) {
+        firstValueText = "\(firstName): \(UIFormat.metric(first))"
+        secondValueText = "\(secondName): \(UIFormat.metric(second))"
+        firstAccessibilityLabel = "Current \(subjectName) \(firstName) throughput"
+        secondAccessibilityLabel = "Current \(subjectName) \(secondName) throughput"
+        scaleAccessibilityLabel = "\(graphName) graph scale maximum"
+
+        let values = (firstHistory + secondHistory).compactMap(\.value).filter { $0.isFinite && $0 >= 0 }
+        graphMaximum = max(values.max() ?? 1, 0.0001)
+        scaleText = values.isEmpty
+            ? "Scale maximum: no data"
+            : "Scale maximum: \(UIFormat.bytesPerSecond(graphMaximum))"
+        let current = "Current \(firstName): \(UIFormat.metric(first)); current \(secondName): \(UIFormat.metric(second))"
+        accessibilitySummary = values.isEmpty
+            ? "\(graphName) graph. No graph samples have available data. \(current). Scale maximum: no data."
+            : "\(graphName) graph. \(current). \(scaleText)."
+    }
+}

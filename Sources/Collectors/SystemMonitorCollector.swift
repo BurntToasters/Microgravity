@@ -77,11 +77,40 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         let title: String
     }
 
+    /// Name and executable path are immutable for a ProcessIdentity, so they are read once per identity.
+    private struct CachedProcessText {
+        let name: String
+        let path: String?
+    }
+
+    /// proc_listpids returns at most this many PIDs per sample; beyond it the snapshot is incomplete.
+    static let maximumPIDCount = 16_384
+    static let processEnumerationCapDetail = "Process enumeration stopped at the \(maximumPIDCount)-PID cap of proc_listpids; processes beyond the cap were not read."
+    static let processIdentityOmissionDetail = "Process enumeration omitted processes with unreadable, exited, or changed identities."
+
+    /// Mach absolute-time to nanosecond factor (125/3 on Apple Silicon, 1/1 on Intel). Read once.
+    private static let machTimebase: (numer: UInt64, denom: UInt64)? = {
+        var info = mach_timebase_info_data_t()
+        guard mach_timebase_info(&info) == KERN_SUCCESS, info.numer > 0, info.denom > 0 else { return nil }
+        return (UInt64(info.numer), UInt64(info.denom))
+    }()
+
+    /// Reads kern.memorystatus_vm_pressure_level: 1 normal, 2 warning, 4 critical. Nil when the sysctl fails.
+    static func kernelMemoryPressureLevel() -> Int32? {
+        var level: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        guard sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &size, nil, 0) == 0,
+              size == MemoryLayout<Int32>.size else { return nil }
+        return level
+    }
+
     private static let bundleMetadataCacheLimit = 256
 
     private let advancedCollector: (any AdvancedMetricsCollecting)?
+    private let memoryPressureLevelReader: @Sendable () -> Int32?
     private var systemCounters = CounterDeltaTracker<CounterKey>()
     private var processCounters = CounterDeltaTracker<ProcessCounterKey>()
+    private var processTextCache: [ProcessIdentity: CachedProcessText] = [:]
     private var networkCounterTracker = NetworkInterfaceCounterTracker()
     private var memoryPressureSource: DispatchSourceMemoryPressure?
     private var pressureLevel: MemoryPressureLevel?
@@ -91,8 +120,10 @@ public actor SystemMonitorCollector: MonitoringCollecting {
     private var bundleMetadataCache: [String: CachedBundleMetadata] = [:]
     private var bundleMetadataOrder: [String] = []
 
-    public init(advancedCollector: (any AdvancedMetricsCollecting)? = nil) {
+    public init(advancedCollector: (any AdvancedMetricsCollecting)? = nil,
+                memoryPressureLevelReader: (@Sendable () -> Int32?)? = nil) {
         self.advancedCollector = advancedCollector
+        self.memoryPressureLevelReader = memoryPressureLevelReader ?? { Self.kernelMemoryPressureLevel() }
     }
 
     public func collect(at timestamp: Date) async -> MonitoringSnapshot {
@@ -104,6 +135,7 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         let network = collectNetwork(at: timestamp)
         let processResult = collectProcesses(at: timestamp, capacityCores: cpu.capacityCores)
         let rawProcesses = processResult.processes
+        let processIncompleteDetail = processResult.incompleteDetail
         let baseProcesses = linkProcesses(rawProcesses)
         let advanced = await advancedCollector?.collectAdvancedMetrics(at: timestamp) ?? AdvancedMetricsSnapshot()
         let processes = baseProcesses.map { process in
@@ -181,7 +213,7 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             .networkThroughput: Self.availability(for: [network.receiveRate, network.transmitRate]),
             .processes: MetricAvailability(available: processResult.complete,
                                           reason: processResult.complete ? nil : .collectionFailed,
-                                          detail: processResult.complete ? nil : "Process enumeration was capped or omitted processes with unreadable, exited, or changed identities."),
+                                          detail: processIncompleteDetail),
             .processIO: Self.availability(for: processes.first?.diskReadBytesPerSecond),
             .startupItems: MetricAvailability(available: inventory.startupCoverage.complete,
                                               reason: inventory.startupCoverage.complete ? nil : .collectionFailed),
@@ -206,7 +238,7 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         allCapabilities.merge(advanced.capabilities) { _, incoming in incoming }
         let coverage: [String: DiscoveryCoverage] = [
             "processes": DiscoveryCoverage(complete: processResult.complete,
-                                           reasons: processResult.complete ? [] : ["Process enumeration was capped or omitted processes with unreadable, exited, or changed identities."]),
+                                           reasons: processIncompleteDetail.map { [$0] } ?? []),
             "startupItems": inventory.startupCoverage,
             "services": inventory.serviceCoverage,
             "users": sessions.coverage,
@@ -329,13 +361,35 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                                       reason: .collectionFailed, detail: "vm.swapusage returned errno \(errno)")
         }
 
-        let pressure: MemoryPressureSnapshot
-        if let pressureLevel, let pressureTimestamp {
-            pressure = MemoryPressureSnapshot(level: pressureLevel, timestamp: pressureTimestamp)
-        } else {
-            pressure = MemoryPressureSnapshot(unavailable: timestamp, reason: .notCollected)
+        return (memoryUsed, memoryAvailable, memoryTotal, resolveMemoryPressure(at: timestamp),
+                swapUsed, swapTotal)
+    }
+
+    /// The OS-reported level is the baseline on every sample. Dispatch events refine it between samples:
+    /// an event that already reported the same level keeps its (fresher) timestamp.
+    /// Unavailable only when the sysctl fails and no event has arrived yet.
+    private func resolveMemoryPressure(at timestamp: Date) -> MemoryPressureSnapshot {
+        if let raw = memoryPressureLevelReader(), let level = Self.memoryPressureLevel(fromSysctl: raw) {
+            if pressureLevel != level {
+                pressureLevel = level
+                pressureTimestamp = timestamp
+            } else if pressureTimestamp == nil {
+                pressureTimestamp = timestamp
+            }
         }
-        return (memoryUsed, memoryAvailable, memoryTotal, pressure, swapUsed, swapTotal)
+        if let pressureLevel, let pressureTimestamp {
+            return MemoryPressureSnapshot(level: pressureLevel, timestamp: pressureTimestamp)
+        }
+        return MemoryPressureSnapshot(unavailable: timestamp, reason: .collectionFailed)
+    }
+
+    static func memoryPressureLevel(fromSysctl raw: Int32) -> MemoryPressureLevel? {
+        switch raw {
+        case 1: return .normal
+        case 2: return .warning
+        case 4: return .critical
+        default: return nil
+        }
     }
 
     private func collectDisk(at timestamp: Date) -> (readRate: MetricReading, writeRate: MetricReading) {
@@ -395,17 +449,18 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         }
     }
 
-    private func collectProcesses(at timestamp: Date, capacityCores: Int) -> (processes: [RawProcess], complete: Bool) {
+    private func collectProcesses(at timestamp: Date, capacityCores: Int)
+        -> (processes: [RawProcess], complete: Bool, incompleteDetail: String?) {
         let pidBytes = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
-        guard pidBytes > 0 else { return ([], false) }
-        let maximumPIDCount = 16_384
-        let requestedCount = min(maximumPIDCount, Int(pidBytes) / MemoryLayout<pid_t>.stride + 64)
+        guard pidBytes > 0 else { return ([], false, "proc_listpids could not size the process list.") }
+        let estimatedCount = Int(pidBytes) / MemoryLayout<pid_t>.stride
+        let requestedCount = min(Self.maximumPIDCount, estimatedCount + 64)
         var pids = [pid_t](repeating: 0, count: requestedCount)
         let returnedBytes = pids.withUnsafeMutableBufferPointer { buffer in
             proc_listpids(UInt32(PROC_ALL_PIDS), 0, buffer.baseAddress,
                           Int32(buffer.count * MemoryLayout<pid_t>.stride))
         }
-        guard returnedBytes > 0 else { return ([], false) }
+        guard returnedBytes > 0 else { return ([], false, "proc_listpids failed to list processes.") }
         let count = min(pids.count, Int(returnedBytes) / MemoryLayout<pid_t>.stride)
         var records: [RawProcess] = []
         records.reserveCapacity(count)
@@ -424,9 +479,12 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             let taskSize = proc_pidinfo(rawPID, PROC_PIDTASKINFO, 0, &task,
                                         Int32(MemoryLayout<proc_taskinfo>.size))
             let taskAvailable = taskSize == MemoryLayout<proc_taskinfo>.size
+            let taskErrno = errno
             let cpuReading: MetricReading
-            if taskAvailable {
-                let cpuNanos = task.pti_total_user &+ task.pti_total_system
+            if taskAvailable, let timebase = Self.machTimebase {
+                // proc_taskinfo CPU times are Mach absolute-time ticks, not nanoseconds.
+                let ticks = task.pti_total_user &+ task.pti_total_system
+                let cpuNanos = Self.nanoseconds(fromMachTicks: ticks, timebase: timebase)
                 let delta = processCounters.update(cpuNanos, for: .cpu(identity), at: timestamp)
                 cpuReading = delta.reading(unit: .percent, timestamp: timestamp) { value, elapsed in
                     guard capacityCores > 0 else { return 0 }
@@ -434,8 +492,9 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                 }
             } else {
                 processCounters.remove(.cpu(identity))
-                cpuReading = MetricReading(unavailable: .percent, timestamp: timestamp,
-                                           reason: errno == EPERM ? .permissionDenied : .collectionFailed)
+                let reason: MetricUnavailableReason = taskAvailable ? .collectionFailed
+                    : (taskErrno == EPERM ? .permissionDenied : .collectionFailed)
+                cpuReading = MetricReading(unavailable: .percent, timestamp: timestamp, reason: reason)
             }
 
             var usage = rusage_info_v4()
@@ -469,6 +528,7 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                 diskWriteRate = MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp, reason: reason)
             }
 
+            // Revalidation is required: it is the only check that detects PID reuse during this sample.
             let confirmedIdentity = processBSDInfo(rawPID).map { confirmed in
                 ProcessIdentity(pid: Int32(rawPID),
                                 startTime: ProcessStartTime(secondsSinceEpoch: Int64(confirmed.pbi_start_tvsec),
@@ -480,9 +540,10 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                 processCounters.remove(.diskWrite(identity))
                 continue
             }
+            let text = processText(for: identity, pid: rawPID, bsd: bsd)
             records.append(RawProcess(identity: identity, parentPID: Int32(bsd.pbi_ppid),
-                                      name: processName(rawPID) ?? Self.fixedCString(bsd.pbi_name),
-                                      path: processPath(rawPID), ownerUID: UInt32(bsd.pbi_uid),
+                                      name: text.name,
+                                      path: text.path, ownerUID: UInt32(bsd.pbi_uid),
                                       cpu: cpuReading, memory: memoryReading,
                                       diskReadRate: diskReadRate, diskWriteRate: diskWriteRate,
                                       diskReadTotal: diskReadTotal, diskWriteTotal: diskWriteTotal))
@@ -491,10 +552,40 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         processCounters.retain(Set(identities.flatMap {
             [ProcessCounterKey.cpu($0), .diskRead($0), .diskWrite($0)]
         }))
-        let complete = identityCoverage.complete
-            && Int(pidBytes) / MemoryLayout<pid_t>.stride <= maximumPIDCount
-            && count < pids.count
-        return (records, complete)
+        processTextCache = processTextCache.filter { identities.contains($0.key) }
+
+        let incompleteDetail: String?
+        if estimatedCount > Self.maximumPIDCount || count >= Self.maximumPIDCount {
+            incompleteDetail = Self.processEnumerationCapDetail
+        } else if count >= pids.count {
+            incompleteDetail = "Process enumeration filled its buffer before the process list ended."
+        } else if !identityCoverage.complete {
+            incompleteDetail = Self.processIdentityOmissionDetail
+        } else {
+            incompleteDetail = nil
+        }
+        return (records, incompleteDetail == nil, incompleteDetail)
+    }
+
+    /// Name and path are read at most once per ProcessIdentity; evicted with the identity in collectProcesses.
+    private func processText(for identity: ProcessIdentity, pid: pid_t, bsd: proc_bsdinfo) -> CachedProcessText {
+        if let cached = processTextCache[identity] { return cached }
+        let text = CachedProcessText(name: processName(pid) ?? Self.fixedCString(bsd.pbi_name),
+                                     path: processPath(pid))
+        processTextCache[identity] = text
+        return text
+    }
+
+    /// Converts Mach absolute-time ticks to nanoseconds as ticks * numer / denom, split so the
+    /// intermediate product cannot overflow for any realistic counter. Saturates instead of wrapping.
+    static func nanoseconds(fromMachTicks ticks: UInt64, timebase: (numer: UInt64, denom: UInt64)) -> UInt64 {
+        let whole = ticks / timebase.denom
+        let remainder = ticks % timebase.denom
+        let (wholeNanos, wholeOverflow) = whole.multipliedReportingOverflow(by: timebase.numer)
+        let (remainderNanos, remainderOverflow) = remainder.multipliedReportingOverflow(by: timebase.numer)
+        guard !wholeOverflow, !remainderOverflow else { return UInt64.max }
+        let (total, totalOverflow) = wholeNanos.addingReportingOverflow(remainderNanos / timebase.denom)
+        return totalOverflow ? UInt64.max : total
     }
 
     private func processBSDInfo(_ pid: pid_t) -> proc_bsdinfo? {

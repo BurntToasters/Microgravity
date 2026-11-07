@@ -5,7 +5,8 @@ enum HelperHandshake {
     static func check(requirement: String) async -> IntegrationAvailability {
         await withCheckedContinuation { continuation in
             let connection = NSXPCConnection(machServiceName: helperMachService, options: .privileged)
-            let completion = HandshakeCompletion(continuation, connection)
+            let completion = XPCSingleReply(continuation, connection: connection, timeout: 5,
+                                            timeoutValue: .failed("Helper connection timed out."))
             connection.setCodeSigningRequirement(requirement)
             connection.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
             connection.interruptionHandler = { completion.finish(.failed("Helper connection interrupted.")) }
@@ -17,21 +18,8 @@ enum HelperHandshake {
             proxy.capabilities { version, _ in
                 completion.finish(version == helperProtocolVersion ? .available : .failed("Helper protocol version is incompatible; remove and reinstall the helper."))
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 5) { completion.finish(.failed("Helper connection timed out.")) }
+            completion.armTimeout()
         }
     }
 }
-private final class HandshakeCompletion: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<IntegrationAvailability, Never>?
-    private let connection: NSXPCConnection
-    init(_ continuation: CheckedContinuation<IntegrationAvailability, Never>, _ connection: NSXPCConnection) {
-        self.continuation = continuation; self.connection = connection
-    }
-    func finish(_ value: IntegrationAvailability) {
-        lock.lock(); let saved = continuation; continuation = nil; lock.unlock()
-        guard let saved else { return }
-        connection.invalidate()
-        saved.resume(returning: value)
-    }
-}
+

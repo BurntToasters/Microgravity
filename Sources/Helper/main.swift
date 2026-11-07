@@ -24,6 +24,11 @@ final class Listener: NSObject, NSXPCListenerDelegate {
         guard let requirement = SigningIdentity.requirement(for: appSigningIdentifier) else { return false }
         connection.setCodeSigningRequirement(requirement)
         connection.exportedInterface = NSXPCInterface(with: HelperProtocol.self)
+        // Defense in depth only: connection.processIdentifier is a bare PID that the OS
+        // can reuse after the client exits. It is used solely to refuse self-termination.
+        // The code-signing requirement above is the real gate on who may connect. Do not
+        // widen what clientPID authorizes; if it must, capture the audit token or the
+        // PID plus start time at connect time instead.
         let service = Service(clientPID: connection.processIdentifier)
         connection.exportedObject = service
         connection.invalidationHandler = { service.cancellation.cancel() }

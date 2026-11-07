@@ -70,6 +70,51 @@ final class NetworkInterfaceReaderTests: XCTestCase {
         XCTAssertEqual(unavailable.transmitRate.unavailableReason, .collectionFailed)
     }
 
+    func testTotalsExcludeLoopbackAndVirtualInterfaces() throws {
+        let names: [UInt16: String] = [1: "lo0", 4: "gif0", 5: "stf0", 6: "utun3", 7: "en0", 8: "awdl0",
+                                       9: "bridge100"]
+        var data = Data()
+        data.append(routeMessage(index: 1, receive: 50_000, transmit: 50_000, isUp: true, loopback: true, type: 0x18))
+        data.append(routeMessage(index: 4, receive: 4_000, transmit: 4_000, isUp: true, type: 0x37))
+        data.append(routeMessage(index: 5, receive: 4_000, transmit: 4_000, isUp: true, type: 0x39))
+        data.append(routeMessage(index: 6, receive: 3_000, transmit: 3_000, isUp: true, type: 6))
+        data.append(routeMessage(index: 7, receive: 1_000, transmit: 2_000, isUp: true, type: 6))
+        data.append(routeMessage(index: 8, receive: 3_000, transmit: 3_000, isUp: true, type: 6))
+        data.append(routeMessage(index: 9, receive: 3_000, transmit: 3_000, isUp: true, type: 0xd1))
+
+        let records = try NetworkInterfaceReader.parse(data) { names[$0] }
+        XCTAssertEqual(records.map(\.name), ["awdl0", "bridge100", "en0", "gif0", "lo0", "stf0", "utun3"])
+        let loopback = try XCTUnwrap(records.first { $0.name == "lo0" })
+        XCTAssertTrue(loopback.isLoopback)
+        XCTAssertFalse(loopback.includedInTotals)
+        let physical = try XCTUnwrap(records.first { $0.name == "en0" })
+        XCTAssertFalse(physical.isLoopback)
+        XCTAssertTrue(physical.includedInTotals)
+        for name in ["awdl0", "bridge100", "gif0", "stf0", "utun3"] {
+            XCTAssertFalse(try XCTUnwrap(records.first { $0.name == name }).includedInTotals, name)
+        }
+
+        var tracker = NetworkInterfaceCounterTracker()
+        let start = Date()
+        _ = tracker.collect(records, at: start)
+        var next = Data()
+        next.append(routeMessage(index: 1, receive: 60_000, transmit: 60_000, isUp: true, loopback: true, type: 0x18))
+        next.append(routeMessage(index: 4, receive: 5_000, transmit: 5_000, isUp: true, type: 0x37))
+        next.append(routeMessage(index: 5, receive: 5_000, transmit: 5_000, isUp: true, type: 0x39))
+        next.append(routeMessage(index: 6, receive: 3_500, transmit: 3_500, isUp: true, type: 6))
+        next.append(routeMessage(index: 7, receive: 1_100, transmit: 2_300, isUp: true, type: 6))
+        next.append(routeMessage(index: 8, receive: 3_200, transmit: 3_200, isUp: true, type: 6))
+        next.append(routeMessage(index: 9, receive: 3_200, transmit: 3_200, isUp: true, type: 0xd1))
+        let updated = try NetworkInterfaceReader.parse(next) { names[$0] }
+        let result = tracker.collect(updated, at: start.addingTimeInterval(1))
+
+        XCTAssertEqual(result.receiveRate.value, 100, "only en0 counts toward receive totals")
+        XCTAssertEqual(result.transmitRate.value, 300, "only en0 counts toward transmit totals")
+        XCTAssertEqual(result.interfaces.count, 7, "excluded interfaces stay in the per-interface list")
+        XCTAssertEqual(result.interfaces.filter(\.includedInTotals).map(\.name), ["en0"])
+        XCTAssertEqual(result.interfaces.first { $0.name == "lo0" }?.receiveBytesPerSecond.value, 10_000)
+    }
+
     func testParserRejectsZeroLengthTruncatedAndShortInterfaceMessages() {
         let nameResolver: (UInt16) -> String? = { _ in "en0" }
         for data in [Data([0, 0, 0, 0]), Data([8, 0, 0]), Data([8, 0, 0, 0])] {
@@ -96,13 +141,14 @@ final class NetworkInterfaceReaderTests: XCTestCase {
     }
 
     private func routeMessage(index: UInt16, receive: UInt64, transmit: UInt64,
-                              isUp: Bool) -> Data {
+                              isUp: Bool, loopback: Bool = false, type: UInt8 = 6) -> Data {
         var header = if_msghdr2()
         header.ifm_msglen = UInt16(MemoryLayout<if_msghdr2>.size)
         header.ifm_version = UInt8(RTM_VERSION)
         header.ifm_type = UInt8(RTM_IFINFO2)
-        header.ifm_flags = isUp ? Int32(IFF_UP) : 0
+        header.ifm_flags = (isUp ? Int32(IFF_UP) : 0) | (loopback ? Int32(IFF_LOOPBACK) : 0)
         header.ifm_index = index
+        header.ifm_data.ifi_type = type
         header.ifm_data.ifi_ibytes = receive
         header.ifm_data.ifi_obytes = transmit
         return withUnsafeBytes(of: &header) { Data($0) }

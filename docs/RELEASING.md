@@ -19,27 +19,99 @@ Run the non-UI gates on any macOS host with Xcode 26 or newer:
 
 ```sh
 npm ci --ignore-scripts
-npm run project:sync
-npm run sync-version
+npm run project:sync -- --check
+npm run sync-version -- --check
 npm run validate
 npm run test:node
 npm run build:debug
 npm run build:release-smoke
 ```
 
-Core XCTest is also unsigned and needs no GUI. Use the `-only-testing:MicrogravityCoreTests` command in `TASK.md` section 4, which sets `CODE_SIGNING_ALLOWED=NO` and writes `DerivedData/TestResults/Microgravity-Core.xcresult`. Hosted CI (`.github/workflows/ci.yml`) runs these same non-UI gates.
-
-## Signed UI gate
-
-Hosted macOS runners do not provide a logged-in GUI session or Automation Mode, so hosted CI cannot run UI XCTest. The signed UI XCTest gate must run on a dedicated logged-in GUI runner, normally self-hosted macOS, with an Apple Development signing identity and Automation Mode enabled. It is mandatory before every release and is not skipped for releases. Use the signed `-only-testing:MicrogravityUITests` command in `TASK.md` section 5, then run the full signed suite on that runner:
+Run the Core XCTest suite. It is unsigned and needs no GUI session:
 
 ```sh
-MICROGRAVITY_UI_SIGNING_IDENTITY="Apple Development" \
-MICROGRAVITY_UI_TEAM_ID="<team-id>" \
-npm run test:all
+mkdir -p DerivedData/TestResults
+rm -rf DerivedData/TestResults/Microgravity-Core.xcresult
+xcodebuild \
+  -project Microgravity.xcodeproj \
+  -scheme Test \
+  -configuration Debug \
+  -derivedDataPath "$PWD/DerivedData/Tests" \
+  -clonedSourcePackagesDirPath "$PWD/DerivedData/SourcePackages" \
+  -packageCachePath "$PWD/DerivedData/PackageCache" \
+  -destination 'platform=macOS,arch=arm64' \
+  -parallel-testing-enabled NO \
+  -resultBundlePath "$PWD/DerivedData/TestResults/Microgravity-Core.xcresult" \
+  -only-testing:MicrogravityCoreTests \
+  test \
+  CODE_SIGNING_ALLOWED=NO \
+  SPARKLE_ENABLE_AUTOMATIC_CHECKS=NO
 ```
 
-`test:all` runs the Node suite plus both Core XCTest and UI XCTest targets and saves the `.xcresult` bundle under ignored `DerivedData/TestResults/`. The UI tests run as a real gate; an unavailable UI runner is a failure, not a skip. `build:release-smoke` only proves an unsigned universal Release compile. It does not notarize or sign an artifact.
+Use `-destination 'platform=macOS,arch=x86_64'` on an Intel host. The suite must finish with 0 failures.
+
+Hosted CI (`.github/workflows/ci.yml`) runs the Node suite, project and version checks, validation, unsigned Core XCTest, and both builds. It does not run UI XCTest. The runner label in that workflow has not been verified for this release; see `docs/IMPLEMENTATION_STATUS.md`.
+
+`build:release-smoke` only proves an unsigned universal Release compile. It does not sign or notarize an artifact.
+
+## UI tests and the release gate
+
+The UI XCTest target (`Tests/UITests`) has not passed on any host for this release. The recorded failures are interaction failures: synthesized clicks and keystrokes did not produce the expected page changes or row expansion in the test VM, and the cause has not been isolated. For 0.1.0 the UI suite is therefore not a release gate that can be met. The 0.1.0 UI verification is the Core XCTest suite, which includes AppKit view-controller tests, plus the manual checklist below. The signed UI suite stays in the repository as a goal for a later release, to be made a gate once it runs green on a dedicated logged-in GUI runner.
+
+Current script behavior differs from that decision, and the difference is not resolved in this document:
+
+- `npm run test:all` (`scripts/test-all.mjs`) runs `xcodebuild test` on the whole `Test` scheme, which contains both `MicrogravityCoreTests` and `MicrogravityUITests`. It does not filter to Core. A failing UI test therefore fails `test:all`.
+- `npm run release:prepare` runs `npm run test:all` (`scripts/release.mjs`) and records the 24-hour quality proof only when it passes. `release:mac` calls `release:prepare`. A release cannot be prepared while the UI suite fails.
+- Hosted CI runs only the unsigned Core command above, so CI is not affected.
+
+Before tagging 0.1.0, one of these must be true: the UI suite runs green on a signed GUI runner, or the owner changes `scripts/test-all.mjs` (and the release path that depends on it) so the UI target is not part of the release gate. Do not describe the release as gated on UI tests until that change is made.
+
+To run the signed UI suite on a GUI runner (for development or for a later release gate):
+
+- The runner must be a logged-in desktop session. UI tests cannot run over SSH or on a locked screen.
+- Automation Mode must be enabled. Check it with `automationmodetool`. Enabling it requires an administrator and lowers UI-automation security, so do it only on a dedicated runner.
+- The UI runner needs a real Apple Development signature. Ad-hoc or unsigned runners fail before connecting. Find the identity with `security find-identity -v -p codesigning`.
+
+```sh
+mkdir -p DerivedData/TestResults
+rm -rf DerivedData/TestResults/Microgravity-UI.xcresult
+xcodebuild \
+  -project Microgravity.xcodeproj \
+  -scheme Test \
+  -configuration Debug \
+  -derivedDataPath "$PWD/DerivedData/Tests" \
+  -clonedSourcePackagesDirPath "$PWD/DerivedData/SourcePackages" \
+  -packageCachePath "$PWD/DerivedData/PackageCache" \
+  -destination 'platform=macOS,arch=arm64' \
+  -parallel-testing-enabled NO \
+  -resultBundlePath "$PWD/DerivedData/TestResults/Microgravity-UI.xcresult" \
+  -only-testing:MicrogravityUITests \
+  test \
+  CODE_SIGNING_ALLOWED=YES \
+  CODE_SIGN_IDENTITY="Apple Development" \
+  DEVELOPMENT_TEAM="<team-id>" \
+  SPARKLE_ENABLE_AUTOMATIC_CHECKS=NO
+```
+
+Substitute the 10-character Apple Team ID for `<team-id>`. The UI tests use fixture data and need no helper approval or Sparkle feed.
+
+Troubleshooting:
+
+- `Failed to initialize for UI testing ... Canceled by user`: Automation Mode is off, or the runner tried to use biometrics. Check `automationmodetool`.
+- The runner is killed before connecting, or hangs before connecting: the runner is unsigned. Use the signed command and the correct team ID.
+- `dyld` reports different Team IDs when loading Sparkle: the Debug configuration must keep `ENABLE_HARDENED_RUNTIME = NO` (`config/debug.xcconfig`). Delete `DerivedData/Build` and rebuild.
+- `Missing package product 'Sparkle'`: delete `DerivedData/Build`, `DerivedData/SourcePackages`, and `DerivedData/PackageCache`, then rebuild. `scripts/build.mjs` converts package and tool paths to absolute paths because Xcode silently resolves no local packages from relative paths; do not revert that.
+- UI element not found or timeout: open the `.xcresult` bundle with `xcrun xcresulttool` and read the attached screenshots. Check the accessibility identifiers before changing a test.
+
+## Manual UI checklist (0.1.0)
+
+Run this on a Mac with a logged-in desktop session before tagging, and record the date, macOS version, Xcode version, and any failure in `docs/IMPLEMENTATION_STATUS.md`.
+
+1. Every page (Processes, Performance, App History, Startup, Users, Details, Services, Settings) in System, Light, and Dark appearance, at the default size of 1280 × 820 and at the minimum size of 960 × 600. Check for clipped or overlapping text, unreadable badges and heat-map colors, status indicators that rely on color alone, and any horizontal scrolling of the page body.
+2. VoiceOver spot check: the sidebar (group names, page names, and selection are announced) and the Processes outline (row name and PID are announced; expand and collapse are announced; selection follows the row).
+3. Force Quit sheet: start a throwaway process you own (for example `sleep 600` from Terminal), select it in Processes, and choose Force Quit. The confirmation must appear as a sheet attached to the main window. Cancel must leave the process running. Confirming must end it. Do not use a process you do not own.
+4. Reset History sheet: open App History and choose Reset History. The confirmation must appear as a sheet. Cancel must leave history unchanged. Confirming must clear App History and must not change any process data.
+5. Closing the last window quits the app.
 
 ## Prepare and publish
 

@@ -32,7 +32,7 @@ enum AppComposition {
             collector: SystemMonitorCollector(advancedCollector: NativeAdvancedMetricsCollector()),
             historyStore: SQLiteMonitoringHistoryStore()
         )
-        let storedInterval = UserDefaults.standard.double(forKey: "monitoring.refreshInterval")
+        let storedInterval = UserDefaults.standard.double(forKey: SamplingControls.refreshIntervalDefaultsKey)
         let interval = MonitoringInterval(rawValue: storedInterval) ?? .oneSecond
         store.start(interval: interval)
         return AppDependencies(

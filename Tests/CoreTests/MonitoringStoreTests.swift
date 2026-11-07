@@ -45,22 +45,64 @@ final class MonitoringStoreTests: XCTestCase {
         XCTAssertFalse(store.isRunning)
     }
 
-    func testStopDuringHistoryRecordDoesNotPublishTheStaleSnapshot() async {
+    func testSnapshotPublishesBeforeHistoryWriteCompletes() async {
         let history = SuspendedRecordingHistoryStore()
         let store = DefaultMonitoringStore(collector: StaticCollector(), historyStore: history)
         var callbacks = 0
         store.onSnapshot = { _ in callbacks += 1 }
-        store.start(interval: .fiveSeconds)
         let refresh = Task { await store.refreshNow() }
 
         await history.waitForRecordStart()
+        XCTAssertEqual(callbacks, 1, "the UI must receive the sample while its history write is suspended")
+        XCTAssertNotNil(store.latestSnapshot)
+        XCTAssertEqual(store.graphSamples.count, 1)
+        let rowsBeforeRelease = await history.rowCount()
+        XCTAssertEqual(rowsBeforeRelease, 0)
+
+        await history.releaseRecord()
+        await refresh.value
+        let rowsAfterWrite = await history.rowCount()
+        XCTAssertEqual(rowsAfterWrite, 1)
+    }
+
+    func testPollingPeriodDoesNotDriftWithSlowCollector() async {
+        // 0.3 s of collection per sample on a 0.5 s grid: five samples span four periods
+        // (2.0 s). Sleeping one interval after each collection would take 3.2 s.
+        let collector = TimingCollector(collectionDuration: .milliseconds(300))
+        let store = DefaultMonitoringStore(collector: collector)
+        store.start(interval: .halfSecond)
+
+        let limit = ContinuousClock.now.advanced(by: .seconds(10))
+        var count = await collector.startCount()
+        while count < 5, ContinuousClock.now < limit {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+            count = await collector.startCount()
+        }
+        store.stop()
+
+        let starts = await collector.startInstants
+        XCTAssertGreaterThanOrEqual(starts.count, 5, "the polling loop must keep sampling")
+        guard starts.count >= 5 else { return }
+        let elapsed = seconds(starts[0].duration(to: starts[4]))
+        XCTAssertGreaterThanOrEqual(elapsed, 1.9, "samples must not run early")
+        XCTAssertLessThan(elapsed, 2.6, "collection time must not stretch the sampling period")
+    }
+
+    func testStopDuringHistoryRecordSuppressesTheHistoryFollowUp() async {
+        let history = SuspendedRecordingHistoryStore()
+        let store = DefaultMonitoringStore(collector: StaticCollector(), historyStore: history)
+        var callbacks = 0
+        store.onSnapshot = { _ in callbacks += 1 }
+        let refresh = Task { await store.refreshNow() }
+
+        await history.waitForRecordStart()
+        XCTAssertEqual(callbacks, 1, "the live sample is published before the write")
         store.stop()
         await history.releaseRecord()
         await refresh.value
 
-        XCTAssertNil(store.latestSnapshot)
-        XCTAssertTrue(store.graphSamples.isEmpty)
-        XCTAssertEqual(callbacks, 0)
+        XCTAssertEqual(callbacks, 1, "a stopped generation must not publish history results")
+        XCTAssertEqual(store.graphSamples.count, 1)
     }
 
     func testHistoryResetFailureIsReturnedToTheCaller() async {
@@ -355,6 +397,26 @@ private actor RateSequenceCollector: MonitoringCollecting {
                                          diskReadRate: rate, diskWriteRate: rate,
                                          networkReceiveRate: rate, networkTransmitRate: rate)
     }
+}
+
+private actor TimingCollector: MonitoringCollecting {
+    private let collectionDuration: Duration
+    private(set) var startInstants: [ContinuousClock.Instant] = []
+
+    init(collectionDuration: Duration) { self.collectionDuration = collectionDuration }
+
+    func collect(at timestamp: Date) async -> MonitoringSnapshot {
+        startInstants.append(ContinuousClock.now)
+        try? await Task.sleep(for: collectionDuration)
+        return CoreTestFixtures.snapshot(timestamp: timestamp)
+    }
+
+    func startCount() -> Int { startInstants.count }
+}
+
+private func seconds(_ duration: Duration) -> Double {
+    let components = duration.components
+    return Double(components.seconds) + Double(components.attoseconds) / 1e18
 }
 
 private enum HistoryTestError: Error, Equatable {

@@ -7,6 +7,8 @@ import { syncVersion } from "./sync-version.mjs";
 
 const pbxTokens = /\s+|\/\/[^\n]*|\/\*[\s\S]*?\*\/|"((?:\\.|[^"\\])*)"|([A-Za-z0-9_$./:+\-]+)|([\s\S])/g;
 const pbxObjectId = /^[0-9A-Z]{24}$/;
+// Name of resources/microgravity.icon without its extension; actool names the compiled icon after it.
+export const appIconName = "microgravity";
 
 export function parsePbxproj(text) {
   const tokens = [...text.matchAll(pbxTokens)].flatMap((match) => {
@@ -114,6 +116,10 @@ export function checkProject(text, { base = root } = {}) {
       if (directory && !actual.includes(directory)) failures.push(`pbxproj: ${source} is outside its target's synchronized groups`);
     }
   }
+  const appSettings = (objects[targets.Microgravity?.buildConfigurationList]?.buildConfigurations ?? []).map((id) => objects[id]?.buildSettings ?? {});
+  if (appSettings.length === 0 || appSettings.some((settings) => settings.ASSETCATALOG_COMPILER_APPICON_NAME !== appIconName)) {
+    failures.push(`pbxproj: Microgravity app configurations must set ASSETCATALOG_COMPILER_APPICON_NAME = ${appIconName}`);
+  }
   const appPhases = (targets.Microgravity?.buildPhases ?? []).map((id) => objects[id]).filter(Boolean);
   const daemonPhase = appPhases.find((phase) => phase.isa === "PBXCopyFilesBuildPhase" && phase.dstSubfolderSpec === "1" && phase.dstPath === "Contents/Library/LaunchDaemons");
   const copiedDaemon = (daemonPhase?.files ?? []).some((id) => {
@@ -199,6 +205,7 @@ export function validateWorkspace({ release = false, bundle = null } = {}) {
   const versionConfig = fs.readFileSync(path.join(root, "config/version.xcconfig"), "utf8");
   add(failures, infoPlist.includes("$(PRODUCT_BUNDLE_IDENTIFIER)"), "Info.plist bundle identity must come from build settings");
   add(failures, infoPlist.includes("$(MARKETING_VERSION)") && infoPlist.includes("$(CURRENT_PROJECT_VERSION)"), "Info.plist version fields must come from package.json version metadata");
+  add(failures, new RegExp(`<key>CFBundleIconName</key>\\s*<string>${appIconName}</string>`).test(infoPlist), `Info.plist must declare CFBundleIconName ${appIconName}`);
   add(failures, infoPlist.includes("$(SPARKLE_PUBLIC_KEY)"), "Info.plist must use the configured Sparkle public key");
   add(failures, infoPlist.includes("$(SPARKLE_ENABLE_AUTOMATIC_CHECKS)"), "Sparkle automatic checks must be controlled by build configuration");
   add(failures, versionConfig.includes("SPARKLE_ENABLE_AUTOMATIC_CHECKS = NO"), "Sparkle automatic checks must default off until a public key is configured");
@@ -256,6 +263,10 @@ export function validateWorkspace({ release = false, bundle = null } = {}) {
       add(failures, fs.existsSync(path.join(sparkleFramework, "Versions/A/Updater.app")), "built app is missing Sparkle Updater helper");
       add(failures, fs.existsSync(path.join(bundle, "Contents/Helpers/MicrogravityHelper")), "built app is missing its helper executable");
       checkHelperPlist(path.join(bundle, "Contents/Library/LaunchDaemons/run.rosie.microgravity.helper.plist"), failures);
+      add(failures, bundleValue(bundle, "CFBundleIconName") === appIconName, `built app CFBundleIconName must be ${appIconName}`);
+      const assetCatalog = path.join(bundle, "Contents/Resources/Assets.car");
+      const assetEntries = fs.existsSync(assetCatalog) ? JSON.parse(run("xcrun", ["assetutil", "--info", assetCatalog], { capture: true }).stdout) : [];
+      add(failures, assetEntries.some((entry) => entry.AssetType === "Icon Image" && entry.Name === appIconName), `built app Assets.car has no ${appIconName} app icon`);
       const automaticChecks = bundleValue(bundle, "SUEnableAutomaticChecks").toLowerCase();
       const sparkleKey = bundleValue(bundle, "SUPublicEDKey");
       if (!sparkleKey) add(failures, automaticChecks === "no" || automaticChecks === "false", "automatic Sparkle checks must be disabled when no public key is configured");

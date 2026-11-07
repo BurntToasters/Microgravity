@@ -52,8 +52,16 @@ enum TerminationService {
         case .targetRejected: return "targetRejected"
         case .authorizationDenied: return "authorizationDenied"
         case .allowed(let final):
-            return kill(pid_t(final.pid), request.force ? SIGKILL : SIGTERM) == 0 ? "signalSent" : "signalFailed"
+            return deliverSignal(to: final.pid, force: request.force)
         }
+    }
+
+    /// Sends exactly one signal to the already-authorized PID. Signals are never sent
+    /// to a process group or to children, so SIGKILL on a parent leaves its children
+    /// running, as the UI states.
+    static func deliverSignal(to pid: Int32, force: Bool,
+                              send: (pid_t, Int32) -> Int32 = { Darwin.kill($0, $1) }) -> String {
+        send(pid_t(pid), force ? SIGKILL : SIGTERM) == 0 ? "signalSent" : "signalFailed"
     }
 
     /// Validates the target twice and only then consumes the authorization form.

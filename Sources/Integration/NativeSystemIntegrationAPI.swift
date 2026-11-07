@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import ServiceManagement
 import Sparkle
@@ -10,8 +11,10 @@ final class NativeSystemIntegrationAPI: NSObject, SystemIntegrationAPI, SPUUpdat
     private var updateState: UpdateAvailability { didSet { onStatusChange?() } }
     private let updaterConfigured: Bool
     private var helperConnectionStatus: IntegrationAvailability = .unavailable("Checking helper status.")
+    private var statusRefresh: Task<Void, Never>?
     var status: SystemIntegrationStatus {
-        SystemIntegrationStatus(helper: helperStatus, loginItem: loginStatus, updates: updateState)
+        SystemIntegrationStatus(helper: helperStatus, loginItem: loginStatus, updates: updateState,
+                                helperRegistered: daemon.status != .notRegistered)
     }
 
     override init() {
@@ -22,6 +25,17 @@ final class NativeSystemIntegrationAPI: NSObject, SystemIntegrationAPI, SPUUpdat
         super.init()
         if valid {
             updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
+        }
+        // The helper and login item can change in System Settings while the app is
+        // in the background, so status is refreshed on activation, not only when
+        // Settings is visible. This object lives for the app's lifetime and the
+        // observer captures self weakly, so the token is not kept.
+        _ = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.refreshStatus() }
         }
     }
 
@@ -37,7 +51,30 @@ final class NativeSystemIntegrationAPI: NSObject, SystemIntegrationAPI, SPUUpdat
         }
     }
 
+    /// Concurrent callers (the activation observer and an open Settings page) share one pass.
     func refreshStatus() async {
+        if let statusRefresh {
+            await statusRefresh.value
+            return
+        }
+        await runStatusRefresh()
+    }
+
+    private func runStatusRefresh() async {
+        let refresh = Task { await performStatusRefresh() }
+        statusRefresh = refresh
+        await refresh.value
+        if statusRefresh == refresh { statusRefresh = nil }
+    }
+
+    /// A pass that was already running may have started before a helper change, so
+    /// wait for it and then run a fresh one.
+    private func refreshStatusAfterChange() async {
+        if let statusRefresh { await statusRefresh.value }
+        await runStatusRefresh()
+    }
+
+    private func performStatusRefresh() async {
         guard let requirement = SigningIdentity.requirement(for: helperSigningIdentifier) else {
             helperConnectionStatus = .unavailable("A signed app is required for the helper.")
             onStatusChange?()
@@ -57,12 +94,12 @@ final class NativeSystemIntegrationAPI: NSObject, SystemIntegrationAPI, SPUUpdat
         guard SigningIdentity.requirement(for: helperSigningIdentifier) != nil else {
             return .unavailable("A signed app is required for the helper.")
         }
-        do { try daemon.register(); await refreshStatus(); return .completed }
-        catch { await refreshStatus(); return .failed(error.localizedDescription) }
+        do { try daemon.register(); await refreshStatusAfterChange(); return .completed }
+        catch { await refreshStatusAfterChange(); return .failed(error.localizedDescription) }
     }
     func removeHelper() async -> IntegrationActionResult {
-        do { try await daemon.unregister(); await refreshStatus(); return .completed }
-        catch { await refreshStatus(); return .failed(error.localizedDescription) }
+        do { try await daemon.unregister(); await refreshStatusAfterChange(); return .completed }
+        catch { await refreshStatusAfterChange(); return .failed(error.localizedDescription) }
     }
     func setLaunchAtLogin(_ enabled: Bool) async -> IntegrationActionResult {
         do {

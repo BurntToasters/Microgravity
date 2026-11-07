@@ -562,6 +562,30 @@ final class SQLiteMonitoringHistoryStoreTests: XCTestCase {
         XCTAssertTrue(clearedApplications.isEmpty)
     }
 
+    func testRetentionRunsOncePerUTCDayAndFirstRecordAfterLaunchRunsIt() async throws {
+        let databaseURL = try temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: databaseURL.deletingLastPathComponent()) }
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let expiredDay = now.addingTimeInterval(-31 * 86_400)
+        let history = SQLiteMonitoringHistoryStore(databaseURL: databaseURL)
+
+        try await history.record(snapshot: CoreTestFixtures.snapshot(timestamp: now))
+        try insertExpiredDailyTotal(dayStart: expiredDay, at: databaseURL)
+        // Same UTC day: the retention pass is skipped, so the expired row survives.
+        try await history.record(snapshot: CoreTestFixtures.snapshot(timestamp: now.addingTimeInterval(1)))
+        XCTAssertEqual(try expiredDailyTotalCount(dayStart: expiredDay, at: databaseURL), 1)
+
+        // Next UTC day: retention runs again and removes the expired row.
+        try await history.record(snapshot: CoreTestFixtures.snapshot(timestamp: now.addingTimeInterval(86_400)))
+        XCTAssertEqual(try expiredDailyTotalCount(dayStart: expiredDay, at: databaseURL), 0)
+
+        // A freshly launched store always runs retention on its first record.
+        try insertExpiredDailyTotal(dayStart: expiredDay, at: databaseURL)
+        let relaunched = SQLiteMonitoringHistoryStore(databaseURL: databaseURL)
+        try await relaunched.record(snapshot: CoreTestFixtures.snapshot(timestamp: now.addingTimeInterval(86_401)))
+        XCTAssertEqual(try expiredDailyTotalCount(dayStart: expiredDay, at: databaseURL), 0)
+    }
+
     func testAppHistoryUsesActualGroupIdentityAndDoesNotDoubleCountMembers() async throws {
         let databaseURL = try temporaryDatabaseURL()
         defer { try? FileManager.default.removeItem(at: databaseURL.deletingLastPathComponent()) }
@@ -800,6 +824,27 @@ final class SQLiteMonitoringHistoryStoreTests: XCTestCase {
         } catch {
             XCTAssertFalse(String(describing: error).isEmpty)
         }
+    }
+
+    private func insertExpiredDailyTotal(dayStart: Date, at databaseURL: URL) throws {
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        defer { sqlite3_close(database) }
+        let sql = "INSERT INTO daily_totals (day_start, sample_count) VALUES (\(Int64(dayStart.timeIntervalSince1970)), 1)"
+        XCTAssertEqual(sqlite3_exec(database, sql, nil, nil, nil), SQLITE_OK)
+    }
+
+    private func expiredDailyTotalCount(dayStart: Date, at databaseURL: URL) throws -> Int {
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        defer { sqlite3_close(database) }
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(database, "SELECT COUNT(*) FROM daily_totals WHERE day_start = ?",
+                                          -1, &statement, nil), SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, Int64(dayStart.timeIntervalSince1970))
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        return Int(sqlite3_column_int64(statement, 0))
     }
 
     private func temporaryDatabaseURL() throws -> URL {

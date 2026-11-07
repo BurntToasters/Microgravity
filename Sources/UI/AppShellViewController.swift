@@ -52,12 +52,19 @@ protocol SnapshotUpdating: AnyObject {
 @MainActor
 final class RootViewController: NSViewController {
     private let dependencies: AppDependencies
-    private let sidebar = SidebarViewController()
+    private let sidebar: SidebarViewController
     private let pageHost: PageHostViewController
     private let splitController = NSSplitViewController()
 
+    /// Fires after the detail page changes. The window uses it to rebuild the page's toolbar items.
+    var onPageChange: ((PageToolbarProviding?) -> Void)?
+
+    var splitView: NSSplitView { splitController.splitView }
+    var currentPageToolbarProvider: PageToolbarProviding? { pageHost.currentController as? PageToolbarProviding }
+
     init(dependencies: AppDependencies) {
         self.dependencies = dependencies
+        self.sidebar = SidebarViewController(monitoringStore: dependencies.monitoringStore)
         self.pageHost = PageHostViewController(dependencies: dependencies)
         super.init(nibName: nil, bundle: nil)
     }
@@ -67,20 +74,19 @@ final class RootViewController: NSViewController {
     }
 
     override func loadView() {
-        view = NSView()
+        // Dynamic background: a CGColor snapshot here would not follow Light/Dark changes.
+        view = DynamicWindowBackgroundView()
         view.translatesAutoresizingMaskIntoConstraints = false
-        view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
 
         splitController.splitView.isVertical = true
         splitController.splitView.dividerStyle = .thin
 
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
-        sidebarItem.minimumThickness = 205
-        sidebarItem.maximumThickness = 265
-        sidebarItem.canCollapse = false
+        sidebarItem.minimumThickness = 200
+        sidebarItem.maximumThickness = 280
+        sidebarItem.canCollapse = true
         let contentItem = NSSplitViewItem(viewController: pageHost)
-        contentItem.minimumThickness = 650
+        contentItem.minimumThickness = 700
         contentItem.canCollapse = false
         splitController.addSplitViewItem(sidebarItem)
         splitController.addSplitViewItem(contentItem)
@@ -102,109 +108,31 @@ final class RootViewController: NSViewController {
         sidebar.onSelect = { [weak self] page in
             self?.pageHost.show(page: page)
         }
-        sidebar.select(.processes)
-        dependencies.monitoringStore.onSnapshot = { [weak pageHost] snapshot in
-            pageHost?.update(snapshot: snapshot)
+        pageHost.onPageChange = { [weak self] controller in
+            self?.onPageChange?(controller as? PageToolbarProviding)
         }
+        dependencies.monitoringStore.onSnapshot = { [weak self] snapshot in
+            self?.apply(snapshot: snapshot)
+        }
+        select(.processes)
         if let snapshot = dependencies.monitoringStore.latestSnapshot {
-            pageHost.update(snapshot: snapshot)
+            apply(snapshot: snapshot)
         }
-    }
-}
-
-@MainActor
-private final class SidebarViewController: NSViewController {
-    var onSelect: ((DashboardPage) -> Void)?
-    private var buttons: [DashboardPage: NSButton] = [:]
-
-    override func loadView() {
-        let effect = NSVisualEffectView()
-        effect.material = .sidebar
-        effect.blendingMode = .behindWindow
-        effect.state = .followsWindowActiveState
-        view = effect
-
-        let brand = NSStackView()
-        brand.orientation = .vertical
-        brand.alignment = .leading
-        brand.spacing = 3
-        brand.translatesAutoresizingMaskIntoConstraints = false
-        let appName = NSTextField(labelWithString: "MICROGRAVITY")
-        appName.font = .systemFont(ofSize: 12, weight: .bold)
-        appName.textColor = .secondaryLabelColor
-        let appSubtitle = NSTextField(labelWithString: "SYSTEM MONITOR")
-        appSubtitle.font = .systemFont(ofSize: 10, weight: .medium)
-        appSubtitle.textColor = .tertiaryLabelColor
-        brand.addArrangedSubview(appName)
-        brand.addArrangedSubview(appSubtitle)
-
-        let navigation = NSStackView()
-        navigation.orientation = .vertical
-        navigation.alignment = .leading
-        navigation.distribution = .fill
-        navigation.spacing = 4
-        navigation.translatesAutoresizingMaskIntoConstraints = false
-        for page in DashboardPage.allCases {
-            let button = makeButton(page)
-            buttons[page] = button
-            navigation.addArrangedSubview(button)
-            button.widthAnchor.constraint(equalTo: navigation.widthAnchor).isActive = true
-        }
-
-        let footer = NSTextField(labelWithString: "Local system data")
-        footer.font = .systemFont(ofSize: 11)
-        footer.textColor = .tertiaryLabelColor
-        footer.translatesAutoresizingMaskIntoConstraints = false
-
-        let stack = NSStackView(views: [brand, navigation, NSView(), footer])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.distribution = .fill
-        stack.spacing = 18
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 22),
-            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16),
-            navigation.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            footer.widthAnchor.constraint(equalTo: stack.widthAnchor)
-        ])
-        stack.setCustomSpacing(26, after: brand)
-        stack.setCustomSpacing(14, after: navigation)
     }
 
     func select(_ page: DashboardPage) {
-        for (candidate, button) in buttons {
-            button.state = candidate == page ? .on : .off
-        }
-        onSelect?(page)
+        sidebar.select(page)
+        pageHost.show(page: page)
     }
 
-    private func makeButton(_ page: DashboardPage) -> NSButton {
-        let button = NSButton(title: page.title, target: self, action: #selector(didSelectPage(_:)))
-        button.identifier = NSUserInterfaceItemIdentifier("navigation.item.\(page.rawValue)")
-        button.setAccessibilityIdentifier("navigation.item.\(page.rawValue)")
-        button.image = NSImage(systemSymbolName: page.symbolName, accessibilityDescription: nil)
-        button.imagePosition = .imageLeading
-        button.imageHugsTitle = true
-        button.contentTintColor = .secondaryLabelColor
-        button.font = .systemFont(ofSize: 13, weight: .medium)
-        button.alignment = .left
-        button.isBordered = false
-        button.bezelStyle = .rounded
-        button.setButtonType(.toggle)
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.heightAnchor.constraint(equalToConstant: 34).isActive = true
-        button.tag = DashboardPage.allCases.firstIndex(of: page) ?? 0
-        return button
+    /// Collapses or expands the sidebar; the split view controller owns the animation.
+    @objc func toggleSidebar(_ sender: Any?) {
+        splitController.toggleSidebar(sender)
     }
 
-    @objc private func didSelectPage(_ sender: NSButton) {
-        let pages = DashboardPage.allCases
-        guard pages.indices.contains(sender.tag) else { return }
-        select(pages[sender.tag])
+    private func apply(snapshot: MonitoringSnapshot) {
+        pageHost.update(snapshot: snapshot)
+        sidebar.refreshStatus(snapshot: snapshot)
     }
 }
 
@@ -212,10 +140,11 @@ private final class SidebarViewController: NSViewController {
 private final class PageHostViewController: NSViewController {
     private let dependencies: AppDependencies
     private var currentPage: DashboardPage?
-    private var currentController: NSViewController?
     private var cachedControllers: [DashboardPage: NSViewController] = [:]
     private var currentConstraints: [NSLayoutConstraint] = []
     private var latestSnapshot: MonitoringSnapshot?
+    private(set) var currentController: NSViewController?
+    var onPageChange: ((NSViewController?) -> Void)?
 
     init(dependencies: AppDependencies) {
         self.dependencies = dependencies
@@ -247,6 +176,7 @@ private final class PageHostViewController: NSViewController {
         if let latestSnapshot {
             (controller as? SnapshotUpdating)?.update(snapshot: latestSnapshot)
         }
+        onPageChange?(controller)
     }
 
     private func makeController(for page: DashboardPage) -> NSViewController {
@@ -273,10 +203,11 @@ private final class PageHostViewController: NSViewController {
         let pageView = controller.view
         pageView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(pageView)
+        // Start below the unified toolbar: the window uses full-size content.
         currentConstraints = [
             pageView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             pageView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            pageView.topAnchor.constraint(equalTo: view.topAnchor),
+            pageView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             pageView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ]
         NSLayoutConstraint.activate(currentConstraints)
@@ -296,16 +227,25 @@ private final class PageHostViewController: NSViewController {
 enum UIComponents {
     static func header(title: String, subtitle: String) -> NSView {
         let heading = NSTextField(labelWithString: title)
-        heading.font = .systemFont(ofSize: 25, weight: .semibold)
+        heading.font = .systemFont(ofSize: 22, weight: .bold)
         heading.textColor = .labelColor
-        let caption = NSTextField(labelWithString: subtitle)
-        caption.font = .systemFont(ofSize: 12)
-        caption.textColor = .secondaryLabelColor
-        caption.maximumNumberOfLines = 2
-        let stack = NSStackView(views: [heading, caption])
+        heading.lineBreakMode = .byTruncatingTail
+        var views: [NSView] = [heading]
+        if !subtitle.isEmpty {
+            // One line only; the full explanation lives in the tooltip.
+            let caption = NSTextField(labelWithString: subtitle)
+            caption.font = .systemFont(ofSize: 11)
+            caption.textColor = .secondaryLabelColor
+            caption.maximumNumberOfLines = 1
+            caption.lineBreakMode = .byTruncatingTail
+            caption.toolTip = subtitle
+            views.append(caption)
+        }
+        let stack = NSStackView(views: views)
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 4
+        stack.spacing = 2
+        stack.toolTip = subtitle.isEmpty ? nil : subtitle
         stack.translatesAutoresizingMaskIntoConstraints = false
         return stack
     }

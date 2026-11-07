@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 
 enum InventoryKind {
     case startup
@@ -26,144 +27,190 @@ enum InventoryKind {
     }
 }
 
+/// Read-only Startup and Services page. Coverage is a banner; the selected item's path sits in a bottom bar.
 @MainActor
-final class InventoryViewController: NSViewController, SnapshotUpdating {
+final class InventoryViewController: NSViewController, SnapshotUpdating, PageToolbarProviding {
     private let kind: InventoryKind
-    private let table: NSTableView
-    private let scrollView: NSScrollView
-    private let model: AccessibleTableModel
     private let dependencies: PageDependencies
-    private let coverageLabel = NSTextField(labelWithString: "Waiting for discovery")
-    private let selectionLabel = NSTextField(labelWithString: "Select an item to inspect its path.")
+    private let table: InventoryTableController
+    private let banner = StatusBannerView(style: .info)
+    private let pathLabel = NSTextField(labelWithString: "Select an item to inspect its path.")
     private let revealButton = NSButton(title: "Reveal in Finder", target: nil, action: nil)
-    private let settingsButton = NSButton(title: "Open System Settings", target: nil, action: nil)
-    private var entries: [String: DiscoveredEntrySnapshot] = [:]
+    private let toolbarRevealButton = NSButton(title: "Reveal in Finder", target: nil, action: nil)
+    private let toolbarSettingsButton = NSButton(title: "Open Login Items Settings", target: nil, action: nil)
+    private var toolbarItems: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
+    private var rowsByID: [String: InventoryRow] = [:]
     private var selectedEntry: DiscoveredEntrySnapshot?
+    private var coverageReasons: [String] = []
+    private var coverageDetailsPopover: NSPopover?
+
+    private var revealIdentifier: NSToolbarItem.Identifier {
+        NSToolbarItem.Identifier("\(kind.pageIdentifier).toolbar.reveal")
+    }
+
+    private var loginItemsIdentifier: NSToolbarItem.Identifier {
+        NSToolbarItem.Identifier("\(kind.pageIdentifier).toolbar.login-items")
+    }
 
     init(kind: InventoryKind, dependencies: PageDependencies) {
         self.kind = kind
         self.dependencies = dependencies
-        let tableParts = makeAccessibleTable(identifier: "\(kind.pageIdentifier).table")
-        table = tableParts.0
-        scrollView = tableParts.1
-        model = AccessibleTableModel(table: table, columns: [
-            TableColumnSpec("name", "Name", width: 210),
-            TableColumnSpec("kind", "Type", width: 145),
-            TableColumnSpec("state", "State", width: 110),
-            TableColumnSpec("owner", "Owner", width: 120),
-            TableColumnSpec("path", "Known path", width: 330)
-        ])
+        table = InventoryTableController(identifier: "\(kind.pageIdentifier).table",
+                                         autosaveName: "\(kind.pageIdentifier).table",
+                                         accessibilityLabel: kind.title)
         super.init(nibName: nil, bundle: nil)
-        model.onSelectionChanged = { [weak self] rowID in
-            self?.selectedEntry = rowID.flatMap { self?.entries[$0] }
-            self?.updateSelectedItem()
+        table.onSelectionChanged = { [weak self] rowID in
+            guard let self else { return }
+            selectedEntry = rowID.flatMap { self.rowsByID[$0]?.entry }
+            updateSelectedItem()
         }
     }
 
     required init?(coder: NSCoder) { nil }
 
+    // MARK: PageToolbarProviding
+
+    var toolbarItemIdentifiers: [NSToolbarItem.Identifier] { [revealIdentifier, loginItemsIdentifier] }
+
+    func toolbarItem(for identifier: NSToolbarItem.Identifier) -> NSToolbarItem? {
+        if let item = toolbarItems[identifier] { return item }
+        let item: NSToolbarItem
+        if identifier == revealIdentifier {
+            configureToolbarButton(toolbarRevealButton, title: "Reveal in Finder", symbol: "folder",
+                                   identifier: "\(kind.pageIdentifier).toolbar.reveal",
+                                   action: #selector(revealSelectedPath))
+            toolbarRevealButton.isEnabled = false
+            item = makeToolbarItem(identifier, label: "Reveal in Finder", button: toolbarRevealButton,
+                                   menuTitle: "Reveal in Finder", action: #selector(revealSelectedPath))
+        } else if identifier == loginItemsIdentifier {
+            configureToolbarButton(toolbarSettingsButton, title: "Open Login Items Settings", symbol: "gearshape",
+                                   identifier: "\(kind.pageIdentifier).action.open-settings",
+                                   action: #selector(openLoginItemsSettings))
+            item = makeToolbarItem(identifier, label: "Open Login Items Settings", button: toolbarSettingsButton,
+                                   menuTitle: "Open Login Items Settings", action: #selector(openLoginItemsSettings))
+        } else {
+            return nil
+        }
+        toolbarItems[identifier] = item
+        return item
+    }
+
+    // MARK: View
+
     override func loadView() {
         view = DynamicWindowBackgroundView()
 
-        let description = kind == .startup
-            ? "Read-only view of login items and launch agents. Discovery may be incomplete when locations are protected."
-            : "Read-only view of discovered system services. Discovery may be incomplete when access is restricted."
-        let header = UIComponents.header(title: kind.title, subtitle: description)
-        coverageLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        coverageLabel.textColor = .secondaryLabelColor
-        coverageLabel.setAccessibilityIdentifier("\(kind.pageIdentifier).discovery-state")
-        selectionLabel.font = .systemFont(ofSize: 11)
-        selectionLabel.textColor = .secondaryLabelColor
+        let header = UIComponents.header(
+            title: kind.title,
+            subtitle: "Read-only. Discovery may be incomplete when locations are protected."
+        )
+        banner.setTextAccessibilityIdentifier("\(kind.pageIdentifier).discovery-state")
+
         revealButton.target = self
         revealButton.action = #selector(revealSelectedPath)
+        revealButton.controlSize = .small
+        revealButton.font = .systemFont(ofSize: 11)
         revealButton.isEnabled = false
-        settingsButton.target = self
-        settingsButton.action = #selector(openSystemSettings)
-        settingsButton.setAccessibilityIdentifier("\(kind.pageIdentifier).action.open-settings")
+        revealButton.setAccessibilityIdentifier("\(kind.pageIdentifier).action.reveal-path")
+        pathLabel.font = .systemFont(ofSize: 11)
+        pathLabel.textColor = .secondaryLabelColor
+        pathLabel.lineBreakMode = .byTruncatingMiddle
+        pathLabel.maximumNumberOfLines = 1
+        pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        pathLabel.setAccessibilityIdentifier("\(kind.pageIdentifier).selection.path")
 
-        let actionRow = NSStackView(views: [revealButton, settingsButton])
-        actionRow.orientation = .horizontal
-        actionRow.spacing = 8
-        let info = NSStackView(views: [selectionLabel, actionRow])
-        info.orientation = .vertical
-        info.alignment = .leading
-        info.spacing = 8
+        let separator = NSBox()
+        separator.boxType = .separator
+        let bar = NSStackView(views: [pathLabel, NSView(), revealButton])
+        bar.orientation = .horizontal
+        bar.alignment = .centerY
+        bar.spacing = 8
+        let footer = NSStackView(views: [separator, bar])
+        footer.orientation = .vertical
+        footer.alignment = .leading
+        footer.spacing = 8
 
-        let content = NSStackView(views: [header, coverageLabel, scrollView, info])
+        let scroll = table.scrollView
+        scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
+
+        let content = NSStackView(views: [header, banner, scroll, footer])
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 12
         content.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(content)
-        NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
-            content.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
-            content.topAnchor.constraint(equalTo: view.topAnchor, constant: 22),
-            content.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -20),
+        NSLayoutConstraint.activate(PageLayout.pin(content, in: view) + [
             header.widthAnchor.constraint(equalTo: content.widthAnchor),
-            scrollView.widthAnchor.constraint(equalTo: content.widthAnchor),
-            scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 300),
-            info.widthAnchor.constraint(equalTo: content.widthAnchor)
+            banner.widthAnchor.constraint(equalTo: content.widthAnchor),
+            scroll.widthAnchor.constraint(equalTo: content.widthAnchor),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 260),
+            footer.widthAnchor.constraint(equalTo: content.widthAnchor),
+            separator.widthAnchor.constraint(equalTo: footer.widthAnchor),
+            bar.widthAnchor.constraint(equalTo: footer.widthAnchor)
         ])
     }
 
     func update(snapshot: MonitoringSnapshot) {
-        let previousID = selectedEntry?.id
-        let values = kind == .startup ? snapshot.startupItems : snapshot.services
-        let entrySlugCounts = Dictionary(grouping: values, by: { slug($0.id) }).mapValues(\.count)
-        var rowIDByEntryID: [String: String] = [:]
-        entries.removeAll(keepingCapacity: true)
-        let rows = values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }.map { entry -> AccessibleTableRow in
-            let entrySlug = slug(entry.id)
-            let duplicateSuffix = (entrySlugCounts[entrySlug] ?? 0) > 1 ? ".entry.\(entry.id)" : ""
-            let rowID = "\(kind.pageIdentifier).item.\(entrySlug)\(duplicateSuffix)"
-            rowIDByEntryID[entry.id] = rowID
-            entries[rowID] = entry
-            return AccessibleTableRow(id: rowID, values: [
-                entry.name,
-                entry.kind.rawValue,
-                entry.state.rawValue.capitalized,
-                UIFormat.ownerName(entry.ownerUID),
-                entry.path ?? "Path unavailable"
-            ])
-        }
-        model.replaceRows(rows, in: table)
-        if let previousID,
-           let rowID = rowIDByEntryID[previousID],
-           let rowIndex = model.rows.firstIndex(where: { $0.id == rowID }) {
-            table.selectRowIndexes(IndexSet(integer: rowIndex), byExtendingSelection: false)
-        } else {
-            table.deselectAll(nil)
-            selectedEntry = nil
-        }
-        updateSelectedItem()
-
+        let entries = kind == .startup ? snapshot.startupItems : snapshot.services
+        let rows = InventoryRows.rows(for: entries, pageIdentifier: kind.pageIdentifier)
+        rowsByID = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let coverage = coverage(snapshot)
-        if let coverage {
-            coverageLabel.stringValue = coverage.complete
-                ? "Discovery complete · \(values.count) entries found"
-                : (coverage.reasons.isEmpty ? "Discovery incomplete · some locations could not be inspected."
-                                             : "Discovery incomplete · " + coverage.reasons.joined(separator: " "))
+
+        table.update(rows: rows)
+        updateBanner(coverage: coverage, count: entries.count)
+        let empty = emptyStateText(coverage: coverage)
+        table.setEmptyState(title: empty.title, caption: empty.caption)
+        selectedEntry = table.selectedRowID.flatMap { rowsByID[$0]?.entry }
+        updateSelectedItem()
+    }
+
+    private func updateBanner(coverage: DiscoveryCoverage?, count: Int) {
+        coverageReasons = coverage?.reasons ?? []
+        guard let coverage else {
+            banner.setMessage("Discovery status unavailable · completeness is unknown.", style: .warning)
+            banner.clearButton()
+            return
+        }
+        if coverage.complete {
+            banner.setMessage("Discovery complete · \(count == 1 ? "1 entry" : "\(count) entries") found", style: .info)
+            banner.clearButton()
+            return
+        }
+        banner.setMessage("Discovery incomplete · " + (coverage.reasons.first ?? "Some locations could not be inspected."),
+                          style: .warning)
+        if coverage.reasons.isEmpty {
+            banner.clearButton()
         } else {
-            coverageLabel.stringValue = "Discovery status unavailable · completeness is unknown."
+            banner.setButton(title: "Details…") { [weak self] in self?.showCoverageDetails() }
         }
-        if values.isEmpty && coverage?.complete == false {
-            selectionLabel.stringValue = "No entries were returned; discovery is incomplete."
+    }
+
+    private func emptyStateText(coverage: DiscoveryCoverage?) -> (title: String, caption: String) {
+        let title = kind == .startup ? "No startup items found" : "No services found"
+        guard let coverage else { return (title, "Discovery status is unknown.") }
+        if !coverage.complete {
+            return (title, "Discovery is incomplete, so entries may be missing.")
         }
+        return (title, kind == .startup
+            ? "Login items and launch agents appear here when they are registered."
+            : "Discovered system services appear here.")
     }
 
     private func updateSelectedItem() {
         guard let selectedEntry else {
             revealButton.setAccessibilityIdentifier("\(kind.pageIdentifier).action.reveal-path")
             revealButton.isEnabled = false
-            if !entries.isEmpty {
-                selectionLabel.stringValue = "Select an item to inspect its path."
-            }
+            toolbarRevealButton.isEnabled = false
+            pathLabel.stringValue = rowsByID.isEmpty ? "No entries to inspect." : "Select an item to inspect its path."
+            pathLabel.toolTip = nil
             return
         }
         revealButton.setAccessibilityIdentifier("\(kind.pageIdentifier).action.reveal-path.\(slug(selectedEntry.id))")
-        revealButton.isEnabled = selectedEntry.path != nil
-        selectionLabel.stringValue = selectedEntry.path ?? "No executable path was reported for this item."
+        let hasPath = selectedEntry.path != nil
+        revealButton.isEnabled = hasPath
+        toolbarRevealButton.isEnabled = hasPath
+        pathLabel.stringValue = selectedEntry.path ?? "No executable path was reported for this item."
+        pathLabel.toolTip = selectedEntry.path
     }
 
     private func coverage(_ snapshot: MonitoringSnapshot) -> DiscoveryCoverage? {
@@ -172,25 +219,82 @@ final class InventoryViewController: NSViewController, SnapshotUpdating {
         return snapshot.discoveryCoverage.first(where: { $0.key.lowercased().contains(token) })?.value
     }
 
+    // MARK: Actions
+
     @objc private func revealSelectedPath() {
         guard let path = selectedEntry?.path else { return }
         let url = URL(fileURLWithPath: path)
         NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
     }
 
-    @objc private func openSystemSettings() {
-        let url = URL(fileURLWithPath: "/System/Applications/System Settings.app")
-        if !NSWorkspace.shared.open(url) {
-            let alert = NSAlert()
-            alert.messageText = "System Settings could not be opened"
-            alert.informativeText = "Open System Settings from the Apple menu to inspect startup and service controls."
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
+    @objc private func openLoginItemsSettings() {
+        SMAppService.openSystemSettingsLoginItems()
+    }
+
+    private func showCoverageDetails() {
+        let popover = NSPopover()
+        popover.behavior = .transient
+        let content = makeCoverageDetailsView(coverageReasons)
+        let controller = NSViewController()
+        controller.view = content
+        popover.contentViewController = controller
+        popover.contentSize = content.frame.size
+        popover.show(relativeTo: banner.bounds, of: banner, preferredEdge: .minY)
+        coverageDetailsPopover = popover
+    }
+
+    private func makeCoverageDetailsView(_ reasons: [String]) -> NSView {
+        let title = UIComponents.label("Discovery details", size: 13, weight: .semibold)
+        let reasonLabels = reasons.map { reason -> NSTextField in
+            let field = NSTextField(wrappingLabelWithString: reason)
+            field.font = .systemFont(ofSize: 12)
+            field.textColor = .secondaryLabelColor
+            field.preferredMaxLayoutWidth = 300
+            return field
         }
+        let stack = NSStackView(views: [title] + reasonLabels)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 324, height: 80))
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12)
+        ])
+        container.frame.size.height = stack.fittingSize.height + 24
+        return container
+    }
+
+    private func configureToolbarButton(_ button: NSButton, title: String, symbol: String,
+                                        identifier: String, action: Selector) {
+        button.title = title
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+        button.imagePosition = .imageLeading
+        button.bezelStyle = .texturedRounded
+        button.target = self
+        button.action = action
+        button.setAccessibilityIdentifier(identifier)
+    }
+
+    private func makeToolbarItem(_ identifier: NSToolbarItem.Identifier, label: String, button: NSButton,
+                                 menuTitle: String, action: Selector) -> NSToolbarItem {
+        let item = NSToolbarItem(itemIdentifier: identifier)
+        item.label = label
+        item.paletteLabel = label
+        item.toolTip = label
+        item.view = button
+        let menuItem = NSMenuItem(title: menuTitle, action: action, keyEquivalent: "")
+        menuItem.target = self
+        item.menuFormRepresentation = menuItem
+        return item
     }
 
     private func slug(_ value: String) -> String {
-        String(value.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" })
-            .split(separator: "-").joined(separator: "-")
+        InventoryRows.slug(value)
     }
 }

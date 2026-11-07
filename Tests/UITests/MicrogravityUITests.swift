@@ -17,7 +17,8 @@ final class MicrogravityUITests: XCTestCase {
         let selectedIdentity = app.staticTexts["process.selection.identity"].label
         XCTAssertTrue(selectedIdentity.contains("pid=410"))
 
-        let search = app.textFields["process.search"]
+        // The search field lives in the window toolbar, so match it by identifier rather than element type.
+        let search = element("process.search", in: app)
         XCTAssertTrue(search.exists)
         search.tap()
         search.typeText("Renderer")
@@ -103,15 +104,15 @@ final class MicrogravityUITests: XCTestCase {
 
         element("process.group.toggle.fixture-editor", in: app).tap()
         row("process.row.410", in: "process.table", app: app).tap()
+        // Confirmation and error dialogs are sheets attached to the window.
         element("process.action.force-quit", in: app).tap()
-        let confirmation = app.alerts["Confirm Force Quit"]
+        let confirmation = app.sheets.firstMatch
         XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
-        confirmation.buttons["Force Quit"].tap()
+        element("process.force-quit.confirm", in: app).tap()
 
-        let stale = app.alerts["Process No Longer Available"]
-        XCTAssertTrue(stale.waitForExistence(timeout: 3))
-        XCTAssertTrue(stale.staticTexts["The selected process changed or exited. No process was terminated."].exists)
-        stale.buttons["OK"].tap()
+        let staleText = app.staticTexts["The selected process changed or exited. No process was terminated."]
+        XCTAssertTrue(staleText.waitForExistence(timeout: 3))
+        app.sheets.firstMatch.buttons["OK"].tap()
         XCTAssertEqual(app.staticTexts["process.selection.identity"].label, "No process selected")
         attachScreenshot(app, named: "Stale process action")
     }
@@ -121,14 +122,26 @@ final class MicrogravityUITests: XCTestCase {
 
         element("navigation.item.performance", in: app).tap()
         XCTAssertTrue(element("performance.graph.cpu-total", in: app).waitForExistence(timeout: 3))
-        XCTAssertTrue(element("performance.graph.cpu-cores", in: app).exists)
-        XCTAssertTrue(element("performance.graph.memory-pressure", in: app).exists)
-        XCTAssertTrue(element("performance.graph.swap", in: app).exists)
-        XCTAssertTrue(element("performance.graph.disk", in: app).exists)
-        XCTAssertTrue(element("performance.graph.network", in: app).exists)
-        XCTAssertTrue(app.staticTexts["performance.gpu.state"].label.contains("Unsupported"))
-        XCTAssertTrue(app.staticTexts["performance.energy.state"].label.contains("Unsupported"))
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "percent")).firstMatch.exists)
+
+        // The detail card shows one metric at a time, so each rail row is selected before its graphs are checked.
+        element("performance.rail.cpu", in: app).tap()
+        element("performance.cpu.mode", in: app).coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        XCTAssertTrue(element("performance.graph.cpu-cores", in: app).waitForExistence(timeout: 3))
+        element("performance.cpu.mode", in: app).coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5)).tap()
+        element("performance.rail.memory", in: app).tap()
+        XCTAssertTrue(element("performance.graph.memory-pressure", in: app).waitForExistence(timeout: 3))
+        XCTAssertTrue(element("performance.graph.swap", in: app).exists)
+        element("performance.rail.disk", in: app).tap()
+        XCTAssertTrue(element("performance.graph.disk", in: app).waitForExistence(timeout: 3))
+        element("performance.rail.network", in: app).tap()
+        XCTAssertTrue(element("performance.graph.network", in: app).waitForExistence(timeout: 3))
+        element("performance.rail.gpu", in: app).tap()
+        XCTAssertTrue(app.staticTexts["performance.gpu.state"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["performance.gpu.state"].label.contains("Unsupported"))
+        element("performance.rail.energy", in: app).tap()
+        XCTAssertTrue(app.staticTexts["performance.energy.state"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["performance.energy.state"].label.contains("Unsupported"))
 
         element("performance.action.pause", in: app).tap()
         XCTAssertTrue(app.staticTexts["performance.sampling-state"].label.contains("Paused"))
@@ -147,7 +160,10 @@ final class MicrogravityUITests: XCTestCase {
         XCTAssertTrue(element("history.total.fixture-editor.application", in: app).exists)
 
         element("history.action.reset", in: app).tap()
-        let confirmation = app.alerts["Reset App History"]
+        // Reset confirmation is an NSAlert presented as a sheet on the window (U14); it may surface as a sheet or an alert.
+        let confirmation = app.sheets.firstMatch.waitForExistence(timeout: 3)
+            ? app.sheets.firstMatch
+            : app.alerts["Reset App History"]
         XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
         confirmation.buttons["Cancel"].tap()
         XCTAssertTrue(element("history.total.fixture-editor.application", in: app).exists)
@@ -211,7 +227,9 @@ final class MicrogravityUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["details.process.410.path"].exists)
         XCTAssertTrue(app.staticTexts["details.process.410.disk"].exists)
         XCTAssertTrue(app.staticTexts["details.process.410.memory"].exists)
-        XCTAssertTrue(app.staticTexts["details.process.410.network"].label.contains("Unsupported"))
+        // The Network column is hidden while its capability is unavailable; the banner keeps the explicit reason.
+        XCTAssertFalse(app.staticTexts["details.process.410.network"].exists)
+        XCTAssertTrue(app.staticTexts["details.capability-state"].label.contains("Unsupported"))
         XCTAssertFalse(element("details.group.fixture-editor", in: app).exists)
         attachScreenshot(app, named: "Details")
     }
@@ -236,13 +254,11 @@ final class MicrogravityUITests: XCTestCase {
         let app = launchFixture(arguments: ["--ui-test-integrations-unavailable"])
 
         element("navigation.item.settings", in: app).tap()
-        XCTAssertTrue(element("settings.appearance.system", in: app).waitForExistence(timeout: 3))
-        XCTAssertTrue(element("settings.appearance.light", in: app).exists)
-        XCTAssertTrue(element("settings.appearance.dark", in: app).exists)
-        XCTAssertTrue(element("settings.refresh.0.5", in: app).exists)
-        XCTAssertTrue(element("settings.refresh.1", in: app).exists)
-        XCTAssertTrue(element("settings.refresh.2", in: app).exists)
-        XCTAssertTrue(element("settings.refresh.5", in: app).exists)
+        XCTAssertTrue(app.popUpButtons.matching(identifier: "settings.appearance").firstMatch.waitForExistence(timeout: 3))
+        assertPopUpOffers(["settings.appearance.system", "settings.appearance.light", "settings.appearance.dark"],
+                          in: "settings.appearance", app: app)
+        assertPopUpOffers(["settings.refresh.0.5", "settings.refresh.1", "settings.refresh.2", "settings.refresh.5"],
+                          in: "settings.refresh", app: app)
         XCTAssertTrue(app.staticTexts["settings.helper.state"].label.contains("Unavailable"))
         XCTAssertTrue(app.staticTexts["settings.login-item.state"].label.contains("Unavailable"))
         XCTAssertTrue(app.staticTexts["settings.updates.state"].label.contains("Unavailable"))
@@ -252,17 +268,15 @@ final class MicrogravityUITests: XCTestCase {
     func testAppearanceSwitchChangesWindowAndCanReturnToSystem() {
         let app = launchFixture()
         element("navigation.item.settings", in: app).tap()
-        let light = element("settings.appearance.light", in: app)
-        let dark = element("settings.appearance.dark", in: app)
-        XCTAssertTrue(light.waitForExistence(timeout: 3))
-        light.tap()
+        XCTAssertTrue(app.popUpButtons.matching(identifier: "settings.appearance").firstMatch.waitForExistence(timeout: 3))
+        choosePopUpItem("settings.appearance.light", in: "settings.appearance", app: app)
         let lightImage = app.screenshot().pngRepresentation
         attachScreenshot(app, named: "Settings light appearance")
-        dark.tap()
+        choosePopUpItem("settings.appearance.dark", in: "settings.appearance", app: app)
         let darkImage = app.screenshot().pngRepresentation
         attachScreenshot(app, named: "Settings dark appearance")
         XCTAssertNotEqual(lightImage, darkImage)
-        element("settings.appearance.system", in: app).tap()
+        choosePopUpItem("settings.appearance.system", in: "settings.appearance", app: app)
     }
 
     func testClosingLastWindowTerminatesTheApplication() {
@@ -294,9 +308,36 @@ final class MicrogravityUITests: XCTestCase {
 
     private func row(_ identifier: String, in tableIdentifier: String, column: String = "name",
                      app: XCUIApplication) -> XCUIElement {
-        // AppKit publishes synthetic NSTableView rows without the row view's AX identifier, so resolve the native row through its identified label.
-        app.tables.matching(identifier: tableIdentifier).firstMatch.descendants(matching: .tableRow)
+        // AppKit publishes synthetic rows without the row view's AX identifier, so resolve the native row through its identified label.
+        // The Processes page is an NSOutlineView (outline rows); the other tables are NSTableViews.
+        let outline = app.outlines.matching(identifier: tableIdentifier).firstMatch
+        if outline.exists {
+            return outline.descendants(matching: .outlineRow)
+                .containing(.staticText, identifier: identifier + "." + column).firstMatch
+        }
+        return app.tables.matching(identifier: tableIdentifier).firstMatch.descendants(matching: .tableRow)
             .containing(.staticText, identifier: identifier + "." + column).firstMatch
+    }
+
+    /// Opens a pop-up and checks that each item identifier is offered. Settings pop-up items are menu items, not views.
+    private func assertPopUpOffers(_ itemIdentifiers: [String], in popUpIdentifier: String, app: XCUIApplication) {
+        let popUp = app.popUpButtons.matching(identifier: popUpIdentifier).firstMatch
+        XCTAssertTrue(popUp.waitForExistence(timeout: 3))
+        popUp.click()
+        for itemIdentifier in itemIdentifiers {
+            XCTAssertTrue(app.menuItems.matching(identifier: itemIdentifier).firstMatch.waitForExistence(timeout: 3), itemIdentifier)
+        }
+        app.typeKey(.escape, modifierFlags: [])
+    }
+
+    /// Opens a pop-up and picks the menu item with `itemIdentifier`.
+    private func choosePopUpItem(_ itemIdentifier: String, in popUpIdentifier: String, app: XCUIApplication) {
+        let popUp = app.popUpButtons.matching(identifier: popUpIdentifier).firstMatch
+        XCTAssertTrue(popUp.waitForExistence(timeout: 3))
+        popUp.click()
+        let item = app.menuItems.matching(identifier: itemIdentifier).firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 3), itemIdentifier)
+        item.click()
     }
 
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {

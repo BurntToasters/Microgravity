@@ -278,16 +278,35 @@ public struct NetworkInterfaceSnapshot: Codable, Equatable, Sendable, Identifiab
     public let transmitBytesPerSecond: MetricReading
     public let receiveTotalBytes: MetricReading
     public let transmitTotalBytes: MetricReading
+    /// False for loopback, tunnel, and virtual interfaces that are listed but excluded from system network totals.
+    public let includedInTotals: Bool
 
     public init(name: String, isUp: Bool, receiveBytesPerSecond: MetricReading,
                 transmitBytesPerSecond: MetricReading, receiveTotalBytes: MetricReading,
-                transmitTotalBytes: MetricReading) {
+                transmitTotalBytes: MetricReading, includedInTotals: Bool = true) {
         self.name = name
         self.isUp = isUp
         self.receiveBytesPerSecond = receiveBytesPerSecond
         self.transmitBytesPerSecond = transmitBytesPerSecond
         self.receiveTotalBytes = receiveTotalBytes
         self.transmitTotalBytes = transmitTotalBytes
+        self.includedInTotals = includedInTotals
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name, isUp, receiveBytesPerSecond, transmitBytesPerSecond, receiveTotalBytes, transmitTotalBytes
+        case includedInTotals
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        isUp = try container.decode(Bool.self, forKey: .isUp)
+        receiveBytesPerSecond = try container.decode(MetricReading.self, forKey: .receiveBytesPerSecond)
+        transmitBytesPerSecond = try container.decode(MetricReading.self, forKey: .transmitBytesPerSecond)
+        receiveTotalBytes = try container.decode(MetricReading.self, forKey: .receiveTotalBytes)
+        transmitTotalBytes = try container.decode(MetricReading.self, forKey: .transmitTotalBytes)
+        includedInTotals = try container.decodeIfPresent(Bool.self, forKey: .includedInTotals) ?? true
     }
 }
 

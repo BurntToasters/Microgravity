@@ -30,6 +30,7 @@ public final class DefaultMonitoringStore: MonitoringStore {
     private var historySummaryQueryTimestamp: Date?
     private var historySummaryQueryDay: Date?
     private var historySummaryFailure: String?
+    private var historyWriteFailure: String?
     private var publicationGeneration = 0
 
     public init(collector: any MonitoringCollecting,
@@ -89,55 +90,73 @@ public final class DefaultMonitoringStore: MonitoringStore {
         defer { isCollecting = false }
 
         let generation = publicationGeneration
-        let marksHistoryGap = historyGapPending
         let timestamp = now()
-        var snapshot = await Task.detached(priority: .utility) { [collector] in
+        let snapshot = await Task.detached(priority: .utility) { [collector] in
             await collector.collect(at: timestamp)
         }.value
         guard generation == publicationGeneration, !isPaused else { return }
 
-        if let historyStore {
-            invalidateHistorySummaryCacheIfNeeded(through: timestamp)
-            let historySnapshot = marksHistoryGap ? snapshot.markingHistoryGap() : snapshot
-            let writeTask = Task { try await historyStore.record(snapshot: historySnapshot) }
-            historyWriteTask = writeTask
-            do {
-                try await writeTask.value
-                historyWriteTask = nil
-                if generation == publicationGeneration { historyGapPending = false }
-                guard generation == publicationGeneration, !isPaused else { return }
-                if shouldRefreshHistorySummaries(at: timestamp) {
-                    do {
-                        async let systemHistory = historyStore.summaries(lastDays: 30, through: timestamp)
-                        async let appHistory = historyStore.applicationSummaries(lastDays: 30, through: timestamp)
-                        let summaries = try await systemHistory
-                        let applicationSummaries = try await appHistory
-                        guard generation == publicationGeneration, !isPaused else { return }
-                        historySummaryQueryTimestamp = timestamp
-                        historySummaryCache = HistorySummaryCache(summaries: summaries,
-                                                                  applicationSummaries: applicationSummaries)
-                        historySummaryFailure = nil
-                    } catch {
-                        guard generation == publicationGeneration, !isPaused else { return }
-                        historySummaryQueryTimestamp = timestamp
-                        historySummaryFailure = error.localizedDescription
-                    }
-                }
-                if let historySummaryFailure {
-                    snapshot = snapshot.replacingHistoryFailure(historySummaryFailure)
-                } else if let historySummaryCache {
-                    snapshot = snapshot.replacingHistory(historySummaryCache.summaries,
-                                                         applicationHistory: historySummaryCache.applicationSummaries)
-                }
-            } catch {
-                historyWriteTask = nil
-                guard generation == publicationGeneration, !isPaused else { return }
-                historyGapPending = true
-                snapshot = snapshot.replacingHistoryFailure(error.localizedDescription)
-            }
+        guard let historyStore else {
+            historyGapPending = false
+            publish(snapshot)
+            return
         }
 
+        // Publish first so UI latency never includes the history transaction. The
+        // published history fields come from the cache; a follow-up publication
+        // applies the write result and any refreshed summaries.
+        invalidateHistorySummaryCacheIfNeeded(through: timestamp)
+        publish(withCachedHistory(snapshot))
         guard generation == publicationGeneration, !isPaused else { return }
+
+        // Writes stay ordered: refreshNow is serialized by isCollecting and does not
+        // return until its write settles, so at most one record is ever in flight.
+        // The gap flag is read here, after any earlier write has settled.
+        let historySnapshot = historyGapPending ? snapshot.markingHistoryGap() : snapshot
+        let writeTask = Task { try await historyStore.record(snapshot: historySnapshot) }
+        historyWriteTask = writeTask
+        do {
+            try await writeTask.value
+        } catch {
+            historyWriteTask = nil
+            guard generation == publicationGeneration, !isPaused else { return }
+            historyGapPending = true
+            historyWriteFailure = error.localizedDescription
+            republish(withCachedHistory(snapshot))
+            return
+        }
+        historyWriteTask = nil
+        guard generation == publicationGeneration, !isPaused else { return }
+        historyGapPending = false
+        let clearedWriteFailure = historyWriteFailure != nil
+        historyWriteFailure = nil
+
+        var summariesChanged = false
+        if shouldRefreshHistorySummaries(at: timestamp) {
+            do {
+                async let systemHistory = historyStore.summaries(lastDays: 30, through: timestamp)
+                async let appHistory = historyStore.applicationSummaries(lastDays: 30, through: timestamp)
+                let summaries = try await systemHistory
+                let applicationSummaries = try await appHistory
+                guard generation == publicationGeneration, !isPaused else { return }
+                historySummaryQueryTimestamp = timestamp
+                historySummaryCache = HistorySummaryCache(summaries: summaries,
+                                                          applicationSummaries: applicationSummaries)
+                historySummaryFailure = nil
+            } catch {
+                guard generation == publicationGeneration, !isPaused else { return }
+                historySummaryQueryTimestamp = timestamp
+                historySummaryFailure = error.localizedDescription
+            }
+            summariesChanged = true
+        }
+        if summariesChanged || clearedWriteFailure {
+            republish(withCachedHistory(snapshot))
+        }
+    }
+
+    /// Appends the graph sample and notifies observers. Used once per collected sample.
+    private func publish(_ snapshot: MonitoringSnapshot) {
         latestSnapshot = snapshot
         graphSamples.append(MonitoringGraphSample(snapshot: graphGapPending
             ? snapshot.markingHistoryGap(markingAdvancedMetrics: true) : snapshot))
@@ -145,8 +164,24 @@ public final class DefaultMonitoringStore: MonitoringStore {
             graphSamples.removeFirst(graphSamples.count - Self.maximumGraphSamples)
         }
         if graphGapPending { graphGapPending = false }
-        if historyStore == nil { historyGapPending = false }
         onSnapshot?(snapshot)
+    }
+
+    /// Re-notifies the current sample with updated history fields. Never adds a graph sample.
+    private func republish(_ snapshot: MonitoringSnapshot) {
+        latestSnapshot = snapshot
+        onSnapshot?(snapshot)
+    }
+
+    private func withCachedHistory(_ snapshot: MonitoringSnapshot) -> MonitoringSnapshot {
+        if let message = historyWriteFailure ?? historySummaryFailure {
+            return snapshot.replacingHistoryFailure(message)
+        }
+        if let historySummaryCache {
+            return snapshot.replacingHistory(historySummaryCache.summaries,
+                                             applicationHistory: historySummaryCache.applicationSummaries)
+        }
+        return snapshot
     }
 
     public func resetHistory() async throws {
@@ -163,6 +198,7 @@ public final class DefaultMonitoringStore: MonitoringStore {
         historySummaryQueryTimestamp = nil
         historySummaryQueryDay = nil
         historySummaryFailure = nil
+        historyWriteFailure = nil
         guard let latestSnapshot else { return }
         let cleared = latestSnapshot.replacingHistory([], applicationHistory: [])
         self.latestSnapshot = cleared
@@ -173,11 +209,21 @@ public final class DefaultMonitoringStore: MonitoringStore {
         pollingTask?.cancel()
         guard isRunning, !isPaused else { return }
         pollingTask = Task { @MainActor [weak self] in
+            // Samples start on a fixed grid so collection time does not stretch the period.
+            let clock = ContinuousClock()
+            var nextSample = clock.now
             while let self, self.isRunning, !self.isPaused, !Task.isCancelled {
                 await self.refreshNow()
-                let delay = UInt64(self.interval.rawValue * 1_000_000_000)
+                let period = Duration.seconds(self.interval.rawValue)
+                nextSample = nextSample.advanced(by: period)
+                let current = clock.now
+                if nextSample <= current {
+                    // Behind schedule: skip the missed ticks instead of bursting to catch up.
+                    let missed = (current - nextSample) / period
+                    nextSample = nextSample.advanced(by: period * (Int(missed) + 1))
+                }
                 do {
-                    try await Task.sleep(nanoseconds: delay)
+                    try await clock.sleep(until: nextSample)
                 } catch {
                     break
                 }

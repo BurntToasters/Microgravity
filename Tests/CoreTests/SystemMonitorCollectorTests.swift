@@ -10,6 +10,25 @@ private struct FixedAdvancedMetricsCollector: AdvancedMetricsCollecting {
     }
 }
 
+private final class SysctlStub: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Int32?
+
+    init(_ value: Int32?) { self.value = value }
+
+    func set(_ newValue: Int32?) {
+        lock.lock()
+        defer { lock.unlock() }
+        value = newValue
+    }
+
+    func read() -> Int32? {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
+
 final class SystemMonitorCollectorTests: XCTestCase {
     func testProcessIdentityCoverageMarksUnreadableInitialIdentityIncomplete() {
         var coverage = ProcessIdentityCoverage()
@@ -254,5 +273,68 @@ final class SystemMonitorCollectorTests: XCTestCase {
         let gpuTime = process.advancedMetrics[.processGPUTime]
         XCTAssertEqual(gpuTime?.unit, .seconds)
         XCTAssertEqual(gpuTime?.unavailableReason, .notCollected)
+    }
+
+    func testMachTicksConvertToNanosecondsWithTimebase() {
+        XCTAssertEqual(SystemMonitorCollector.nanoseconds(fromMachTicks: 24_000_000, timebase: (125, 3)), 1_000_000_000)
+        XCTAssertEqual(SystemMonitorCollector.nanoseconds(fromMachTicks: 1, timebase: (125, 3)), 41)
+        XCTAssertEqual(SystemMonitorCollector.nanoseconds(fromMachTicks: 7, timebase: (1, 1)), 7)
+        XCTAssertEqual(SystemMonitorCollector.nanoseconds(fromMachTicks: UInt64.max, timebase: (125, 3)), UInt64.max,
+                       "overflow must saturate instead of wrapping")
+    }
+
+    func testCurrentProcessCPUPercentMatchesBusyLoop() async {
+        let collector = SystemMonitorCollector()
+        let currentPID = Int32(getpid())
+        let first = Date()
+        _ = await collector.collect(at: first)
+
+        let spinEnd = Date().addingTimeInterval(0.5)
+        var iterations: UInt64 = 0
+        while Date() < spinEnd { iterations &+= 1 }
+        XCTAssertGreaterThan(iterations, 0)
+
+        let second = await collector.collect(at: Date())
+        guard let process = second.processes.first(where: { $0.id.pid == currentPID }),
+              let cpu = process.cpuPercent.value else {
+            XCTFail("the live collector must report a CPU value for its own process on the second sample")
+            return
+        }
+        // cpuPercent is normalized to the whole machine: one saturated core reads 100 / capacityCores.
+        let expected = 100 / Double(second.system.capacityCores)
+        XCTAssertEqual(cpu, expected, accuracy: expected * 0.35,
+                       "one busy core on \(second.system.capacityCores) cores should read about \(expected)%")
+    }
+
+    func testMemoryPressureBaselineComesFromSysctl() async {
+        let stub = SysctlStub(2)
+        let collector = SystemMonitorCollector(memoryPressureLevelReader: { stub.read() })
+
+        let first = await collector.collect(at: Date())
+        XCTAssertEqual(first.system.memoryPressure.level, .warning,
+                       "the OS-reported level is the baseline before any dispatch event arrives")
+        XCTAssertEqual(first.capabilities[.memoryPressure]?.available, true)
+
+        stub.set(4)
+        let second = await collector.collect(at: Date())
+        XCTAssertEqual(second.system.memoryPressure.level, .critical)
+
+        stub.set(nil)
+        let failed = await collector.collect(at: Date())
+        XCTAssertEqual(failed.system.memoryPressure.level, .critical,
+                       "a failed sysctl keeps the last known level instead of inventing one")
+
+        let never = SystemMonitorCollector(memoryPressureLevelReader: { nil })
+        let unavailable = await never.collect(at: Date())
+        XCTAssertNil(unavailable.system.memoryPressure.level)
+        XCTAssertEqual(unavailable.system.memoryPressure.unavailableReason, .collectionFailed)
+        XCTAssertEqual(unavailable.capabilities[.memoryPressure]?.available, false)
+    }
+
+    func testMemoryPressureSysctlValuesMapToLevels() {
+        XCTAssertEqual(SystemMonitorCollector.memoryPressureLevel(fromSysctl: 1), .normal)
+        XCTAssertEqual(SystemMonitorCollector.memoryPressureLevel(fromSysctl: 2), .warning)
+        XCTAssertEqual(SystemMonitorCollector.memoryPressureLevel(fromSysctl: 4), .critical)
+        XCTAssertNil(SystemMonitorCollector.memoryPressureLevel(fromSysctl: 3))
     }
 }

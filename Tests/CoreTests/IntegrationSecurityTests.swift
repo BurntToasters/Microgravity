@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import Microgravity
 
@@ -46,6 +47,25 @@ final class IntegrationSecurityTests: XCTestCase {
         XCTAssertTrue(TerminationService.consumeAuthorizationForm(form, now: start))
         XCTAssertFalse(TerminationService.consumeAuthorizationForm(form, now: start.addingTimeInterval(599)))
         XCTAssertTrue(TerminationService.consumeAuthorizationForm(form, now: start.addingTimeInterval(601)))
+    }
+    func testAllowedTargetSignalsRequestedPIDExactlyOnce() {
+        let form = Data(repeating: 0x2F, count: 32)
+        let requested = HelperTargetIdentity(pid: 42, seconds: 10, microseconds: 3)
+        let valid = HelperTarget(pid: 42, seconds: 10, microseconds: 3, owner: 501, protected: false)
+        guard case let .allowed(target) = TerminationService.authorizeTarget(
+            requested, authorization: form, clientPID: 50, observed: { _ in valid }) else {
+            return XCTFail("a validated target must be allowed")
+        }
+
+        var sent: [(pid: pid_t, signal: Int32)] = []
+        let outcome = TerminationService.deliverSignal(to: target.pid, force: true) { pid, signal in
+            sent.append((pid, signal))
+            return 0
+        }
+        XCTAssertEqual(outcome, "signalSent")
+        XCTAssertEqual(sent.count, 1, "exactly one kill call per authorized termination")
+        XCTAssertEqual(sent.first?.pid, pid_t(requested.pid))
+        XCTAssertEqual(sent.first?.signal, SIGKILL)
     }
     func testMinimalTerminationPayloadOmitsDerivedTargetFields() throws {
         let payload = HelperTerminationPayload(version: helperProtocolVersion,

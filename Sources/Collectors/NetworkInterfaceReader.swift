@@ -2,10 +2,25 @@ import Darwin
 import Foundation
 
 struct NetworkInterfaceCounter: Equatable, Sendable {
+    /// Name prefixes of loopback, tunnel, and virtual interfaces. Their traffic is either
+    /// the same packets counted again on a physical interface (utun, bridge, gif, stf) or
+    /// internal to the machine (lo, loopback-style links); they never count toward system totals.
+    static let virtualNamePrefixes = ["lo", "utun", "gif", "stf", "anpi", "awdl", "llw", "bridge", "ap", "p2p"]
+
+    // ifi_type values from net/if_types.h (IFT_LOOPBACK, IFT_GIF, IFT_STF, IFT_BRIDGE).
+    static let virtualInterfaceTypes: Set<UInt8> = [0x18, 0x37, 0x39, 0xd1]
+
     let name: String
     let isUp: Bool
+    let isLoopback: Bool
+    let interfaceType: UInt8
     let receiveBytes: UInt64
     let transmitBytes: UInt64
+
+    var includedInTotals: Bool {
+        if isLoopback || Self.virtualInterfaceTypes.contains(interfaceType) { return false }
+        return !Self.virtualNamePrefixes.contains { name.hasPrefix($0) }
+    }
 }
 
 enum NetworkInterfaceReaderError: Error, Equatable, CustomStringConvertible {
@@ -78,6 +93,8 @@ enum NetworkInterfaceReader {
                         records[header.ifm_index] = NetworkInterfaceCounter(
                             name: name,
                             isUp: header.ifm_flags & Int32(IFF_UP) != 0,
+                            isLoopback: header.ifm_flags & Int32(IFF_LOOPBACK) != 0,
+                            interfaceType: header.ifm_data.ifi_type,
                             receiveBytes: header.ifm_data.ifi_ibytes,
                             transmitBytes: header.ifm_data.ifi_obytes)
                     }
@@ -176,11 +193,20 @@ struct NetworkInterfaceCounterTracker {
                     Double($0) / $1
                 },
                 receiveTotalBytes: MetricReading(value: Double(data.receiveBytes), unit: .bytes, timestamp: timestamp),
-                transmitTotalBytes: MetricReading(value: Double(data.transmitBytes), unit: .bytes, timestamp: timestamp))
+                transmitTotalBytes: MetricReading(value: Double(data.transmitBytes), unit: .bytes, timestamp: timestamp),
+                includedInTotals: data.includedInTotals)
         }
-        let receiveRate = SystemMonitorCollector.combineRates(interfaces.map(\.receiveBytesPerSecond),
+        let totalled = interfaces.filter(\.includedInTotals)
+        guard !totalled.isEmpty else {
+            let unavailable = MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp,
+                                            reason: .collectionFailed,
+                                            detail: "No physical network interfaces found for system totals")
+            return NetworkInterfaceCollection(receiveRate: unavailable, transmitRate: unavailable,
+                                              interfaces: interfaces)
+        }
+        let receiveRate = SystemMonitorCollector.combineRates(totalled.map(\.receiveBytesPerSecond),
                                                              unit: .bytesPerSecond, timestamp: timestamp)
-        let transmitRate = SystemMonitorCollector.combineRates(interfaces.map(\.transmitBytesPerSecond),
+        let transmitRate = SystemMonitorCollector.combineRates(totalled.map(\.transmitBytesPerSecond),
                                                               unit: .bytesPerSecond, timestamp: timestamp)
         return NetworkInterfaceCollection(receiveRate: receiveRate, transmitRate: transmitRate,
                                           interfaces: interfaces)

@@ -40,6 +40,17 @@ protocol AdvancedSamplingClient: Sendable {
 }
 extension HelperSamplingClient: AdvancedSamplingClient {}
 
+/// Process identities for the current process list, or the reason they could not be enumerated.
+struct ProcessIdentityLookup: Sendable {
+    var identities: [Int32: ProcessIdentity]
+    var failureDetail: String?
+
+    init(identities: [Int32: ProcessIdentity], failureDetail: String? = nil) {
+        self.identities = identities
+        self.failureDetail = failureDetail
+    }
+}
+
 /// A single in-flight helper sample is refreshed at most every five seconds.
 /// Callers receive a cached snapshot immediately; readings retain capture timestamps.
 actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
@@ -49,7 +60,7 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
 
     private let client: any AdvancedSamplingClient
     private let now: @Sendable () -> Date
-    private let processIdentities: @Sendable () -> [Int32: ProcessIdentity]
+    private let processIdentities: @Sendable () -> ProcessIdentityLookup
     private var network = AdvancedNetworkAccumulator()
     private var cache = AdvancedMetricsSnapshot(capabilities: Dictionary(uniqueKeysWithValues:
         [MetricKind.processNetwork, .processNetworkReceive, .processNetworkTransmit, .processGPUTime, .gpu, .energy]
@@ -60,10 +71,19 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
 
     init(client: any AdvancedSamplingClient = HelperSamplingClient(),
          now: @escaping @Sendable () -> Date = { Date() },
-         processIdentities: (@Sendable () -> [Int32: ProcessIdentity])? = nil) {
+         processIdentities: (@Sendable () -> [Int32: ProcessIdentity])? = nil,
+         processIdentityLookup: (@Sendable () -> ProcessIdentityLookup)? = nil) {
         self.client = client
         self.now = now
-        self.processIdentities = processIdentities ?? { Self.identities() }
+        let lookup: @Sendable () -> ProcessIdentityLookup
+        if let processIdentityLookup {
+            lookup = processIdentityLookup
+        } else if let processIdentities {
+            lookup = { ProcessIdentityLookup(identities: processIdentities()) }
+        } else {
+            lookup = { Self.identityLookup() }
+        }
+        self.processIdentities = lookup
     }
 
     func collectAdvancedMetrics(at timestamp: Date) async -> AdvancedMetricsSnapshot {
@@ -115,13 +135,18 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
     func refreshRequestCountForTesting() -> Int { refreshRequestCount }
 
     private func refresh() async {
-        let before = processIdentities()
+        // Cleared on every exit path, including cancellation, so a stuck flag cannot stop future refreshes.
+        defer { inFlight = false }
+        let beforeLookup = processIdentities()
+        let before = beforeLookup.identities
         async let networkResponse = client.sample(.nettop)
         async let powerResponse = client.sample(.powermetrics)
         let net = await networkResponse
-        let after = processIdentities()
+        let afterLookup = processIdentities()
+        let after = afterLookup.identities
         let power = await powerResponse
-        let afterPower = processIdentities()
+        let afterPower = processIdentities().identities
+        let identityFailure = beforeLookup.failureDetail ?? afterLookup.failureDetail
         let responseTime = now()
         var perProcess: [ProcessIdentity: [MetricKind: MetricReading]] = [:]
         var capabilities: [MetricKind: MetricAvailability] = [:]
@@ -132,7 +157,8 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
             perProcess = network.update(AdvancedMetricsParser.nettop(text), before: before, after: after, at: net.capturedAt)
             for kind in networkKinds {
                 capabilities[kind] = perProcess.isEmpty
-                    ? MetricAvailability(available: false, reason: .notCollected, detail: "No process identities could be verified")
+                    ? MetricAvailability(available: false, reason: .notCollected,
+                                         detail: identityFailure ?? "No process identities could be verified")
                     : MetricAvailability(available: true)
             }
         } else {
@@ -169,23 +195,32 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
         }
         cache = AdvancedMetricsSnapshot(system: system, perProcess: perProcess, capabilities: capabilities)
         lastCompleted = now()
-        inFlight = false
     }
 
-    private static func identities() -> [Int32: ProcessIdentity] {
+    /// proc_listpids sizes above this are not enumerated; identities for advanced metrics are then unverified.
+    static let maximumIdentityListBytes = 4 * 1024 * 1024
+
+    private static func identityLookup() -> ProcessIdentityLookup {
         let size = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
-        guard size > 0, size <= 4 * 1024 * 1024 else { return [:] }
+        guard size > 0 else {
+            return ProcessIdentityLookup(identities: [:], failureDetail: "proc_listpids could not size the process list")
+        }
+        guard size <= maximumIdentityListBytes else {
+            return ProcessIdentityLookup(identities: [:], failureDetail: "Process list is \(size) bytes, above the \(maximumIdentityListBytes / (1024 * 1024)) MiB identity cap; process identities were not verified")
+        }
         var pids = [pid_t](repeating: 0, count: Int(size) / MemoryLayout<pid_t>.size + 256)
         let byteCount = pids.withUnsafeMutableBytes { bytes in
             proc_listpids(UInt32(PROC_ALL_PIDS), 0, bytes.baseAddress, Int32(bytes.count))
         }
-        guard byteCount > 0, Int(byteCount) < pids.count * MemoryLayout<pid_t>.size else { return [:] }
+        guard byteCount > 0, Int(byteCount) < pids.count * MemoryLayout<pid_t>.size else {
+            return ProcessIdentityLookup(identities: [:], failureDetail: "The process list changed during identity enumeration")
+        }
         var result: [Int32: ProcessIdentity] = [:]
         for pid in pids.prefix(Int(byteCount) / MemoryLayout<pid_t>.size) where pid > 0 {
             var info = proc_bsdinfo()
             guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size)) == MemoryLayout<proc_bsdinfo>.size else { continue }
             result[pid] = ProcessIdentity(pid: pid, startTime: ProcessStartTime(secondsSinceEpoch: Int64(info.pbi_start_tvsec), microseconds: Int32(info.pbi_start_tvusec)))
         }
-        return result
+        return ProcessIdentityLookup(identities: result)
     }
 }

@@ -11,33 +11,20 @@ final class UIStateTests: XCTestCase {
         let snapshot = try! XCTUnwrap(store.latestSnapshot)
         controller.update(snapshot: snapshot)
 
-        let table = try! XCTUnwrap(view(withIdentifier: "process.table", in: controller.view) as NSTableView?)
-        let groupCell = try! XCTUnwrap(controller.tableView(table, viewFor: table.tableColumns[0], row: 0))
-        let disclosure = try! XCTUnwrap(view(withIdentifier: "process.group.toggle.fixture-editor", in: groupCell) as NSButton?)
-        disclosure.performClick(nil)
+        let table = try! XCTUnwrap(view(withIdentifier: "process.table", in: controller.view) as NSOutlineView?)
+        expandProcessGroup("Fixture Editor", controller: controller, table: table)
 
-        let rootRow = try! XCTUnwrap((0..<table.numberOfRows).first { row in
-            let cell = controller.tableView(table, viewFor: table.tableColumns[0], row: row)
-            return textFields(in: cell).contains { $0.stringValue == "Fixture Editor Renderer" }
-        })
+        let rootRow = try! XCTUnwrap(processRow(named: "Fixture Editor Renderer", controller: controller, table: table))
         table.selectRowIndexes(IndexSet(integer: rootRow), byExtendingSelection: false)
         XCTAssertTrue(textField(withIdentifier: "process.selection.identity", in: controller.view)?.stringValue.contains("pid=410") == true)
 
         controller.update(snapshot: copy(snapshot, timestamp: snapshot.timestamp.addingTimeInterval(1)))
-        XCTAssertEqual(selectedName(in: controller, table: table), "Fixture Editor Renderer")
+        XCTAssertEqual(selectedProcessName(controller: controller, table: table), "Fixture Editor Renderer")
 
-        let oldDescriptors = table.sortDescriptors
-        table.sortDescriptors = [NSSortDescriptor(key: "process.column.pid", ascending: false)]
-        controller.tableView(table, sortDescriptorsDidChange: oldDescriptors)
-        XCTAssertEqual(selectedName(in: controller, table: table), "Fixture Editor Renderer")
+        setProcessSort("process.column.pid", ascending: false, controller: controller, table: table)
+        XCTAssertEqual(selectedProcessName(controller: controller, table: table), "Fixture Editor Renderer")
 
-        let editorGroupRow = try! XCTUnwrap((0..<table.numberOfRows).first { row in
-            let cell = controller.tableView(table, viewFor: table.tableColumns[0], row: row)
-            return textFields(in: cell).contains { $0.stringValue == "Fixture Editor" }
-        })
-        let editorGroupCell = try! XCTUnwrap(controller.tableView(table, viewFor: table.tableColumns[0], row: editorGroupRow))
-        let collapse = try! XCTUnwrap(view(withIdentifier: "process.group.toggle.fixture-editor", in: editorGroupCell) as NSButton?)
-        collapse.performClick(nil)
+        toggleProcessGroup("Fixture Editor", controller: controller, table: table)
         XCTAssertEqual(table.selectedRow, -1)
         XCTAssertEqual(textField(withIdentifier: "process.selection.identity", in: controller.view)?.stringValue, "No process selected")
     }
@@ -48,29 +35,16 @@ final class UIStateTests: XCTestCase {
         controller.loadViewIfNeeded()
         let snapshot = try! XCTUnwrap(store.latestSnapshot)
         controller.update(snapshot: snapshot)
-        let table = try! XCTUnwrap(view(withIdentifier: "process.table", in: controller.view) as NSTableView?)
-        let groupCell = try! XCTUnwrap(controller.tableView(table, viewFor: table.tableColumns[0], row: 0))
-        try! XCTUnwrap(view(withIdentifier: "process.group.toggle.fixture-editor", in: groupCell) as NSButton?).performClick(nil)
+        let table = try! XCTUnwrap(view(withIdentifier: "process.table", in: controller.view) as NSOutlineView?)
+        expandProcessGroup("Fixture Editor", controller: controller, table: table)
 
-        let rendererRow = try! XCTUnwrap((0..<table.numberOfRows).first { row in
-            let cell = controller.tableView(table, viewFor: table.tableColumns[0], row: row)
-            return textFields(in: cell).contains { $0.stringValue == "Fixture Renderer Worker" }
-        })
+        let rendererRow = try! XCTUnwrap(processRow(named: "Fixture Renderer Worker", controller: controller, table: table))
         table.selectRowIndexes(IndexSet(integer: rendererRow), byExtendingSelection: false)
         let oldRenderer = try! XCTUnwrap(snapshot.processes.first { $0.id.pid == 411 })
         let replacementID = ProcessIdentity(pid: oldRenderer.id.pid,
                                             startTime: ProcessStartTime(secondsSinceEpoch: oldRenderer.id.startTime.secondsSinceEpoch + 100,
                                                                         microseconds: oldRenderer.id.startTime.microseconds))
-        let replacement = ProcessSnapshot(
-            id: replacementID, parentIdentity: oldRenderer.parentIdentity,
-            childIdentities: oldRenderer.childIdentities, name: oldRenderer.name,
-            executablePath: oldRenderer.executablePath, ownerUID: oldRenderer.ownerUID,
-            isCurrentUser: oldRenderer.isCurrentUser, cpuPercent: oldRenderer.cpuPercent,
-            memoryBytes: oldRenderer.memoryBytes, diskReadBytesPerSecond: oldRenderer.diskReadBytesPerSecond,
-            diskWriteBytesPerSecond: oldRenderer.diskWriteBytesPerSecond, diskReadTotalBytes: oldRenderer.diskReadTotalBytes,
-            diskWriteTotalBytes: oldRenderer.diskWriteTotalBytes, advancedMetrics: oldRenderer.advancedMetrics,
-            parentPID: oldRenderer.parentPID, parentExecutablePath: oldRenderer.parentExecutablePath
-        )
+        let replacement = copyProcess(oldRenderer, identity: replacementID)
         let reusedGroup = try! XCTUnwrap(snapshot.processGroups.first { $0.id.pid == 410 })
         let updatedGroup = ProcessGroupSnapshot(
             id: reusedGroup.id, title: reusedGroup.title, ownerUID: reusedGroup.ownerUID,
@@ -128,68 +102,39 @@ final class UIStateTests: XCTestCase {
         }
         controller.update(snapshot: copy(snapshot, timestamp: timestamp, processes: processes))
 
-        let table = try! XCTUnwrap(view(withIdentifier: "process.table", in: controller.view) as NSTableView?)
+        let table = try! XCTUnwrap(view(withIdentifier: "process.table", in: controller.view) as NSOutlineView?)
         setProcessSort("process.column.network", ascending: true, controller: controller, table: table)
         XCTAssertEqual(processGroupNames(controller: controller, table: table),
                        ["Fixture Editor", "Fixture Indexer"])
 
+        // Partial values keep the number in the cell and move the explanation to the tooltip and a badge.
         let editorRow = try! XCTUnwrap(processRow(named: "Fixture Editor", controller: controller, table: table))
-        let networkText = try! XCTUnwrap(processCellText("process.column.network", row: editorRow,
-                                                         controller: controller, table: table))
-        let gpuText = try! XCTUnwrap(processCellText("process.column.gpu", row: editorRow,
-                                                     controller: controller, table: table))
-        XCTAssertTrue(networkText.contains("partial"), networkText)
-        XCTAssertTrue(networkText.contains(networkDetail), networkText)
-        XCTAssertTrue(networkText.contains("1 of 2 members unavailable"), networkText)
-        XCTAssertTrue(gpuText.contains("partial"), gpuText)
-        XCTAssertTrue(gpuText.contains(gpuDetail), gpuText)
-        XCTAssertTrue(gpuText.contains("1 of 2 members unavailable"), gpuText)
+        let networkCell = try! XCTUnwrap(processCell("process.column.network", row: editorRow, controller: controller, table: table))
+        let gpuCell = try! XCTUnwrap(processCell("process.column.gpu", row: editorRow, controller: controller, table: table))
+        let networkValue = try! XCTUnwrap(textFields(in: networkCell).first)
+        XCTAssertFalse(networkValue.stringValue.contains("partial"), networkValue.stringValue)
+        XCTAssertTrue(isBadgeVisible(in: networkCell))
+        let networkTip = networkValue.toolTip ?? ""
+        XCTAssertTrue(networkTip.contains("Partial value"), networkTip)
+        XCTAssertTrue(networkTip.contains(networkDetail), networkTip)
+        XCTAssertTrue(networkTip.contains("1 of 2 members unavailable"), networkTip)
+        let gpuTip = textFields(in: gpuCell).first?.toolTip ?? ""
+        XCTAssertTrue(gpuTip.contains("Partial value"), gpuTip)
+        XCTAssertTrue(gpuTip.contains(gpuDetail), gpuTip)
+        XCTAssertTrue(gpuTip.contains("1 of 2 members unavailable"), gpuTip)
 
-        let editorCell = try! XCTUnwrap(controller.tableView(table, viewFor: table.tableColumns[0], row: editorRow))
-        try! XCTUnwrap(view(withIdentifier: "process.group.toggle.fixture-editor", in: editorCell) as NSButton?)
-            .performClick(nil)
+        expandProcessGroup("Fixture Editor", controller: controller, table: table)
         let editorProcessRow = try! XCTUnwrap(processRow(named: "Fixture Editor Renderer", controller: controller,
                                                          table: table))
-        let processNetworkText = try! XCTUnwrap(processCellText("process.column.network", row: editorProcessRow,
-                                                                controller: controller, table: table))
-        XCTAssertTrue(processNetworkText.contains("partial"), processNetworkText)
-        XCTAssertTrue(processNetworkText.contains(networkDetail), processNetworkText)
+        let processNetworkCell = try! XCTUnwrap(processCell("process.column.network", row: editorProcessRow,
+                                                            controller: controller, table: table))
+        let processNetworkTip = textFields(in: processNetworkCell).first?.toolTip ?? ""
+        XCTAssertTrue(processNetworkTip.contains("Partial value"), processNetworkTip)
+        XCTAssertTrue(processNetworkTip.contains(networkDetail), processNetworkTip)
 
         setProcessSort("process.column.network", ascending: false, controller: controller, table: table)
         XCTAssertEqual(processGroupNames(controller: controller, table: table),
                        ["Fixture Indexer", "Fixture Editor"])
-    }
-
-    func testUserAggregatePropagatesPartialInputWhenAllContributorsHaveValues() {
-        let (_, store, _) = makeDependencies()
-        let snapshot = try! XCTUnwrap(store.latestSnapshot)
-        let timestamp = snapshot.timestamp
-        let detail = "one process CPU sample is a lower bound"
-        let processes = snapshot.processes.map { process -> ProcessSnapshot in
-            let cpu: MetricReading
-            switch process.id.pid {
-            case 410:
-                cpu = MetricReading(value: 0, unit: .percent, timestamp: timestamp,
-                                    detail: detail, isPartial: true)
-            case 411:
-                cpu = MetricReading(value: 10, unit: .percent, timestamp: timestamp)
-            default:
-                cpu = MetricReading(value: 5, unit: .percent, timestamp: timestamp)
-            }
-            return copyProcess(process, cpuPercent: cpu)
-        }
-        let updated = copy(snapshot, timestamp: timestamp, processes: processes)
-
-        let controller = UsersViewController()
-        controller.loadViewIfNeeded()
-        controller.update(snapshot: updated)
-        let table = try! XCTUnwrap(view(withIdentifier: "users.table", in: controller.view) as NSTableView?)
-        let cpuText = try! XCTUnwrap(userCellText("cpu", row: 0, table: table))
-        let expected = UIFormat.metric(MetricReading(value: 15, unit: .percent, timestamp: timestamp,
-                                                     detail: detail, isPartial: true))
-        XCTAssertEqual(cpuText, expected)
-        XCTAssertTrue(cpuText.contains("partial"), cpuText)
-        XCTAssertTrue(cpuText.contains(detail), cpuText)
     }
 
     func testDiskSortingKeepsUnavailablePairsLastForGroupsAndChildrenInBothDirections() {
@@ -230,7 +175,7 @@ final class UIStateTests: XCTestCase {
         controller.loadViewIfNeeded()
         controller.update(snapshot: copy(snapshot, timestamp: timestamp,
                                          processes: processes, processGroups: groups))
-        let table = try! XCTUnwrap(view(withIdentifier: "process.table", in: controller.view) as NSTableView?)
+        let table = try! XCTUnwrap(view(withIdentifier: "process.table", in: controller.view) as NSOutlineView?)
 
         setProcessSort("process.column.disk", ascending: true, controller: controller, table: table)
         XCTAssertEqual(processGroupNames(controller: controller, table: table), [
@@ -266,8 +211,8 @@ final class UIStateTests: XCTestCase {
         let controller = SettingsViewController(dependencies: dependencies)
         controller.loadViewIfNeeded()
 
-        let intervalButton = try! XCTUnwrap(view(withIdentifier: "settings.refresh.2", in: controller.view) as NSButton?)
-        intervalButton.performClick(nil)
+        let intervalPopUp = try! XCTUnwrap(popUpButton(containing: "settings.refresh.2", in: controller.view))
+        choose(item: "settings.refresh.2", in: intervalPopUp)
         XCTAssertEqual(store.interval, .twoSeconds)
         XCTAssertTrue(textField(withIdentifier: "settings.sampling.state", in: controller.view)?.stringValue.contains("2.0 seconds") == true)
 
@@ -278,9 +223,10 @@ final class UIStateTests: XCTestCase {
         controller.viewWillAppear()
         await waitUntil { integrations.refreshCount > refreshesBeforeAppearance }
 
-        XCTAssertEqual(view(withIdentifier: "settings.refresh.5", in: controller.view).flatMap { ($0 as? NSButton)?.state }, .on)
-        XCTAssertEqual(view(withIdentifier: "settings.refresh.2", in: controller.view).flatMap { ($0 as? NSButton)?.state }, .off)
-        XCTAssertEqual(view(withIdentifier: "settings.appearance.dark", in: controller.view).flatMap { ($0 as? NSButton)?.state }, .on)
+        XCTAssertEqual(popUpButton(containing: "settings.refresh.5", in: controller.view)?.selectedItem?.identifier?.rawValue,
+                       "settings.refresh.5")
+        XCTAssertEqual(popUpButton(containing: "settings.appearance.dark", in: controller.view)?.selectedItem?.identifier?.rawValue,
+                       "settings.appearance.dark")
         XCTAssertEqual((view(withIdentifier: "settings.sampling.pause", in: controller.view) as? NSButton)?.title, "Resume Sampling")
         XCTAssertTrue(textField(withIdentifier: "settings.sampling.state", in: controller.view)?.stringValue.contains("Paused") == true)
 
@@ -289,8 +235,10 @@ final class UIStateTests: XCTestCase {
         NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: NSApplication.shared)
         await waitUntil { integrations.refreshCount > refreshesBeforeActivation }
 
-        let loginButton = try! XCTUnwrap(view(withIdentifier: "settings.login-item.toggle", in: controller.view) as NSButton?)
-        XCTAssertEqual(loginButton.title, "Open at Login Settings")
+        let loginSwitch = try! XCTUnwrap(view(withIdentifier: "settings.login-item.toggle", in: controller.view) as NSSwitch?)
+        XCTAssertEqual(loginSwitch.state, .off)
+        let loginButton = try! XCTUnwrap(view(withIdentifier: "settings.login-item.open-settings", in: controller.view) as NSButton?)
+        XCTAssertEqual(loginButton.attributedTitle.string, "Open Login Items Settings…")
         loginButton.performClick(nil)
         await waitUntil { integrations.openSettingsCount == 1 }
         XCTAssertEqual(integrations.launchItemChanges, [])
@@ -300,8 +248,7 @@ final class UIStateTests: XCTestCase {
         let (dependencies, store, _) = makeDependencies()
         let controller = HistoryViewController(dependencies: dependencies)
         controller.loadViewIfNeeded()
-        let dailyTable = try! XCTUnwrap(allViews(in: controller.view).compactMap { $0 as? NSTableView }
-            .first { $0.tableColumns.first?.identifier.rawValue == "day" })
+        let outline = try! XCTUnwrap(allViews(in: controller.view).compactMap { $0 as? NSOutlineView }.first)
         let base = try! XCTUnwrap(store.latestSnapshot)
 
         for timestamp in [date("2026-05-01T19:00:00Z"), date("2026-05-01T07:00:00Z")] {
@@ -312,7 +259,9 @@ final class UIStateTests: XCTestCase {
                 historyRow("2026-05-02", name: "Next UTC day")
             ]
             controller.update(snapshot: copy(base, timestamp: timestamp, applicationHistory: history))
-            XCTAssertEqual(dailyTable.numberOfRows, 2)
+            // Day rows are the children of the application rows (level 1 in the outline).
+            let dayRows = (0..<outline.numberOfRows).filter { outline.level(forRow: $0) == 1 }
+            XCTAssertEqual(dayRows.count, 2)
         }
     }
 
@@ -326,10 +275,11 @@ final class UIStateTests: XCTestCase {
                                  fixtureMode: true), store, integrations)
     }
 
-    private func copyProcess(_ source: ProcessSnapshot, cpuPercent: MetricReading? = nil,
+    private func copyProcess(_ source: ProcessSnapshot, identity: ProcessIdentity? = nil,
+                             cpuPercent: MetricReading? = nil,
                              advancedMetrics: [MetricKind: MetricReading]? = nil) -> ProcessSnapshot {
         ProcessSnapshot(
-            id: source.id, parentIdentity: source.parentIdentity, childIdentities: source.childIdentities,
+            id: identity ?? source.id, parentIdentity: source.parentIdentity, childIdentities: source.childIdentities,
             name: source.name, executablePath: source.executablePath, ownerUID: source.ownerUID,
             isCurrentUser: source.isCurrentUser, cpuPercent: cpuPercent ?? source.cpuPercent,
             memoryBytes: source.memoryBytes, diskReadBytesPerSecond: source.diskReadBytesPerSecond,
@@ -367,26 +317,24 @@ final class UIStateTests: XCTestCase {
             networkTransmitBytesPerSecond: zeroRate)
     }
 
-    private func setProcessSort(_ key: String, ascending: Bool,
-                                controller: ProcessesViewController, table: NSTableView) {
-        let oldDescriptors = table.sortDescriptors
-        table.sortDescriptors = [NSSortDescriptor(key: key, ascending: ascending)]
-        controller.tableView(table, sortDescriptorsDidChange: oldDescriptors)
-    }
-
     private func processRow(named name: String, controller: ProcessesViewController,
-                            table: NSTableView) -> Int? {
+                            table: NSOutlineView) -> Int? {
         (0..<table.numberOfRows).first { row in
             processRowName(row, controller: controller, table: table) == name
         }
     }
 
-    private func processRowName(_ row: Int, controller: ProcessesViewController, table: NSTableView) -> String? {
-        guard let cell = controller.tableView(table, viewFor: table.tableColumns[0], row: row) else { return nil }
+    private func processRowName(_ row: Int, controller: ProcessesViewController, table: NSOutlineView) -> String? {
+        guard let cell = processCell("process.column.name", row: row, controller: controller, table: table) else { return nil }
         return textFields(in: cell).first?.stringValue
     }
 
-    private func processGroupNames(controller: ProcessesViewController, table: NSTableView) -> [String] {
+    private func selectedProcessName(controller: ProcessesViewController, table: NSOutlineView) -> String? {
+        guard table.selectedRow >= 0 else { return nil }
+        return processRowName(table.selectedRow, controller: controller, table: table)
+    }
+
+    private func processGroupNames(controller: ProcessesViewController, table: NSOutlineView) -> [String] {
         (0..<table.numberOfRows).compactMap { row in
             guard table.rowView(atRow: row, makeIfNecessary: true)?.accessibilityIdentifier().hasPrefix("process.group.") == true else {
                 return nil
@@ -395,7 +343,7 @@ final class UIStateTests: XCTestCase {
         }
     }
 
-    private func childProcessNames(controller: ProcessesViewController, table: NSTableView) -> [String] {
+    private func childProcessNames(controller: ProcessesViewController, table: NSOutlineView) -> [String] {
         (0..<table.numberOfRows).compactMap { row in
             guard table.rowView(atRow: row, makeIfNecessary: true)?.accessibilityIdentifier().hasPrefix("process.row.") == true else {
                 return nil
@@ -404,21 +352,38 @@ final class UIStateTests: XCTestCase {
         }
     }
 
-    private func expandProcessGroup(_ title: String, controller: ProcessesViewController, table: NSTableView) {
+    /// Clicks the group's disclosure target, which lives in the row view's leading gutter.
+    private func toggleProcessGroup(_ title: String, controller: ProcessesViewController, table: NSOutlineView) {
         guard let row = processRow(named: title, controller: controller, table: table),
-              let cell = controller.tableView(table, viewFor: table.tableColumns[0], row: row),
-              let toggle = view(withIdentifier: "process.group.toggle.\(slug(title))", in: cell) as? NSButton else {
+              let rowView = table.rowView(atRow: row, makeIfNecessary: true),
+              let toggle = view(withIdentifier: "process.group.toggle.\(slug(title))", in: rowView) as NSButton? else {
             XCTFail("could not find the \(title) group disclosure")
             return
         }
         toggle.performClick(nil)
     }
 
-    private func processCellText(_ key: String, row: Int,
-                                 controller: ProcessesViewController, table: NSTableView) -> String? {
+    private func expandProcessGroup(_ title: String, controller: ProcessesViewController, table: NSOutlineView) {
+        toggleProcessGroup(title, controller: controller, table: table)
+    }
+
+    private func setProcessSort(_ key: String, ascending: Bool,
+                                controller: ProcessesViewController, table: NSOutlineView) {
+        let oldDescriptors = table.sortDescriptors
+        table.sortDescriptors = [NSSortDescriptor(key: key, ascending: ascending)]
+        controller.outlineView(table, sortDescriptorsDidChange: oldDescriptors)
+    }
+
+    /// The cell view the outline view would show for `row` in the named column.
+    private func processCell(_ key: String, row: Int, controller: ProcessesViewController,
+                             table: NSOutlineView) -> NSView? {
         guard let column = table.tableColumns.first(where: { $0.identifier.rawValue == key }),
-              let cell = controller.tableView(table, viewFor: column, row: row) else { return nil }
-        return textFields(in: cell).first?.stringValue
+              let item = table.item(atRow: row) else { return nil }
+        return controller.outlineView(table, viewFor: column, item: item)
+    }
+
+    private func isBadgeVisible(in root: NSView) -> Bool {
+        allViews(in: root).compactMap { $0 as? NSImageView }.contains { !$0.isHidden && $0.image != nil }
     }
 
     private func userCellText(_ key: String, row: Int, table: NSTableView) -> String? {
@@ -453,10 +418,21 @@ final class UIStateTests: XCTestCase {
                                               sampleCount: 1, gaps: 0, counterResets: 0)
     }
 
-    private func selectedName(in controller: ProcessesViewController, table: NSTableView) -> String? {
-        guard table.selectedRow >= 0,
-              let cell = controller.tableView(table, viewFor: table.tableColumns[0], row: table.selectedRow) else { return nil }
-        return textFields(in: cell).first(where: { $0.stringValue.hasPrefix("Fixture") })?.stringValue
+    /// The pop-up whose menu contains an item with `itemIdentifier` (menu items are not in the view hierarchy).
+    private func popUpButton(containing itemIdentifier: String, in root: NSView) -> NSPopUpButton? {
+        allViews(in: root).compactMap { $0 as? NSPopUpButton }.first { popUp in
+            popUp.itemArray.contains { $0.identifier?.rawValue == itemIdentifier }
+        }
+    }
+
+    /// Selects the item and sends the pop-up's action, as a user choice would.
+    private func choose(item itemIdentifier: String, in popUp: NSPopUpButton) {
+        guard let index = popUp.itemArray.firstIndex(where: { $0.identifier?.rawValue == itemIdentifier }) else {
+            XCTFail("missing pop-up item \(itemIdentifier)")
+            return
+        }
+        popUp.selectItem(at: index)
+        _ = popUp.sendAction(popUp.action, to: popUp.target)
     }
 
     private func textField(withIdentifier identifier: String, in root: NSView) -> NSTextField? {

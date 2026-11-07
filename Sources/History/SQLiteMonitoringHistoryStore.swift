@@ -131,6 +131,9 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
     private var collectionStateLoaded = false
     private var observedDataVersion: Int32?
     private var resetBoundary: Date?
+    /// UTC day of the last retention pass committed by this process. Retention runs
+    /// at most once per UTC day; the first record after launch always runs it.
+    private var lastRetentionDay: Date?
 
     public init(databaseURL: URL? = nil) {
         self.databaseURL = databaseURL ?? Self.defaultDatabaseURL()
@@ -145,11 +148,10 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
         let now = snapshot.timestamp
         let today = utcDayStart(now)
         let cutoff = today.addingTimeInterval(-Double(Self.retentionDays - 1) * 86_400)
+        let runsRetention = lastRetentionDay != today
         try execute("BEGIN IMMEDIATE", on: db)
         do {
-            try execute("DELETE FROM daily_totals WHERE day_start < \(Int64(cutoff.timeIntervalSince1970))", on: db)
-            try execute("DELETE FROM application_daily_totals WHERE day_start < \(Int64(cutoff.timeIntervalSince1970))", on: db)
-            try deleteExpiredNetworkMeasurements(before: cutoff, on: db)
+            if runsRetention { try deleteExpiredRows(before: cutoff, on: db) }
 
             let dataVersion = try readDataVersion(on: db)
             if !collectionStateLoaded || observedDataVersion != dataVersion {
@@ -223,6 +225,7 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
             try saveCollectionState(timestamp: now, applicationSamples: currentApplicationSamples,
                                     previousApplicationSamples: priorApplications, on: db)
             try execute("COMMIT", on: db)
+            if runsRetention { lastRetentionDay = today }
             priorSample = PriorSample(timestamp: now, sessionID: sessionID)
             priorApplicationSamples = currentApplicationSamples
             collectionStateLoaded = true
@@ -756,6 +759,20 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
         guard code == SQLITE_DONE else { throw sqliteError(db, code: code) }
     }
 
+    private func deleteExpiredRows(before cutoff: Date, on db: OpaquePointer) throws {
+        let cutoffDay = Int64(cutoff.timeIntervalSince1970)
+        for sql in ["DELETE FROM daily_totals WHERE day_start < ?",
+                    "DELETE FROM application_daily_totals WHERE day_start < ?"] {
+            var statement: OpaquePointer?
+            try prepare(sql, statement: &statement, on: db)
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_int64(statement, 1, cutoffDay)
+            let code = sqlite3_step(statement)
+            guard code == SQLITE_DONE else { throw sqliteError(db, code: code) }
+        }
+        try deleteExpiredNetworkMeasurements(before: cutoff, on: db)
+    }
+
     private func deleteExpiredNetworkMeasurements(before cutoff: Date, on db: OpaquePointer) throws {
         var statement: OpaquePointer?
         try prepare("DELETE FROM network_measurement_state WHERE interval_end < ?",
@@ -1074,6 +1091,7 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
 
     private func bind(_ value: String?, to statement: OpaquePointer?, index: Int32) {
         if let value {
+            // SQLITE_TRANSIENT (-1): SQLite copies the string before sqlite3_bind_text returns.
             let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
             sqlite3_bind_text(statement, index, value, -1, transient)
         }

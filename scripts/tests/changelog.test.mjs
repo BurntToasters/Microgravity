@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
-import { changelogSection, releaseNotes } from "../lib/changelog.mjs";
+import { changelogSection, placeholderReleaseNotes, releaseNotes, releaseNotesFailures } from "../lib/changelog.mjs";
+import { root } from "../lib/core.mjs";
+
+// The 0.1.0 section is the first public release; it must carry real notes, not the placeholder.
+const minimumReleaseItems = 8;
 
 const contents = `# Microgravity changelog
 
@@ -35,4 +41,20 @@ test("releaseNotes includes the section and tagged source attribution", () => {
 
 test("changelogSection fails when the requested release is missing", () => {
   assert.throws(() => changelogSection("3.0.0", contents), /CHANGELOG\.md has no 3\.0\.0 release section/);
+});
+
+test("the checked-in 0.1.0 release notes are publishable", () => {
+  const changelog = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
+  assert.deepEqual(releaseNotesFailures("0.1.0", changelog, { minimumItems: minimumReleaseItems }), []);
+});
+
+test("releaseNotesFailures rejects placeholder and thin release sections", () => {
+  for (const placeholder of placeholderReleaseNotes) {
+    const failures = releaseNotesFailures("2.0.0", `# Microgravity changelog\n\n## 2.0.0\n\n- ${placeholder}\n`, { minimumItems: 1 });
+    assert.equal(failures.length, 1);
+    assert.match(failures[0], /still contains placeholder text/);
+  }
+  assert.deepEqual(releaseNotesFailures("2.0.0", contents, { minimumItems: 1 }), []);
+  assert.match(releaseNotesFailures("2.0.0", contents, { minimumItems: 2 })[0], /has 1 bullet item\(s\); at least 2 are required/);
+  assert.match(releaseNotesFailures("3.0.0", contents)[0], /CHANGELOG\.md has no 3\.0\.0 release section/);
 });

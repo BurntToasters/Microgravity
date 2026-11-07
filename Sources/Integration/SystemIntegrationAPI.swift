@@ -1,6 +1,6 @@
 import Foundation
 
-public enum IntegrationAvailability: Equatable {
+public enum IntegrationAvailability: Equatable, Sendable {
     case available
     case notConfigured
     case requiresApproval
@@ -29,13 +29,18 @@ public struct SystemIntegrationStatus: Equatable {
     public let helper: IntegrationAvailability
     public let loginItem: LoginItemAvailability
     public let updates: UpdateAvailability
+    /// True when the helper daemon is registered with ServiceManagement, even if its
+    /// connection is unavailable. Decides whether a stuck helper can still be removed.
+    public let helperRegistered: Bool
 
     public init(helper: IntegrationAvailability,
                 loginItem: LoginItemAvailability,
-                updates: UpdateAvailability) {
+                updates: UpdateAvailability,
+                helperRegistered: Bool = false) {
         self.helper = helper
         self.loginItem = loginItem
         self.updates = updates
+        self.helperRegistered = helperRegistered
     }
 }
 
@@ -80,7 +85,8 @@ public final class UnavailableSystemIntegrationAPI: SystemIntegrationAPI {
     public private(set) var status = SystemIntegrationStatus(
         helper: .unavailable("Helper setup is not integrated."),
         loginItem: .unavailable("Login item control is not integrated."),
-        updates: .unavailable("Update checks are not integrated.")
+        updates: .unavailable("Update checks are not integrated."),
+        helperRegistered: false
     )
 
     public init() {}

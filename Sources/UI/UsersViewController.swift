@@ -13,9 +13,9 @@ enum UserAggregation {
         return grouped
     }
 
-    /// Text for the "You" column. It lives in its own column, so the name column sorts on the bare short name.
-    static func currentUserMarker(isCurrentUser: Bool) -> String {
-        isCurrentUser ? "You" : ""
+    /// Badge displayed beside the user's name. The name value and sort key stay unchanged.
+    static func currentUserBadge(isCurrentUser: Bool) -> String? {
+        isCurrentUser ? "You" : nil
     }
 }
 
@@ -34,8 +34,7 @@ final class UsersViewController: NSViewController, SnapshotUpdating {
         table.setAccessibilityLabel("Users")
         scrollView = tableParts.1
         model = AccessibleTableModel(table: table, columns: [
-            TableColumnSpec("user", "User", width: 200),
-            TableColumnSpec("current", "You", width: 56),
+            TableColumnSpec("user", "User", width: 220),
             TableColumnSpec("uid", "UID", width: 78, alignment: .right),
             TableColumnSpec("sessions", "Sessions", width: 230),
             TableColumnSpec("process-count", "Processes", width: 100, alignment: .right),
@@ -91,21 +90,20 @@ final class UsersViewController: NSViewController, SnapshotUpdating {
             let cpu = aggregate(owned.map(\.cpuPercent), unit: .percent, capability: processAvailability)
             let memory = aggregate(owned.map(\.memoryBytes), unit: .bytes, capability: processAvailability)
             let sessionNames = user.loginSessions.isEmpty ? "No active sessions reported" : user.loginSessions.joined(separator: ", ")
-            let marker = UserAggregation.currentUserMarker(isCurrentUser: user.isCurrentUser)
             let duplicateSuffix = (userSlugCounts[slug(user.shortName)] ?? 0) > 1 ? ".uid.\(user.uid)" : ""
             return AccessibleTableRow(
                 id: "users.row.\(slug(user.shortName))\(duplicateSuffix)",
-                values: [user.shortName, marker, String(user.uid), sessionNames, processCount, cpu, memory],
+                values: [user.shortName, String(user.uid), sessionNames, processCount, cpu, memory],
                 sortKeys: [
                     .text(user.shortName),
-                    .text(marker),
                     .number(Double(user.uid)),
                     .text(sessionNames),
                     processAvailability?.available == false ? .none : .number(Double(owned.count)),
                     aggregateSortKey(owned.map(\.cpuPercent), capability: processAvailability),
                     aggregateSortKey(owned.map(\.memoryBytes), capability: processAvailability)
                 ],
-                icon: userIcon
+                icon: userIcon,
+                badge: UserAggregation.currentUserBadge(isCurrentUser: user.isCurrentUser)
             )
         }
         model.replaceRows(rows, in: table)

@@ -79,6 +79,7 @@ final class StatusBannerView: NSView {
     func setMessage(_ text: String?, style: Style = .info) {
         guard let text, !text.isEmpty else {
             label.stringValue = ""
+            label.setAccessibilityLabel("")
             toolTip = nil
             isHidden = true
             return
@@ -86,6 +87,7 @@ final class StatusBannerView: NSView {
         self.style = style
         apply(style: style)
         label.stringValue = text
+        label.setAccessibilityLabel(text)
         label.toolTip = text
         toolTip = text
         isHidden = false

@@ -50,26 +50,20 @@ xcodebuild \
 
 Use `-destination 'platform=macOS,arch=x86_64'` on an Intel host. The suite must finish with 0 failures.
 
-Hosted CI (`.github/workflows/ci.yml`) runs the Node suite, project and version checks, validation, unsigned Core XCTest, and both builds. It does not run UI XCTest. The runner label in that workflow has not been verified for this release; see `docs/IMPLEMENTATION_STATUS.md`.
+Hosted CI (`.github/workflows/ci.yml`) runs the Node suite, project and version checks, validation, unsigned Core XCTest, and both builds. It does not run UI XCTest. GitHub lists `macos-26` as a hosted runner and announced general availability on 2026-02-26 ([runner documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job), [announcement](https://github.blog/changelog/2026-02-26-macos-26-is-now-generally-available-for-github-hosted-runners/)). This confirms runner-label availability; it does not mean CI was run against this working tree. See `docs/IMPLEMENTATION_STATUS.md`.
 
 `build:release-smoke` only proves an unsigned universal Release compile. It does not sign or notarize an artifact.
 
-## UI tests and the release gate
+## UI tests and the hard release gate
 
-The UI XCTest target (`Tests/UITests`) has not passed on any host for this release. The recorded failures are interaction failures: synthesized clicks and keystrokes did not produce the expected page changes or row expansion in the test VM, and the cause has not been isolated. For 0.1.0 the UI suite is therefore not a release gate that can be met. The 0.1.0 UI verification is the Core XCTest suite, which includes AppKit view-controller tests, plus the manual checklist below. The signed UI suite stays in the repository as a goal for a later release, to be made a gate once it runs green on a dedicated logged-in GUI runner.
+The UI XCTest target (`Tests/UITests`) is a hard release gate. `npm run test:all` runs `xcodebuild test` on the complete `Test` scheme, including both `MicrogravityCoreTests` and `MicrogravityUITests`; any UI failure fails the command. `npm run release:prepare` calls `test:all` and records its 24-hour quality proof only after success. Therefore release preparation stays blocked until the signed UI suite passes. Hosted CI runs only Core XCTest and does not satisfy this gate.
 
-Current script behavior differs from that decision, and the difference is not resolved in this document:
+The final signed UI run on 2026-11-07 executed 18 tests: 15 passed and 3 failed. The remaining failures are `testDetailsKeepsSelectedProcessAcrossSnapshotRefresh` and `testSelectionSurvivesSnapshotRefresh` (the fixture's one-shot refresh can occur before the test records its baseline), and `testHistorySortsFormattedTotalsByNumericValues` (the saved `history.outline` sort state affects the initial header order). The focused selection/search/sort test passed after accessibility labels and a header hit point were corrected. Group expansion, relaunch persistence, right-click actions, cross-page Details selection, page navigation, sheets, and appearance switching passed in the final full run.
 
-- `npm run test:all` (`scripts/test-all.mjs`) runs `xcodebuild test` on the whole `Test` scheme, which contains both `MicrogravityCoreTests` and `MicrogravityUITests`. It does not filter to Core. A failing UI test therefore fails `test:all`.
-- `npm run release:prepare` runs `npm run test:all` (`scripts/release.mjs`) and records the 24-hour quality proof only when it passes. `release:mac` calls `release:prepare`. A release cannot be prepared while the UI suite fails.
-- Hosted CI runs only the unsigned Core command above, so CI is not affected.
-
-Before tagging 0.1.0, one of these must be true: the UI suite runs green on a signed GUI runner, or the owner changes `scripts/test-all.mjs` (and the release path that depends on it) so the UI target is not part of the release gate. Do not describe the release as gated on UI tests until that change is made.
-
-To run the signed UI suite on a GUI runner (for development or for a later release gate):
+`automationmodetool` takes no arguments. It reported disabled immediately before and after each UI run; one poll during the final run reported enabled. XCUITest did execute real clicks during that transient enabled interval, including successful expansion, relaunch, menu, and page-navigation checks. The remaining failures are test-fixture timing and persisted history sort state; do not attribute them to Automation Mode. Run the full suite on a logged-in GUI host with Automation Mode enabled:
 
 - The runner must be a logged-in desktop session. UI tests cannot run over SSH or on a locked screen.
-- Automation Mode must be enabled. Check it with `automationmodetool`. Enabling it requires an administrator and lowers UI-automation security, so do it only on a dedicated runner.
+- Automation Mode must be enabled. Check its current state by running `automationmodetool` with no arguments. Enabling it requires an administrator and lowers UI-automation security, so enable it only on a dedicated runner.
 - The UI runner needs a real Apple Development signature. Ad-hoc or unsigned runners fail before connecting. Find the identity with `security find-identity -v -p codesigning`.
 
 ```sh
@@ -93,15 +87,15 @@ xcodebuild \
   SPARKLE_ENABLE_AUTOMATIC_CHECKS=NO
 ```
 
-Substitute the 10-character Apple Team ID for `<team-id>`. The UI tests use fixture data and need no helper approval or Sparkle feed.
+Substitute the 10-character Apple Team ID for `<team-id>`. The UI tests use fixture data and need no helper approval or Sparkle feed. Do not disable the UI target or change the release gate to make `test:all` pass.
 
 Troubleshooting:
 
-- `Failed to initialize for UI testing ... Canceled by user`: Automation Mode is off, or the runner tried to use biometrics. Check `automationmodetool`.
+- `Failed to initialize for UI testing ... Canceled by user`: Automation Mode is off, or the runner tried to use biometrics. Check with `automationmodetool` (no arguments).
 - The runner is killed before connecting, or hangs before connecting: the runner is unsigned. Use the signed command and the correct team ID.
 - `dyld` reports different Team IDs when loading Sparkle: the Debug configuration must keep `ENABLE_HARDENED_RUNTIME = NO` (`config/debug.xcconfig`). Delete `DerivedData/Build` and rebuild.
 - `Missing package product 'Sparkle'`: delete `DerivedData/Build`, `DerivedData/SourcePackages`, and `DerivedData/PackageCache`, then rebuild. `scripts/build.mjs` converts package and tool paths to absolute paths because Xcode silently resolves no local packages from relative paths; do not revert that.
-- UI element not found or timeout: open the `.xcresult` bundle with `xcrun xcresulttool` and read the attached screenshots. Check the accessibility identifiers before changing a test.
+- UI element not found or timeout: inspect failure attachments and the accessibility hierarchy with `xcrun xcresulttool`. Check the actual native control type and accessibility identifiers before changing a test.
 
 ## Manual UI checklist (0.1.0)
 

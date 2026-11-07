@@ -123,9 +123,19 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
         let sessionID: String
     }
 
+    /// Opaque SQLite handle remains actor-owned while open. This wrapper only
+    /// makes its lifetime sendable so actor deinitialization can close it safely.
+    private final class DatabaseHandle: @unchecked Sendable {
+        let pointer: OpaquePointer
+
+        init(_ pointer: OpaquePointer) { self.pointer = pointer }
+
+        deinit { sqlite3_close(pointer) }
+    }
+
     private let databaseURL: URL?
     private let sessionID = UUID().uuidString
-    private var database: OpaquePointer?
+    private var database: DatabaseHandle?
     private var priorSample: PriorSample?
     private var priorApplicationSamples: [String: Date] = [:]
     private var collectionStateLoaded = false
@@ -137,10 +147,6 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
 
     public init(databaseURL: URL? = nil) {
         self.databaseURL = databaseURL ?? Self.defaultDatabaseURL()
-    }
-
-    deinit {
-        if let database { sqlite3_close(database) }
     }
 
     public func record(snapshot: MonitoringSnapshot) async throws {
@@ -343,7 +349,7 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
     }
 
     private func openDatabase() throws -> OpaquePointer {
-        if let database { return database }
+        if let database { return database.pointer }
         guard let databaseURL else {
             throw MonitoringHistoryError.databaseUnavailable("Application Support is unavailable.")
         }
@@ -372,7 +378,7 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
             sqlite3_close(opened)
             throw error
         }
-        database = opened
+        database = DatabaseHandle(opened)
         return opened
     }
 

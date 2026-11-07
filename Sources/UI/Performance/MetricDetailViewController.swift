@@ -161,8 +161,11 @@ final class MetricDetailViewController: NSViewController {
     /// Applies one metric's model. Called every sample, so it updates views in place.
     func update(_ model: MetricDetailModel) {
         titleLabel.stringValue = model.title
+        titleLabel.setAccessibilityLabel(model.title)
         subtitleLabel.stringValue = model.subtitle
+        subtitleLabel.setAccessibilityLabel(model.subtitle)
         bigValueLabel.stringValue = model.bigValue
+        bigValueLabel.setAccessibilityLabel(model.bigValue)
         bigValueLabel.textColor = model.isBigValueUnavailable ? .secondaryLabelColor : .labelColor
         bigValueLabel.setAccessibilityIdentifier(model.bigValueIdentifier ?? "performance.detail.value")
 
@@ -173,6 +176,7 @@ final class MetricDetailViewController: NSViewController {
         stateLabel.isHidden = model.stateText == nil
         stateLabel.stringValue = model.stateText ?? ""
         stateLabel.setAccessibilityIdentifier(model.stateIdentifier ?? "performance.detail.state")
+        stateLabel.setAccessibilityLabel(model.stateText ?? "")
         if let banner = model.banner {
             self.banner.setMessage(banner.message, style: banner.style)
         } else {
@@ -192,6 +196,7 @@ final class MetricDetailViewController: NSViewController {
         captionLabel.isHidden = model.caption == nil
         captionLabel.stringValue = model.caption ?? ""
         captionLabel.setAccessibilityIdentifier(model.captionIdentifier ?? "performance.detail.caption")
+        captionLabel.setAccessibilityLabel(model.caption ?? "")
         captionLabel.setAccessibilityLabel(model.captionAccessibilityLabel)
 
         statsGrid.update(model.stats)
@@ -259,6 +264,7 @@ final class MetricDetailViewController: NSViewController {
         pressureStrip.setAccessibilityLabel("Memory pressure history, \(memory.pressureText)")
 
         swapValueLabel.stringValue = memory.swapValue
+        swapValueLabel.setAccessibilityLabel(memory.swapValue)
         swapBar.setFraction(memory.swapFraction)
         swapBar.setAccessibilityValue(memory.swapValue)
         swapGraph.update(series: memory.swapSeries.map { [$0] } ?? [], maximum: memory.swapMaximum,
@@ -409,6 +415,7 @@ private final class StateChipView: NSView {
 
     func setState(text: String, tint: NSColor) {
         label.stringValue = text
+        label.setAccessibilityLabel(text)
         self.tint = tint
         needsDisplay = true
     }

@@ -36,8 +36,11 @@ argument alone cannot switch a production build to fixture data.
 - Processes is a native outline view. It is searchable and sortable, with app
   icons, subtle heat-mapped resource cells, and a grouping choice of **Group by
   App** or **Flat List**. In grouped mode, related processes appear under an
-  expandable parent row. Expanding a group shows its children, and selecting any
-  row exposes its stable identity.
+  expandable parent row. Expanded groups are remembered across launches by full
+  PID-plus-start-time identity, so a reused PID never inherits old expansion.
+  Selecting any row exposes its stable identity. **Show in Details** opens the
+  flat inventory and selects that same full process identity when it is still
+  present.
 - Partial and unavailable readings are marked with a badge and a tooltip that
   gives the reason. A selection bar at the bottom of the page shows the selected
   process and its available actions.
@@ -99,8 +102,9 @@ and the Settings caption must match it.
   completeness, item/service identity, status, item kind, and known executable
   path. The only actions are Reveal in Finder and Open Login Items Settings; the
   UI does not enable, disable, start, or stop items.
-- Users displays active sessions and per-user process/resource aggregates. It
-  offers no account-management action.
+- Users displays active sessions and per-user process/resource aggregates. A
+  small **You** badge sits beside the current user's name in the User column;
+  sorting uses the bare short name. It offers no account-management action.
 - Incomplete discovery is visible on each relevant page. An empty list is not
   presented as proof that there are no items when collection failed or is
   unsupported.
@@ -141,8 +145,8 @@ The deterministic fixture suite captures an XCTest screenshot attachment for
 each principal navigation page. Attachments belong to the `.xcresult` bundle
 produced by the native test scheme.
 
-The UI XCTest suite has not passed on any host for 0.1.0, so these cases are
-acceptance criteria that the suite does not yet verify end to end. The 0.1.0
-UI verification and its manual checklist are described in `docs/RELEASING.md`.
-These are acceptance criteria, not a claim of completed manual or hosted
-validation.
+The final signed UI XCTest run on 2026-11-07 executed 18 tests: 15 passed and 3
+failed. Failures cover two snapshot-refresh waits and history numeric-sort
+ordering. See `docs/RELEASING.md` for details. The full suite has not completed
+with zero failures; these acceptance criteria do not claim completed manual or
+hosted validation.

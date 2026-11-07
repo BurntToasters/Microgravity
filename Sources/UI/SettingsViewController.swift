@@ -14,6 +14,16 @@ private enum AppearanceMode: String, CaseIterable {
     }
 }
 
+/// NotificationCenter tokens are Objective-C objects. This wrapper owns one token
+/// solely so it can be removed when its actor-isolated controller is deallocated.
+private final class NotificationObserverToken: @unchecked Sendable {
+    private let token: NSObjectProtocol
+
+    init(_ token: NSObjectProtocol) { self.token = token }
+
+    deinit { NotificationCenter.default.removeObserver(token) }
+}
+
 /// System Settings 14 style form: right-aligned labels in column 0, controls in column 1, one card per section.
 @MainActor
 final class SettingsViewController: NSViewController {
@@ -38,7 +48,7 @@ final class SettingsViewController: NSViewController {
     private let updatesState = UIComponents.label("Checking update status", size: 12)
     private let updateCheckButton = NSButton(title: "Check for Updates", target: nil, action: nil)
     private let updateInstallButton = NSButton(title: "Install Update…", target: nil, action: nil)
-    private var appActivationObserver: NSObjectProtocol?
+    private var appActivationObserver: NotificationObserverToken?
 
     init(dependencies: PageDependencies) {
         self.dependencies = dependencies
@@ -48,12 +58,6 @@ final class SettingsViewController: NSViewController {
     }
 
     required init?(coder: NSCoder) { nil }
-
-    deinit {
-        if let appActivationObserver {
-            NotificationCenter.default.removeObserver(appActivationObserver)
-        }
-    }
 
     override func loadView() {
         view = DynamicWindowBackgroundView()
@@ -97,13 +101,14 @@ final class SettingsViewController: NSViewController {
         synchronizeIntervalControl()
         dependencies.integrations.onStatusChange = { [weak self] in self?.updateIntegrationControls() }
         updateIntegrationControls()
-        appActivationObserver = NotificationCenter.default.addObserver(
+        let observer = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refreshIntegrationStatus() }
         }
+        appActivationObserver = NotificationObserverToken(observer)
     }
 
     override func viewWillAppear() {
@@ -401,6 +406,7 @@ final class SettingsViewController: NSViewController {
         let status = dependencies.integrations.status
         helperDot.tone = IntegrationStatusTone.helper(status.helper)
         helperState.stringValue = describe(status.helper)
+        helperState.setAccessibilityLabel(helperState.stringValue)
         if case .unavailable = status.helper {
             helperButton.isEnabled = false
         } else {
@@ -410,6 +416,7 @@ final class SettingsViewController: NSViewController {
 
         loginDot.tone = IntegrationStatusTone.loginItem(status.loginItem)
         loginItemState.stringValue = describe(status.loginItem)
+        loginItemState.setAccessibilityLabel(loginItemState.stringValue)
         switch status.loginItem {
         case .enabled:
             loginSwitch.state = .on
@@ -425,6 +432,7 @@ final class SettingsViewController: NSViewController {
 
         updatesDot.tone = IntegrationStatusTone.updates(status.updates)
         updatesState.stringValue = describe(status.updates)
+        updatesState.setAccessibilityLabel(updatesState.stringValue)
         switch status.updates {
         case .idle, .checking, .current, .failed:
             updateCheckButton.isEnabled = true
@@ -501,6 +509,7 @@ final class SettingsViewController: NSViewController {
         samplingState.stringValue = store.isPaused
             ? "Paused · the last sample remains visible."
             : "Sampling every \(store.interval.rawValue) seconds."
+        samplingState.setAccessibilityLabel(samplingState.stringValue)
     }
 
     private func showIntegrationError(_ title: String, message: String) async {

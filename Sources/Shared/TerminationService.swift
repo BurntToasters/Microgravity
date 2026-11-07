@@ -25,8 +25,7 @@ enum TerminationService {
         case authorizationDenied
     }
 
-    private static let authorizationLock = NSLock()
-    private static var consumedAuthorizations: [Data: Date] = [:]
+    private static let consumedAuthorizations = ConsumedAuthorizationStore()
     private static let authorizationLifetime: TimeInterval = 10 * 60
     private static let maximumConsumedAuthorizations = 256
 
@@ -82,15 +81,9 @@ enum TerminationService {
     static func consumeAuthorizationForm(_ authorization: Data, now: Date = Date()) -> Bool {
         guard authorization.count == MemoryLayout<AuthorizationExternalForm>.size else { return false }
         let digest = Data(SHA256.hash(data: authorization))
-        authorizationLock.lock()
-        defer { authorizationLock.unlock() }
-        consumedAuthorizations = consumedAuthorizations.filter {
-            now.timeIntervalSince($0.value) < authorizationLifetime
-        }
-        guard consumedAuthorizations[digest] == nil,
-              consumedAuthorizations.count < maximumConsumedAuthorizations else { return false }
-        consumedAuthorizations[digest] = now
-        return true
+        return consumedAuthorizations.consume(digest, now: now,
+                                              lifetime: authorizationLifetime,
+                                              maximumCount: maximumConsumedAuthorizations)
     }
 
     private static func permits(_ observed: HelperTarget, requested: HelperTargetIdentity, clientPID: Int32) -> Bool {
@@ -111,5 +104,21 @@ enum TerminationService {
         let executable = pathLength > 0 ? String(cString: path) : ""
         let protectedPath = executable.isEmpty || ["/System/Library/", "/usr/libexec/", "/usr/sbin/", "/sbin/"].contains { executable.hasPrefix($0) }
         return HelperTarget(pid: pid, seconds: Int64(info.pbi_start_tvsec), microseconds: Int32(info.pbi_start_tvusec), owner: UInt32(info.pbi_uid), protected: protectedPath || (info.pbi_flags & UInt32(PROC_FLAG_SYSTEM)) != 0)
+    }
+}
+
+/// Stores consumed authorization digests. Pruning and insertion occur under one
+/// lock, preserving atomic single-use checks across helper requests.
+private final class ConsumedAuthorizationStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var dates: [Data: Date] = [:]
+
+    func consume(_ digest: Data, now: Date, lifetime: TimeInterval, maximumCount: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        dates = dates.filter { now.timeIntervalSince($0.value) < lifetime }
+        guard dates[digest] == nil, dates.count < maximumCount else { return false }
+        dates[digest] = now
+        return true
     }
 }

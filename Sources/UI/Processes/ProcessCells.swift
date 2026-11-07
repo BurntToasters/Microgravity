@@ -43,6 +43,7 @@ final class ProcessNameCellView: NSTableCellView {
         nameField.stringValue = content.title
         nameField.font = .systemFont(ofSize: 12, weight: content.isGroup ? .semibold : .regular)
         nameField.setAccessibilityIdentifier(content.accessibilityID + ".name")
+        nameField.setAccessibilityLabel(content.title)
         setAccessibilityIdentifier(content.accessibilityID + ".cell.name")
         iconView.image = AppIconProvider.icon(forBundlePath: content.bundlePath)
     }
@@ -77,6 +78,7 @@ final class ProcessTextCellView: NSTableCellView {
             ? .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
             : .systemFont(ofSize: 12)
         valueField.setAccessibilityIdentifier(valueIdentifier)
+        valueField.setAccessibilityLabel(text)
         setAccessibilityIdentifier(cellIdentifier)
     }
 }

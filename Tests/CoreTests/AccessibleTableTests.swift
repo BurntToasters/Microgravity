@@ -250,6 +250,24 @@ final class AccessibleTableTests: XCTestCase {
         XCTAssertTrue(image.image === icon)
     }
 
+    func testFirstColumnBadgeIsAccessibleAndDoesNotChangeNameSorting() throws {
+        let (table, _) = makeHostedTable()
+        let model = AccessibleTableModel(table: table, columns: [TableColumnSpec("name", "Name")])
+        table.sortDescriptors = [NSSortDescriptor(key: "name", ascending: true)]
+        model.replaceRows([
+            AccessibleTableRow(id: "zulu", values: ["zulu"], sortKeys: [.text("zulu")], badge: "You"),
+            AccessibleTableRow(id: "alpha", values: ["alpha"], sortKeys: [.text("alpha")])
+        ], in: table)
+
+        XCTAssertEqual(model.rows.map(\.id), ["alpha", "zulu"])
+        XCTAssertEqual(model.rows[1].values[0], "zulu")
+        XCTAssertEqual(model.rows[1].badge, "You")
+        let nameColumn = try XCTUnwrap(table.tableColumns.first)
+        let cell = try XCTUnwrap(table.delegate?.tableView?(table, viewFor: nameColumn, row: 1))
+        let badge = try XCTUnwrap(textFields(in: cell).first { $0.accessibilityIdentifier() == "zulu.name.badge" })
+        XCTAssertEqual(badge.stringValue, "You")
+    }
+
     private func makeHostedTable() -> (RecordingTableView, NSScrollView) {
         let table = RecordingTableView(frame: NSRect(x: 0, y: 0, width: 480, height: 200))
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 480, height: 200))

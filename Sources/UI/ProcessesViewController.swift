@@ -22,6 +22,8 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     private static let systemProtectedMessage = "System processes are protected and can't be quit from Microgravity."
 
     private let dependencies: PageDependencies
+    private let defaults: UserDefaults
+    private let outlineAutosaveName: String
     private let outlineView = NSOutlineView()
     private let outlineScroll = NSScrollView()
     private let selectionBar = ProcessSelectionBar()
@@ -45,8 +47,8 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     /// Member rows of each group the outline view currently shows expanded.
     private var shownChildren: [ProcessRowID: [ProcessRowID]] = [:]
     private var rowsByID: [ProcessRowID: ProcessRow] = [:]
-    /// Expanded groups, keyed by the group's identity. In memory only: identities do not survive a relaunch.
-    private var expandedGroups = Set<ProcessIdentity>()
+    /// Expanded groups, keyed by the full group identity and restored from preferences.
+    private var expandedGroups: Set<ProcessIdentity>
     private var collapsedDuringSearch = Set<ProcessIdentity>()
     private var selectedID: ProcessRowID?
     private var sort = ProcessSortState(column: .cpu, ascending: false)
@@ -56,9 +58,15 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     /// True while the controller changes the outline itself, so delegate callbacks are not user actions.
     private var isApplyingModel = false
 
-    init(dependencies: PageDependencies) {
+    init(dependencies: PageDependencies, defaults: UserDefaults? = nil) {
         self.dependencies = dependencies
-        columnOverrides = UserDefaults.standard.dictionary(forKey: ProcessesViewController.columnVisibilityKey)
+        let fixtureSuite = dependencies.fixtureMode
+            ? ProcessInfo.processInfo.environment["MICROGRAVITY_UI_TEST_DEFAULTS_SUITE"]
+            : nil
+        self.defaults = defaults ?? fixtureSuite.flatMap(UserDefaults.init(suiteName:)) ?? .standard
+        outlineAutosaveName = fixtureSuite.map { "\(Self.autosaveName).\($0)" } ?? Self.autosaveName
+        expandedGroups = ProcessGroupExpansionPersistence.load(from: self.defaults)
+        columnOverrides = self.defaults.dictionary(forKey: ProcessesViewController.columnVisibilityKey)
             as? [String: Bool] ?? [:]
         super.init(nibName: nil, bundle: nil)
     }
@@ -139,7 +147,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             if column == .name { outlineView.outlineTableColumn = tableColumn }
         }
         // Autosave after the columns exist so saved widths and order apply to them.
-        outlineView.autosaveName = Self.autosaveName
+        outlineView.autosaveName = outlineAutosaveName
         outlineView.autosaveTableColumns = true
         outlineView.sortDescriptors = [NSSortDescriptor(key: sort.column.rawValue, ascending: sort.ascending)]
         applyColumnVisibility()
@@ -248,6 +256,11 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         currentSnapshot = snapshot
         processByIdentity = Dictionary(snapshot.processes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         groupByIdentity = Dictionary(snapshot.processGroups.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let retainedExpansions = ProcessGroupExpansionPersistence.available(expandedGroups, in: snapshot.processGroups)
+        if retainedExpansions != expandedGroups {
+            expandedGroups = retainedExpansions
+            persistExpandedGroups()
+        }
         applyColumnVisibility()
         applyModel()
     }
@@ -453,7 +466,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     @objc private func toggleProcessColumn(_ sender: NSMenuItem) {
         guard let key = sender.representedObject as? String, let column = ProcessColumn(rawValue: key) else { return }
         columnOverrides[column.suffix] = columnHidden(column)
-        UserDefaults.standard.set(columnOverrides, forKey: Self.columnVisibilityKey)
+        defaults.set(columnOverrides, forKey: Self.columnVisibilityKey)
         applyColumnVisibility()
     }
 
@@ -592,6 +605,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         guard !isApplyingModel, let item = notificationItem(notification),
               case .group(let identity) = item.id else { return }
         expandedGroups.insert(identity)
+        persistExpandedGroups()
         collapsedDuringSearch.remove(identity)
         // The outline asks for the child count right after this callback, so the mirror must be ready now.
         let output = ProcessRowModel.build(makeInput())
@@ -609,6 +623,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         guard !isApplyingModel, let item = notificationItem(notification),
               case .group(let identity) = item.id else { return }
         expandedGroups.remove(identity)
+        persistExpandedGroups()
         if !searchQuery.isEmpty { collapsedDuringSearch.insert(identity) }
         shownChildren[item.id] = nil
         setDisclosureState(for: item, expanded: false)
@@ -699,10 +714,15 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         NSPasteboard.general.setString(path, forType: .string)
     }
 
-    /// Switches to the Details page. Details does not yet select a process from another page.
+    /// Switches to Details and selects the exact live identity represented by the current row.
     @objc func showSelectedProcessInDetails(_ sender: Any?) {
-        guard let root = view.window?.contentViewController as? RootViewController else { return }
-        root.select(.details)
+        guard let selectedID, processByIdentity[selectedID.identity] != nil,
+              let root = view.window?.contentViewController as? RootViewController else { return }
+        root.showProcessInDetails(selectedID.identity)
+    }
+
+    private func persistExpandedGroups() {
+        ProcessGroupExpansionPersistence.save(expandedGroups, to: defaults)
     }
 
     /// Focuses the toolbar search field (⌘F).

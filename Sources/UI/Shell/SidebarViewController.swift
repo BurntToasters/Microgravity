@@ -171,6 +171,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         let text = NSTextField(labelWithString: page.title)
         text.font = .systemFont(ofSize: 13)
         text.lineBreakMode = .byTruncatingTail
+        text.setAccessibilityIdentifier(identifier)
 
         cell.imageView = icon
         cell.textField = text
@@ -244,12 +245,14 @@ final class SidebarStatusFooter: NSView {
         samplingLine.stringValue = paused
             ? "Paused"
             : "Sampling every \(SamplingControls.seconds(monitoringStore.interval)) s"
+        samplingLine.setAccessibilityLabel(samplingLine.stringValue)
         if let snapshot = snapshot ?? monitoringStore.latestSnapshot {
             let time = UIFormat.time(snapshot.timestamp)
             freshnessLine.stringValue = paused ? "Last sample \(time)" : "Updated \(time)"
         } else {
             freshnessLine.stringValue = "Waiting for the first sample"
         }
+        freshnessLine.setAccessibilityLabel(freshnessLine.stringValue)
     }
 
     @objc private func samplingStateChanged() {

@@ -69,6 +69,7 @@ final class ProcessSelectionBar: NSView {
         titleField.stringValue = ""
         summaryField.stringValue = "Select a process to inspect its identity."
         identityField.stringValue = Self.emptyIdentity
+        identityField.setAccessibilityLabel(Self.emptyIdentity)
     }
 
     func show(title: String, summary: String, identity: String, icon: NSImage) {
@@ -77,6 +78,7 @@ final class ProcessSelectionBar: NSView {
         titleField.stringValue = title
         summaryField.stringValue = summary
         identityField.stringValue = identity
+        identityField.setAccessibilityLabel(identity)
     }
 
     override func draw(_ dirtyRect: NSRect) {

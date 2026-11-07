@@ -1,12 +1,14 @@
 import Darwin
 import Foundation
 
-final class SamplingCancellation {
+/// Shared cancellation state. Every field is protected by `lock`; handlers are
+/// removed under the lock before invocation, so each registration runs at most once.
+final class SamplingCancellation: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false
     private var active: Process?
-    private var handlers: [UUID: () -> Void] = [:]
-    func onCancel(_ id: UUID, _ handler: @escaping () -> Void) {
+    private var handlers: [UUID: @Sendable () -> Void] = [:]
+    func onCancel(_ id: UUID, _ handler: @escaping @Sendable () -> Void) {
         lock.lock()
         if cancelled { lock.unlock(); handler(); return }
         handlers[id] = handler
@@ -33,18 +35,20 @@ final class SamplingCancellation {
     var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
 }
 
-final class SamplingRunner {
+/// Runner state is confined to `queue`, except admission state, which is guarded by
+/// `admissionLock`. The command and other configuration are immutable after init.
+final class SamplingRunner: @unchecked Sendable {
     static let shared = SamplingRunner()
     private let queue = DispatchQueue(label: "run.rosie.microgravity.sampling")
     private var lastStart: [HelperSampleKind: UInt64] = [:]
     private let admissionLock = NSLock()
     private var active = false
     private var pending: [Work] = []
-    private struct Work {
+    private struct Work: Sendable {
         let id: UUID
         let request: HelperSampleRequest
         let cancellation: SamplingCancellation
-        let reply: (HelperSampleResponse) -> Void
+        let reply: @Sendable (HelperSampleResponse) -> Void
     }
     private func response(_ request: HelperSampleRequest, _ output: Data? = nil, _ error: String? = nil) -> HelperSampleResponse {
         HelperSampleResponse(version: helperProtocolVersion, kind: request.kind, capturedAt: Date(), output: output, error: error)
@@ -66,12 +70,12 @@ final class SamplingRunner {
         if let next { execute(next) }
         work.reply(response(work.request, output, error))
     }
-    struct Command { let executable: String; let arguments: [String] }
-    private let command: (HelperSampleKind) -> Command
+    struct Command: Sendable { let executable: String; let arguments: [String] }
+    private let command: @Sendable (HelperSampleKind) -> Command
     private let outputLimit: Int
     private let timeoutNanoseconds: UInt64
     private let intervalNanoseconds: UInt64
-    init(command: @escaping (HelperSampleKind) -> Command = SamplingRunner.fixedCommand,
+    init(command: @escaping @Sendable (HelperSampleKind) -> Command = { SamplingRunner.fixedCommand($0) },
          outputLimit: Int = HelperSampleResponse.maximumOutputBytes,
          timeoutNanoseconds: UInt64 = 10_000_000_000,
          intervalNanoseconds: UInt64 = 5_000_000_000) {
@@ -88,7 +92,7 @@ final class SamplingRunner {
     }
 
     func sample(_ request: HelperSampleRequest, cancellation: SamplingCancellation,
-                reply: @escaping (HelperSampleResponse) -> Void) {
+                reply: @escaping @Sendable (HelperSampleResponse) -> Void) {
         guard request.version == helperProtocolVersion else { reply(response(request, nil, "incompatibleVersion")); return }
         guard !cancellation.isCancelled else { reply(response(request, nil, "disconnected")); return }
         let work = Work(id: UUID(), request: request, cancellation: cancellation, reply: reply)

@@ -15,8 +15,9 @@ struct MetricGraphSeries {
     }
 }
 
-/// Tooltip owner for gap markers. Kept outside the main-actor view because AppKit's tooltip manager calls it.
-private final class GapToolTipOwner: NSObject, NSViewToolTipOwner {
+/// Tooltip owner for gap markers. AppKit calls it outside the view's actor context;
+/// it has no stored state and always returns the same string.
+private final class GapToolTipOwner: NSObject, NSViewToolTipOwner, @unchecked Sendable {
     func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint,
               userData data: UnsafeMutableRawPointer?) -> String {
         "Sample gap · paused"

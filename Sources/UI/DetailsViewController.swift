@@ -24,6 +24,7 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
     private var selectedRowID: String?
     private var selectedProcessIdentity: ProcessIdentity?
     private var processIdentityByRowID: [String: ProcessIdentity] = [:]
+    private var rowIDByProcessIdentity: [ProcessIdentity: String] = [:]
     /// Last applied unavailability per optional column. Re-applied only when it changes, so a hidden column
     /// the user brought back with the header menu stays visible between snapshots.
     private var networkColumnUnavailable: Bool?
@@ -148,6 +149,9 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
         processIdentityByRowID = Dictionary(uniqueKeysWithValues: sorted.map {
             ("details.process.\($0.id.pid)", $0.id)
         })
+        rowIDByProcessIdentity = Dictionary(uniqueKeysWithValues: sorted.map {
+            ($0.id, "details.process.\($0.id.pid)")
+        })
         allRows = rows
         applyColumnVisibility(networkUnavailable: isUnavailable(networkCapability),
                               gpuUnavailable: isUnavailable(gpuCapability))
@@ -169,6 +173,24 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
             capability.setMessage(parts.joined(separator: " · "), style: parts.count > 1 ? .warning : .info)
         }
         filterRows()
+    }
+
+    /// Selects a requested process only when its PID and start time still match the current snapshot.
+    func selectProcess(identity: ProcessIdentity) {
+        searchItem.searchField.stringValue = ""
+        filterRows()
+
+        guard let rowID = rowIDByProcessIdentity[identity],
+              let row = model.rows.firstIndex(where: { $0.id == rowID }) else {
+            table.deselectAll(nil)
+            selectedRowID = nil
+            selectedProcessIdentity = nil
+            return
+        }
+        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        table.scrollRowToVisible(row)
+        selectedRowID = rowID
+        selectedProcessIdentity = identity
     }
 
     private func isUnavailable(_ availability: MetricAvailability?) -> Bool {

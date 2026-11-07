@@ -854,14 +854,15 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         let source = DispatchSource.makeMemoryPressureSource(eventMask: [.normal, .warning, .critical],
                                                              queue: DispatchQueue.global(qos: .utility))
         source.setEventHandler { [weak self, weak source] in
-            guard let events = source?.data else { return }
-            Task { await self?.receiveMemoryPressure(events) }
+            guard let rawEvents = source?.data.rawValue else { return }
+            Task { await self?.receiveMemoryPressure(rawEvents) }
         }
         source.resume()
         memoryPressureSource = source
     }
 
-    private func receiveMemoryPressure(_ events: DispatchSource.MemoryPressureEvent) {
+    private func receiveMemoryPressure(_ rawEvents: UInt) {
+        let events = DispatchSource.MemoryPressureEvent(rawValue: rawEvents)
         if events.contains(.critical) { pressureLevel = .critical }
         else if events.contains(.warning) { pressureLevel = .warning }
         else if events.contains(.normal) { pressureLevel = .normal }

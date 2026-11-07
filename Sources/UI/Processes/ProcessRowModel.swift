@@ -19,6 +19,51 @@ enum ProcessGrouping: Equatable {
     case flat
 }
 
+/// Stores only full PID-plus-start-time identities. A reused PID cannot inherit an old expansion.
+enum ProcessGroupExpansionPersistence {
+    static let defaultsKey = "process.expandedGroups.v1"
+    private static let maximumCount = 16_384
+    private static let maximumEncodedBytes = 4 * 1024 * 1024
+
+    static func load(from defaults: UserDefaults) -> Set<ProcessIdentity> {
+        guard let data = defaults.data(forKey: defaultsKey), data.count <= maximumEncodedBytes,
+              let decoded = try? JSONDecoder().decode([ProcessIdentity].self, from: data) else {
+            defaults.removeObject(forKey: defaultsKey)
+            return []
+        }
+        return Set(decoded.lazy.filter(isValid).prefix(maximumCount))
+    }
+
+    static func save(_ identities: Set<ProcessIdentity>, to defaults: UserDefaults) {
+        let ordered = identities.filter(isValid).sorted(by: orderedBefore).prefix(maximumCount)
+        guard !ordered.isEmpty else {
+            defaults.removeObject(forKey: defaultsKey)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(Array(ordered)), data.count <= maximumEncodedBytes else {
+            defaults.removeObject(forKey: defaultsKey)
+            return
+        }
+        defaults.set(data, forKey: defaultsKey)
+    }
+
+    static func available(_ identities: Set<ProcessIdentity>, in groups: [ProcessGroupSnapshot]) -> Set<ProcessIdentity> {
+        let current = Set(groups.map(\.id))
+        return identities.intersection(current)
+    }
+
+    private static func isValid(_ identity: ProcessIdentity) -> Bool {
+        identity.pid > 0
+            && identity.startTime.secondsSinceEpoch >= 0
+            && (0..<1_000_000).contains(identity.startTime.microseconds)
+    }
+
+    private static func orderedBefore(_ lhs: ProcessIdentity, _ rhs: ProcessIdentity) -> Bool {
+        if lhs.pid != rhs.pid { return lhs.pid < rhs.pid }
+        return lhs.startTime < rhs.startTime
+    }
+}
+
 /// Process table columns in display order. The raw value is the column identifier and the sort key.
 enum ProcessColumn: String, CaseIterable {
     case name = "process.column.name"

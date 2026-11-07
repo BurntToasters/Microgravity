@@ -1,8 +1,8 @@
 # Implementation status
 
-Status for Microgravity 0.1.0, checked 2026-11-06 on macOS 27.2 (arm64), Xcode
+Status for Microgravity 0.1.0, checked 2026-11-07 on macOS 27.2 (arm64), Xcode
 27.2 (27B52), Node.js 26.13.0. Results are for the working tree on top of commit
-`2cd7618`. Re-run the gates before tagging.
+`f54530e`. Re-run the gates before tagging.
 
 Intended behavior is in [UI acceptance](UI_ACCEPTANCE.md). Collector, history,
 and process-action regressions are in [core failure cases](FAILURE_CASES_CORE.md).
@@ -15,23 +15,38 @@ The release procedure and the 0.1.0 UI gate are in [RELEASING.md](RELEASING.md).
 | Workspace validation | `npm run validate` | pass |
 | Project and version sync | `npm run project:sync -- --check`, `npm run sync-version -- --check` | pass |
 | Node tests | `npm run test:node` | 32 passed, 0 failed |
-| Core XCTest | Core command in [RELEASING.md](RELEASING.md) | 199 executed, 0 failures |
+| Core XCTest | Core command in [RELEASING.md](RELEASING.md) | 205 executed, 0 failures, 0 skipped |
 | Debug build | `npm run build:debug` | pass (unsigned development app) |
 | Release smoke | `npm run build:release-smoke` | pass (unsigned universal Release compile) |
 | Bundle icon check | `validateWorkspace({ bundle })` against the Debug app | pass |
-| Strict concurrency diagnostics | build with `SWIFT_STRICT_CONCURRENCY=complete`, warnings not errors | build succeeds; 0 errors, 29 warnings (see below) |
-| Signed UI XCTest | signed command in [RELEASING.md](RELEASING.md) | not run in this pass; not passing on any host for 0.1.0 |
-| Manual UI checklist | [RELEASING.md](RELEASING.md) | not done |
-| Hosted CI | `.github/workflows/ci.yml` | not run from this tree |
+| Strict concurrency diagnostics | strict Debug build from concurrency worker | pass; one vendored Sparkle Objective-C include-case warning |
+| Signed UI XCTest | signed command in [RELEASING.md](RELEASING.md) | final full run: 18 executed, 15 passed, 3 failed, 0 skipped; focused selection/search/sort: 1 passed |
+| Screenshot review | captures from signed UI XCTest | four app-only crops committed; partial visual inspection only |
+| Manual UI checklist | [RELEASING.md](RELEASING.md) | not done; 1280 × 820 / 960 × 600 review, VoiceOver, and manual sheet proof remain pending |
+| Hosted CI | `.github/workflows/ci.yml` | not run from this tree; `macos-26` availability confirmed by GitHub docs below |
 
-The UI XCTest suite (`Tests/UITests`, 13 tests) has not passed for 0.1.0. The
-last signed runs recorded in the removed `TEST_RESULTS.md` (2026-11-05, earlier
-code) failed on synthesized clicks and keystrokes, which did not reach the app
-in the test VM. The cause has not been isolated. The file remains in git
-history.
+The final signed UI run on 2026-11-07 passed 15 of 18 tests. The three failures
+are two snapshot-refresh waits and one history numeric-sort order assertion;
+details are in [RELEASING.md](RELEASING.md#ui-tests-and-the-hard-release-gate).
+Automation Mode reported disabled immediately before and after runs; a poll
+during the final run reported enabled. The suite performed real native clicks
+while enabled. These three failures did not arise from a blanket automation
+block.
 
-Automation Mode was not enabled for this pass. Enabling it requires an
-administrator, and this pass did not run the signed UI suite.
+An earlier accessibility snapshot reported a 12,784 pt Processes outline. With
+per-test fixture defaults and a unique process-outline autosave key, the signed
+run expanded groups and preserved expansion across relaunch. Its screenshot at
+the restored 1,040 × 820 window shows the process table within the page, with a
+horizontal table scroller. A fresh 1,280 × 820 window and minimum-size layout
+have not been visually checked, so this does not establish full layout
+acceptance.
+
+Four app-only screenshots from the signed test run are committed under
+[`screenshots/`](screenshots/): Processes, Performance, and Settings in Light
+and Dark appearance. These show fixture states. Captures also exist in the
+`.xcresult` bundle for Details, App History, Startup, Services, and Users, but
+only the four committed crops were visually inspected. No manual VoiceOver or
+sheet review is claimed.
 
 ## Implemented
 
@@ -74,13 +89,17 @@ UI (AppKit):
   Settings and Check for Updates items.
 - Processes is an outline view with app icons, heat-mapped cells, partial and
   unavailable badges with tooltips, a selection bar, a context menu, and sheets.
+  Group expansion persists by full PID-plus-start-time identity. Show in Details
+  requests the same full identity and selects it only while that identity exists.
 - Performance has a metric rail with sparklines, a detail graph with grid, axis
   labels, gap markers, a time-window picker, per-core activity, a swap capacity
   bar, and a memory pressure timeline.
 - App History is one application-to-day outline.
 - Startup and Services are read-only, with status, kind labels, a coverage
   banner, Reveal in Finder, and Open Login Items Settings.
-- Users and Details are refreshed to match the new layout.
+- Users shows a current-user badge beside the name in the User column; sorting
+  uses the bare name. Details accepts cross-page selection by full process
+  identity.
 - Settings is a form for appearance, interval, pause, history reset, helper,
   login item, and updates.
 - Force Quit and Reset History confirmations are window sheets.
@@ -92,35 +111,20 @@ UI (AppKit):
 
 ## Known gaps
 
-1. **UI XCTest.** Not passing and not run in this pass. The 0.1.0 UI verification
-   is the Core XCTest suite plus the manual checklist in
-   [RELEASING.md](RELEASING.md).
-2. **Script versus documented UI gate.** `npm run test:all` runs the whole `Test`
-   scheme, including the UI target, and `release:prepare` calls `test:all`. A
-   failing UI suite therefore blocks release preparation. This conflicts with the
-   0.1.0 decision and is not resolved in the docs. Details are in
-   [RELEASING.md](RELEASING.md#ui-tests-and-the-release-gate).
-3. **Manual visual pass.** Light, dark, and System appearance at 1280 × 820 and
-   960 × 600, and screenshots, are pending. No screenshots are committed.
-4. **Strict concurrency.** `SWIFT_STRICT_CONCURRENCY = complete` is not set in
-   the project. A diagnostic build with it set succeeds with 0 errors and 29
-   warnings. Warnings are in `SamplingRunner.swift` (12), `AppComposition.swift`
-   (6), `TerminationService.swift` (4), `SettingsViewController.swift` (2),
-   `MetricGraphView.swift` (2), `SQLiteMonitoringHistoryStore.swift` (1),
-   `SystemMonitorCollector.swift` (1, the `events` send inside the
-   memory-pressure event handler's `Task`), and one Objective-C warning from the
-   vendored Sparkle sources. Most of the warnings say they become errors in the
-   Swift 6 language mode. The count is from this one build; re-run before
-   enabling.
-5. **CI runner label.** `.github/workflows/ci.yml` uses `runs-on: macos-26`.
-   That label has not been verified on GitHub-hosted runners. The workflow is
-   unchanged.
-6. **Not verified:** Developer ID signing, notarization and stapling, Sparkle
+1. **UI hard gate.** `npm run test:all` includes UI XCTest and `release:prepare`
+   depends on it. Current signed UI runs are failing; see
+   [RELEASING.md](RELEASING.md#ui-tests-and-the-hard-release-gate).
+2. **Manual UI review.** Four fixture screenshots are committed and partially
+   inspected. Light, dark, and System appearances across all pages at 1280 × 820
+   and 960 × 600, VoiceOver, and manual Force Quit / Reset History sheet behavior
+   remain pending.
+3. **CI.** GitHub lists `macos-26` as a hosted runner, including arm64, and
+   announced its general availability on 2026-02-26 ([runner documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job), [announcement](https://github.blog/changelog/2026-02-26-macos-26-is-now-generally-available-for-github-hosted-runners/)). The workflow itself has not run from this tree.
+4. **Not verified:** Developer ID signing, notarization and stapling, Sparkle
    update delivery from a real appcast, privileged helper authorization against
-   the live daemon, live advanced-metric sampling, VoiceOver and keyboard-only
-   operation, the icon in the Dock and About panel, and long-running
-   performance and memory behavior.
-7. **Pre-release history.** Builds before this release recorded per-app CPU
+   the live daemon, live advanced-metric sampling, the icon in the Dock and About
+   panel, and long-running performance and memory behavior.
+5. **Pre-release history.** Builds before this release recorded per-app CPU
    seconds in the wrong unit. Reset App History before relying on those values.
 
 A successful compile or a focused automated test does not establish any of the

@@ -56,17 +56,21 @@ struct AccessibleTableRow {
     let sortKeys: [ComparableSortKey]
     /// Optional icon for the first column; shown only when the model was built with `showsIconsInFirstColumn`.
     let icon: NSImage?
+    /// Optional compact badge shown beside the first-column value. It does not participate in sorting.
+    let badge: String?
 
-    init(id: String, values: [String], sortKeys: [ComparableSortKey]? = nil, icon: NSImage? = nil) {
+    init(id: String, values: [String], sortKeys: [ComparableSortKey]? = nil, icon: NSImage? = nil,
+         badge: String? = nil) {
         self.id = id
         self.values = values
         self.sortKeys = sortKeys ?? values.map(ComparableSortKey.text)
         self.icon = icon
+        self.badge = badge
     }
 
     /// Whether cells would look identical; used to decide which rows need a reload.
     fileprivate func hasSameContent(as other: Self) -> Bool {
-        values == other.values && icon === other.icon
+        values == other.values && icon === other.icon && badge == other.badge
     }
 }
 
@@ -181,7 +185,8 @@ final class AccessibleTableModel: NSObject, NSTableViewDataSource, NSTableViewDe
             alignment: column.alignment,
             isNumeric: column.isNumeric,
             icon: isIconColumn ? item.icon : nil,
-            showsIconSlot: isIconColumn
+            showsIconSlot: isIconColumn,
+            badge: columnIndex == 0 ? item.badge : nil
         )
         return cell
     }
@@ -333,6 +338,7 @@ private struct EmptyStateConfiguration {
 private final class AccessibleTableCellView: NSTableCellView {
     private let label = NSTextField(labelWithString: "")
     private let iconView = NSImageView()
+    private let badgeView = AccessibleTableBadgeView()
     private let stack = NSStackView()
 
     override init(frame frameRect: NSRect) {
@@ -348,11 +354,15 @@ private final class AccessibleTableCellView: NSTableCellView {
         iconView.setContentHuggingPriority(.required, for: .horizontal)
         iconView.isHidden = true
 
+        badgeView.setContentHuggingPriority(.required, for: .horizontal)
+        badgeView.setContentCompressionResistancePriority(.required, for: .horizontal)
+
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = 6
         stack.addArrangedSubview(iconView)
         stack.addArrangedSubview(label)
+        stack.addArrangedSubview(badgeView)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
@@ -368,15 +378,68 @@ private final class AccessibleTableCellView: NSTableCellView {
     required init?(coder: NSCoder) { nil }
 
     func configure(value: String, accessibilityID: String, alignment: NSTextAlignment,
-                   isNumeric: Bool, icon: NSImage?, showsIconSlot: Bool) {
+                   isNumeric: Bool, icon: NSImage?, showsIconSlot: Bool, badge: String?) {
         label.stringValue = value
         label.alignment = alignment
         label.font = isNumeric
             ? .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
             : .systemFont(ofSize: 12)
         label.setAccessibilityIdentifier(accessibilityID)
+        label.setAccessibilityLabel(value)
         iconView.image = icon
         iconView.isHidden = !showsIconSlot
+        badgeView.configure(text: badge, accessibilityID: accessibilityID + ".badge")
+    }
+}
+
+@MainActor
+private final class AccessibleTableBadgeView: NSView {
+    private let label = NSTextField(labelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 5
+        layer?.masksToBounds = true
+        label.font = .systemFont(ofSize: 10, weight: .semibold)
+        label.textColor = .controlAccentColor
+        label.alignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 5),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -5),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 1),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1)
+        ])
+        isHidden = true
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let size = label.intrinsicContentSize
+        return NSSize(width: size.width + 10, height: size.height + 2)
+    }
+
+    func configure(text: String?, accessibilityID: String) {
+        guard let text else {
+            label.stringValue = ""
+            label.setAccessibilityIdentifier(nil)
+            label.setAccessibilityLabel("")
+            isHidden = true
+            return
+        }
+        label.stringValue = text
+        label.setAccessibilityIdentifier(accessibilityID)
+        label.setAccessibilityLabel(text)
+        isHidden = false
     }
 }
 

@@ -1,17 +1,17 @@
 import Foundation
 
-struct HelperTerminationRequest: Codable {
+struct HelperTerminationRequest: Codable, Sendable {
     let version: Int
     let target: HelperTarget
     let force: Bool
 }
 
-enum HelperSampleKind: String, Codable, CaseIterable { case nettop, powermetrics }
-struct HelperSampleRequest: Codable {
+enum HelperSampleKind: String, Codable, CaseIterable, Sendable { case nettop, powermetrics }
+struct HelperSampleRequest: Codable, Sendable {
     let version: Int
     let kind: HelperSampleKind
 }
-struct HelperSampleResponse: Codable {
+struct HelperSampleResponse: Codable, Sendable {
     let version: Int
     let kind: HelperSampleKind
     let capturedAt: Date

@@ -8,24 +8,26 @@ final class MicrogravityUITests: XCTestCase {
         XCTAssertTrue(element("process.table", in: app).waitForExistence(timeout: 5))
         let group = row("process.group.fixture-editor", in: "process.table", app: app)
         XCTAssertTrue(group.waitForExistence(timeout: 3))
-        element("process.group.toggle.fixture-editor", in: app).tap()
+        toggleGroup("process.group.fixture-editor", in: app)
 
         let child = row("process.row.410", in: "process.table", app: app)
         XCTAssertTrue(child.waitForExistence(timeout: 3))
-        child.tap()
+        child.click()
         XCTAssertTrue(app.staticTexts["process.selection.identity"].waitForExistence(timeout: 3))
         let selectedIdentity = app.staticTexts["process.selection.identity"].label
-        XCTAssertTrue(selectedIdentity.contains("pid=410"))
+        XCTAssertTrue(selectedIdentity.contains("pid=410"), "Unexpected selected identity: \(selectedIdentity)")
 
         // The search field lives in the window toolbar, so match it by identifier rather than element type.
         let search = element("process.search", in: app)
         XCTAssertTrue(search.exists)
-        search.tap()
+        search.click()
         search.typeText("Renderer")
         XCTAssertTrue(row("process.row.410", in: "process.table", app: app).waitForExistence(timeout: 3))
         XCTAssertFalse(row("process.row.620", in: "process.table", app: app).exists)
 
-        element("process.column.cpu", in: app).tap()
+        let cpuHeader = element("process.column.cpu", in: app)
+        XCTAssertTrue(cpuHeader.exists)
+        clickColumnHeader(cpuHeader)
         XCTAssertEqual(app.staticTexts["process.selection.identity"].label, selectedIdentity)
         attachScreenshot(app, named: "Processes")
     }
@@ -36,11 +38,7 @@ final class MicrogravityUITests: XCTestCase {
         let secondGroup = row("process.group.fixture-editor.pid-620-start-1700000003-30000", in: "process.table", app: app)
         XCTAssertTrue(firstGroup.waitForExistence(timeout: 3))
         XCTAssertTrue(secondGroup.waitForExistence(timeout: 3))
-        let secondToggle = app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH %@", "process.group.toggle.fixture-editor.pid-620-start-")
-        ).firstMatch
-        XCTAssertTrue(secondToggle.exists)
-        secondToggle.tap()
+        toggleGroup("process.group.fixture-editor.pid-620-start-1700000003-30000", in: app)
         XCTAssertTrue(row("process.row.620", in: "process.table", app: app).waitForExistence(timeout: 3))
         XCTAssertFalse(row("process.row.410", in: "process.table", app: app).exists)
     }
@@ -63,16 +61,28 @@ final class MicrogravityUITests: XCTestCase {
         XCTAssertEqual(secondLabel.count, 1)
         XCTAssertNotEqual(firstLabel.firstMatch.identifier, secondLabel.firstMatch.identifier)
 
-        let firstToggleID = "process.group.toggle.fixture-editor.pid-410-start-1700000001-10000"
-        let secondToggleID = "process.group.toggle.fixture-editor.pid-620-start-1700000003-30000"
-        XCTAssertEqual(app.buttons.matching(identifier: firstToggleID).count, 1)
-        XCTAssertEqual(app.buttons.matching(identifier: secondToggleID).count, 1)
+        XCTAssertEqual(firstRow.descendants(matching: .disclosureTriangle).count, 1)
+        XCTAssertEqual(secondRow.descendants(matching: .disclosureTriangle).count, 1)
+    }
+
+    func testGroupExpansionPersistsAcrossAppRelaunch() {
+        let app = launchFixture()
+        let groupID = "process.group.fixture-editor"
+        let group = row(groupID, in: "process.table", app: app)
+        XCTAssertTrue(group.waitForExistence(timeout: 3))
+        toggleGroup(groupID, in: app)
+        XCTAssertTrue(row("process.row.410", in: "process.table", app: app).waitForExistence(timeout: 3))
+
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(element("navigation.item.processes", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(row("process.row.410", in: "process.table", app: app).waitForExistence(timeout: 3))
     }
 
     func testSelectionSurvivesSnapshotRefresh() {
         let app = launchFixture(arguments: ["--ui-test-refresh-pulse"])
-        element("process.group.toggle.fixture-editor", in: app).tap()
-        row("process.row.410", in: "process.table", app: app).tap()
+        toggleGroup("process.group.fixture-editor", in: app)
+        row("process.row.410", in: "process.table", app: app).click()
         let identity = app.staticTexts["process.selection.identity"].label
         let freshness = app.staticTexts["process.freshness"]
         let original = freshness.label
@@ -86,12 +96,13 @@ final class MicrogravityUITests: XCTestCase {
         let app = launchFixture()
         let group = row("process.group.fixture-editor", in: "process.table", app: app)
         XCTAssertTrue(group.waitForExistence(timeout: 3))
-        element("process.group.toggle.fixture-editor", in: app).tap()
+        toggleGroup("process.group.fixture-editor", in: app)
         let process = row("process.row.411", in: "process.table", app: app)
         XCTAssertTrue(process.waitForExistence(timeout: 3))
         process.rightClick()
-        let quit = app.menuItems["Quit Process"]
-        let force = app.menuItems["Force Quit…"]
+        let outline = app.outlines.matching(identifier: "process.table").firstMatch
+        let quit = outline.descendants(matching: .menuItem).matching(identifier: "quitSelectedProcess:").firstMatch
+        let force = outline.descendants(matching: .menuItem).matching(identifier: "forceQuitSelectedProcess:").firstMatch
         XCTAssertTrue(quit.waitForExistence(timeout: 3))
         XCTAssertTrue(quit.isEnabled)
         XCTAssertTrue(force.isEnabled)
@@ -99,20 +110,37 @@ final class MicrogravityUITests: XCTestCase {
         app.typeKey(.escape, modifierFlags: [])
     }
 
+    func testShowInDetailsSelectsTheRightClickedProcess() {
+        let app = launchFixture()
+        toggleGroup("process.group.fixture-editor", in: app)
+        let process = row("process.row.411", in: "process.table", app: app)
+        XCTAssertTrue(process.waitForExistence(timeout: 3))
+        process.rightClick()
+
+        let showInDetails = app.outlines.matching(identifier: "process.table").firstMatch
+            .descendants(matching: .menuItem).matching(identifier: "showSelectedProcessInDetails:").firstMatch
+        XCTAssertTrue(showInDetails.waitForExistence(timeout: 3))
+        showInDetails.click()
+
+        let detailsRow = row("details.process.411", in: "details.table", app: app)
+        XCTAssertTrue(detailsRow.waitForExistence(timeout: 3))
+        XCTAssertTrue(detailsRow.isSelected)
+    }
+
     func testForceQuitRevalidatesIdentityAfterPidReuse() {
         let app = launchFixture(arguments: ["--ui-test-stale-target"])
 
-        element("process.group.toggle.fixture-editor", in: app).tap()
-        row("process.row.410", in: "process.table", app: app).tap()
+        toggleGroup("process.group.fixture-editor", in: app)
+        row("process.row.410", in: "process.table", app: app).click()
         // Confirmation and error dialogs are sheets attached to the window.
-        element("process.action.force-quit", in: app).tap()
+        element("process.action.force-quit", in: app).click()
         let confirmation = app.sheets.firstMatch
         XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
-        element("process.force-quit.confirm", in: app).tap()
+        element("process.force-quit.confirm", in: app).click()
 
         let staleText = app.staticTexts["The selected process changed or exited. No process was terminated."]
         XCTAssertTrue(staleText.waitForExistence(timeout: 3))
-        app.sheets.firstMatch.buttons["OK"].tap()
+        app.sheets.firstMatch.buttons["OK"].click()
         XCTAssertEqual(app.staticTexts["process.selection.identity"].label, "No process selected")
         attachScreenshot(app, named: "Stale process action")
     }
@@ -120,30 +148,31 @@ final class MicrogravityUITests: XCTestCase {
     func testPerformanceSeparatesUnsupportedMetricsFromZero() {
         let app = launchFixture(arguments: ["--ui-test-gpu-unavailable", "--ui-test-energy-unavailable"])
 
-        element("navigation.item.performance", in: app).tap()
+        element("navigation.item.performance", in: app).click()
         XCTAssertTrue(element("performance.graph.cpu-total", in: app).waitForExistence(timeout: 3))
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "percent")).firstMatch.exists)
+        let cpuGraph = element("performance.graph.cpu-total", in: app)
+        XCTAssertTrue(cpuGraph.label.localizedCaseInsensitiveContains("percentage"))
 
         // The detail card shows one metric at a time, so each rail row is selected before its graphs are checked.
-        element("performance.rail.cpu", in: app).tap()
-        element("performance.cpu.mode", in: app).coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        element("performance.rail.cpu.title", in: app).click()
+        element("performance.cpu.mode", in: app).coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).click()
         XCTAssertTrue(element("performance.graph.cpu-cores", in: app).waitForExistence(timeout: 3))
-        element("performance.cpu.mode", in: app).coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5)).tap()
-        element("performance.rail.memory", in: app).tap()
+        element("performance.cpu.mode", in: app).coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5)).click()
+        element("performance.rail.memory.title", in: app).click()
         XCTAssertTrue(element("performance.graph.memory-pressure", in: app).waitForExistence(timeout: 3))
         XCTAssertTrue(element("performance.graph.swap", in: app).exists)
-        element("performance.rail.disk", in: app).tap()
+        element("performance.rail.disk.title", in: app).click()
         XCTAssertTrue(element("performance.graph.disk", in: app).waitForExistence(timeout: 3))
-        element("performance.rail.network", in: app).tap()
+        element("performance.rail.network.title", in: app).click()
         XCTAssertTrue(element("performance.graph.network", in: app).waitForExistence(timeout: 3))
-        element("performance.rail.gpu", in: app).tap()
+        element("performance.rail.gpu.title", in: app).click()
         XCTAssertTrue(app.staticTexts["performance.gpu.state"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["performance.gpu.state"].label.contains("Unsupported"))
-        element("performance.rail.energy", in: app).tap()
+        element("performance.rail.energy.title", in: app).click()
         XCTAssertTrue(app.staticTexts["performance.energy.state"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["performance.energy.state"].label.contains("Unsupported"))
 
-        element("performance.action.pause", in: app).tap()
+        element("performance.action.pause", in: app).click()
         XCTAssertTrue(app.staticTexts["performance.sampling-state"].label.contains("Paused"))
         attachScreenshot(app, named: "Performance")
     }
@@ -151,7 +180,7 @@ final class MicrogravityUITests: XCTestCase {
     func testHistoryShowsGapsAndRequiresConfirmationToReset() {
         let app = launchFixture(arguments: ["--ui-test-history-gap"])
 
-        element("navigation.item.history", in: app).tap()
+        element("navigation.item.history", in: app).click()
         XCTAssertTrue(element("history.range.30-days", in: app).waitForExistence(timeout: 3))
         let gap = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier BEGINSWITH %@", "history.gap.")
@@ -159,20 +188,20 @@ final class MicrogravityUITests: XCTestCase {
         XCTAssertTrue(gap.exists)
         XCTAssertTrue(element("history.total.fixture-editor.application", in: app).exists)
 
-        element("history.action.reset", in: app).tap()
+        element("history.action.reset", in: app).click()
         // Reset confirmation is an NSAlert presented as a sheet on the window (U14); it may surface as a sheet or an alert.
         let confirmation = app.sheets.firstMatch.waitForExistence(timeout: 3)
             ? app.sheets.firstMatch
             : app.alerts["Reset App History"]
         XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
-        confirmation.buttons["Cancel"].tap()
+        confirmation.buttons["Cancel"].click()
         XCTAssertTrue(element("history.total.fixture-editor.application", in: app).exists)
         attachScreenshot(app, named: "App History")
     }
 
     func testHistorySortsFormattedTotalsByNumericValues() {
         let app = launchFixture()
-        element("navigation.item.history", in: app).tap()
+        element("navigation.item.history", in: app).click()
 
         let editor = app.staticTexts["history.total.fixture-editor.application"]
         let indexer = app.staticTexts["history.total.fixture-indexer.application"]
@@ -180,7 +209,7 @@ final class MicrogravityUITests: XCTestCase {
         XCTAssertTrue(indexer.waitForExistence(timeout: 3))
         let cpuHeader = app.descendants(matching: .any).matching(identifier: "cpu").firstMatch
         XCTAssertTrue(cpuHeader.exists)
-        cpuHeader.tap()
+        clickColumnHeader(cpuHeader)
 
         XCTAssertLessThan(indexer.frame.minY, editor.frame.minY)
     }
@@ -188,16 +217,16 @@ final class MicrogravityUITests: XCTestCase {
     func testStartupAndServicesAreReadOnlyAndLabelIncompleteDiscovery() {
         let app = launchFixture(arguments: ["--ui-test-incomplete-discovery"])
 
-        element("navigation.item.startup", in: app).tap()
+        element("navigation.item.startup", in: app).click()
         XCTAssertTrue(element("startup.discovery-state", in: app).waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["startup.discovery-state"].label.contains("Some startup locations could not be inspected."))
         XCTAssertTrue(row("startup.item.fixture-agent", in: "startup.table", app: app).exists)
-        row("startup.item.fixture-agent", in: "startup.table", app: app).tap()
+        row("startup.item.fixture-agent", in: "startup.table", app: app).click()
         XCTAssertTrue(element("startup.action.reveal-path.fixture-agent", in: app).exists)
         XCTAssertFalse(element("startup.action.disable.fixture-agent", in: app).exists)
         attachScreenshot(app, named: "Startup")
 
-        element("navigation.item.services", in: app).tap()
+        element("navigation.item.services", in: app).click()
         XCTAssertTrue(element("services.discovery-state", in: app).waitForExistence(timeout: 3))
         XCTAssertTrue(element("services.item.fixture-service.name", in: app).exists)
         XCTAssertFalse(element("services.action.stop.fixture-service", in: app).exists)
@@ -207,9 +236,11 @@ final class MicrogravityUITests: XCTestCase {
     func testUsersShowsSessionsAndResourceAggregatesWithoutAccountActions() {
         let app = launchFixture()
 
-        element("navigation.item.users", in: app).tap()
+        element("navigation.item.users", in: app).click()
         XCTAssertTrue(element("users.table", in: app).waitForExistence(timeout: 3))
         XCTAssertTrue(row("users.row.fixture-user", in: "users.table", column: "user", app: app).exists)
+        XCTAssertEqual(app.staticTexts["users.row.fixture-user.user"].label, "fixture-user")
+        XCTAssertEqual(app.staticTexts["users.row.fixture-user.user.badge"].label, "You")
         XCTAssertTrue(app.staticTexts["users.row.fixture-user.process-count"].exists)
         XCTAssertTrue(app.staticTexts["users.row.fixture-user.memory"].exists)
         XCTAssertFalse(element("users.action.manage-account", in: app).exists)
@@ -219,7 +250,7 @@ final class MicrogravityUITests: XCTestCase {
     func testDetailsIsFlatAndShowsUnavailableMetricsExplicitly() {
         let app = launchFixture(arguments: ["--ui-test-network-unavailable"])
 
-        element("navigation.item.details", in: app).tap()
+        element("navigation.item.details", in: app).click()
         XCTAssertTrue(element("details.table", in: app).waitForExistence(timeout: 3))
         XCTAssertTrue(element("details.process.410.name", in: app).exists)
         XCTAssertTrue(app.staticTexts["details.process.410.owner"].exists)
@@ -236,10 +267,10 @@ final class MicrogravityUITests: XCTestCase {
 
     func testDetailsKeepsSelectedProcessAcrossSnapshotRefresh() {
         let app = launchFixture(arguments: ["--ui-test-refresh-pulse"])
-        element("navigation.item.details", in: app).tap()
+        element("navigation.item.details", in: app).click()
         let selectedRow = row("details.process.410", in: "details.table", app: app)
         XCTAssertTrue(selectedRow.waitForExistence(timeout: 3))
-        selectedRow.tap()
+        selectedRow.click()
         XCTAssertTrue(selectedRow.isSelected)
 
         let capability = app.staticTexts["details.capability-state"]
@@ -253,7 +284,7 @@ final class MicrogravityUITests: XCTestCase {
     func testSettingsExposeSupportedChoicesAndUnavailableIntegrationsHonestly() {
         let app = launchFixture(arguments: ["--ui-test-integrations-unavailable"])
 
-        element("navigation.item.settings", in: app).tap()
+        element("navigation.item.settings", in: app).click()
         XCTAssertTrue(app.popUpButtons.matching(identifier: "settings.appearance").firstMatch.waitForExistence(timeout: 3))
         assertPopUpOffers(["settings.appearance.system", "settings.appearance.light", "settings.appearance.dark"],
                           in: "settings.appearance", app: app)
@@ -267,7 +298,7 @@ final class MicrogravityUITests: XCTestCase {
 
     func testAppearanceSwitchChangesWindowAndCanReturnToSystem() {
         let app = launchFixture()
-        element("navigation.item.settings", in: app).tap()
+        element("navigation.item.settings", in: app).click()
         XCTAssertTrue(app.popUpButtons.matching(identifier: "settings.appearance").firstMatch.waitForExistence(timeout: 3))
         choosePopUpItem("settings.appearance.light", in: "settings.appearance", app: app)
         let lightImage = app.screenshot().pngRepresentation
@@ -289,6 +320,8 @@ final class MicrogravityUITests: XCTestCase {
     private func launchFixture(arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-test-fixtures"] + arguments
+        let defaultsSuite = "Microgravity.UITests.\(UUID().uuidString)"
+        app.launchEnvironment["MICROGRAVITY_UI_TEST_DEFAULTS_SUITE"] = defaultsSuite
         app.launchEnvironment["XCTestConfigurationFilePath"] =
             ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] ?? "MicrogravityUITests.xctest"
         app.launch()
@@ -317,6 +350,19 @@ final class MicrogravityUITests: XCTestCase {
         }
         return app.tables.matching(identifier: tableIdentifier).firstMatch.descendants(matching: .tableRow)
             .containing(.staticText, identifier: identifier + "." + column).firstMatch
+    }
+
+    private func toggleGroup(_ groupIdentifier: String, in app: XCUIApplication) {
+        let group = row(groupIdentifier, in: "process.table", app: app)
+        XCTAssertTrue(group.waitForExistence(timeout: 3), groupIdentifier)
+        let disclosure = group.descendants(matching: .disclosureTriangle).firstMatch
+        XCTAssertTrue(disclosure.waitForExistence(timeout: 3), groupIdentifier)
+        disclosure.click()
+    }
+
+    private func clickColumnHeader(_ header: XCUIElement) {
+        XCTAssertTrue(header.exists)
+        header.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.015)).click()
     }
 
     /// Opens a pop-up and checks that each item identifier is offered. Settings pop-up items are menu items, not views.

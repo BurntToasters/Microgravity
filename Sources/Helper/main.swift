@@ -1,13 +1,26 @@
 import Foundation
 
+/// NSXPC passes this block as the response endpoint for an asynchronous exported
+/// method. SamplingRunner invokes it once on its serial queue; it carries no helper
+/// state, and XPC transports the reply to the caller. Keep this unchecked bridge at
+/// the Objective-C/XPC boundary rather than erasing Sendable on SamplingRunner's API.
+private final class XPCSampleReply: @unchecked Sendable {
+    private let handler: (Data) -> Void
+
+    init(_ handler: @escaping (Data) -> Void) { self.handler = handler }
+
+    func send(_ data: Data) { handler(data) }
+}
+
 final class Service: NSObject, HelperProtocol {
     let cancellation = SamplingCancellation()
     let clientPID: Int32
     init(clientPID: Int32) { self.clientPID = clientPID }
     func sample(_ data: Data, reply: @escaping (Data) -> Void) {
         guard data.count <= 4096, let request = try? JSONDecoder().decode(HelperSampleRequest.self, from: data) else { reply(Data()); return }
+        let xpcReply = XPCSampleReply(reply)
         SamplingRunner.shared.sample(request, cancellation: cancellation) { response in
-            reply((try? JSONEncoder().encode(response)) ?? Data())
+            xpcReply.send((try? JSONEncoder().encode(response)) ?? Data())
         }
     }
     func terminate(_ request: Data, authorization: Data, reply: @escaping (String) -> Void) {

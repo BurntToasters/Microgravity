@@ -131,6 +131,8 @@ private final class MetricRailCellView: NSTableCellView {
         ]
 
         setAccessibilityIdentifier("performance.rail.\(metric.rawValue)")
+        titleLabel.setAccessibilityIdentifier("performance.rail.\(metric.rawValue).title")
+        valueLabel.setAccessibilityIdentifier("performance.rail.\(metric.rawValue).value")
         addSubview(titleLabel)
         addSubview(valueLabel)
         addSubview(sparkline)
@@ -152,7 +154,9 @@ private final class MetricRailCellView: NSTableCellView {
 
     func configure(_ item: MetricRailItem) {
         titleLabel.stringValue = item.metric.title
+        titleLabel.setAccessibilityLabel(item.metric.title)
         valueLabel.stringValue = item.valueText
+        valueLabel.setAccessibilityLabel(item.valueText)
         valueLabel.textColor = item.isValueUnavailable ? .secondaryLabelColor : .labelColor
         let hasSparkline = !item.sparkline.isEmpty
         if hasSparkline != showsSparkline {

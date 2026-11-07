@@ -49,6 +49,32 @@ final class ProcessRowModelTests: XCTestCase {
         XCTAssertNil(ProcessRowModel.selection(after: .group(leader), visible: [.process(leader)]))
     }
 
+    func testExpandedGroupPreferencesPersistFullIdentityAndRejectReusedPID() throws {
+        let suite = "ProcessGroupExpansionTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let original = identity(410, offset: 1)
+        ProcessGroupExpansionPersistence.save([original], to: defaults)
+        XCTAssertEqual(ProcessGroupExpansionPersistence.load(from: defaults), [original])
+
+        let replacement = identity(410, offset: 2)
+        let replacementGroup = group(replacement, title: "Replacement", members: [replacement])
+        XCTAssertEqual(ProcessGroupExpansionPersistence.available(
+            ProcessGroupExpansionPersistence.load(from: defaults), in: [replacementGroup]
+        ), [])
+
+        let invalid = ProcessIdentity(pid: -1, startTime: ProcessStartTime(secondsSinceEpoch: 1_700_000_000,
+                                                                           microseconds: 1_000_000))
+        let encoded = try JSONEncoder().encode([original, invalid])
+        defaults.set(encoded, forKey: ProcessGroupExpansionPersistence.defaultsKey)
+        XCTAssertEqual(ProcessGroupExpansionPersistence.load(from: defaults), [original])
+
+        defaults.set(Data("not valid JSON".utf8), forKey: ProcessGroupExpansionPersistence.defaultsKey)
+        XCTAssertTrue(ProcessGroupExpansionPersistence.load(from: defaults).isEmpty)
+        XCTAssertNil(defaults.data(forKey: ProcessGroupExpansionPersistence.defaultsKey))
+    }
+
     func testExpandedGroupKeepsItsChildrenAcrossRefreshWithChangedValues() {
         let fixture = sampleFixture()
         let before = ProcessRowModel.build(input(fixture.processes, fixture.groups, expanded: [identity(100)]))

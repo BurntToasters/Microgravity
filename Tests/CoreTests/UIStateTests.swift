@@ -6,7 +6,7 @@ import XCTest
 final class UIStateTests: XCTestCase {
     func testProcessRootChildKeepsItsRowKindAcrossRefreshAndSortThenClearsOnCollapse() {
         let (dependencies, store, _) = makeDependencies()
-        let controller = ProcessesViewController(dependencies: dependencies)
+        let controller = ProcessesViewController(dependencies: dependencies, defaults: isolatedProcessDefaults())
         controller.loadViewIfNeeded()
         let snapshot = try! XCTUnwrap(store.latestSnapshot)
         controller.update(snapshot: snapshot)
@@ -29,9 +29,87 @@ final class UIStateTests: XCTestCase {
         XCTAssertEqual(textField(withIdentifier: "process.selection.identity", in: controller.view)?.stringValue, "No process selected")
     }
 
+    func testProcessGroupExpansionRestoresAcrossControllerAndDropsReusedPID() throws {
+        let suite = "ProcessExpansionUIState-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let (dependencies, store, _) = makeDependencies()
+        let snapshot = try XCTUnwrap(store.latestSnapshot)
+
+        let first = ProcessesViewController(dependencies: dependencies, defaults: defaults)
+        first.loadViewIfNeeded()
+        first.update(snapshot: snapshot)
+        let firstTable = try XCTUnwrap(view(withIdentifier: "process.table", in: first.view) as? NSOutlineView)
+        expandProcessGroup("Fixture Editor", controller: first, table: firstTable)
+        XCTAssertNotNil(processRow(named: "Fixture Renderer Worker", controller: first, table: firstTable))
+
+        let relaunched = ProcessesViewController(dependencies: dependencies, defaults: defaults)
+        relaunched.loadViewIfNeeded()
+        relaunched.update(snapshot: snapshot)
+        let relaunchedTable = try XCTUnwrap(view(withIdentifier: "process.table", in: relaunched.view) as? NSOutlineView)
+        XCTAssertNotNil(processRow(named: "Fixture Renderer Worker", controller: relaunched, table: relaunchedTable))
+
+        let originalLeader = try XCTUnwrap(snapshot.processes.first { $0.id.pid == 410 })
+        let replacementIdentity = ProcessIdentity(pid: originalLeader.id.pid,
+                                                  startTime: ProcessStartTime(
+                                                    secondsSinceEpoch: originalLeader.id.startTime.secondsSinceEpoch + 100,
+                                                    microseconds: originalLeader.id.startTime.microseconds
+                                                  ))
+        let originalGroup = try XCTUnwrap(snapshot.processGroups.first { $0.id.pid == 410 })
+        let replacementGroup = ProcessGroupSnapshot(
+            id: replacementIdentity, title: originalGroup.title, ownerUID: originalGroup.ownerUID,
+            executablePath: originalGroup.executablePath, association: originalGroup.association,
+            historyIdentity: originalGroup.historyIdentity,
+            members: originalGroup.members.map { $0 == originalLeader.id ? replacementIdentity : $0 },
+            cpuPercent: originalGroup.cpuPercent, memoryBytes: originalGroup.memoryBytes,
+            diskReadBytesPerSecond: originalGroup.diskReadBytesPerSecond,
+            diskWriteBytesPerSecond: originalGroup.diskWriteBytesPerSecond,
+            networkReceiveBytesPerSecond: originalGroup.networkReceiveBytesPerSecond,
+            networkTransmitBytesPerSecond: originalGroup.networkTransmitBytesPerSecond
+        )
+        let reusedSnapshot = copy(
+            snapshot, timestamp: snapshot.timestamp.addingTimeInterval(1),
+            processes: snapshot.processes.map {
+                $0.id == originalLeader.id ? copyProcess($0, identity: replacementIdentity) : $0
+            },
+            processGroups: snapshot.processGroups.map { $0.id == originalGroup.id ? replacementGroup : $0 }
+        )
+        let afterPIDReuse = ProcessesViewController(dependencies: dependencies, defaults: defaults)
+        afterPIDReuse.loadViewIfNeeded()
+        afterPIDReuse.update(snapshot: reusedSnapshot)
+        let reusedTable = try XCTUnwrap(view(withIdentifier: "process.table", in: afterPIDReuse.view) as? NSOutlineView)
+        XCTAssertNil(processRow(named: "Fixture Renderer Worker", controller: afterPIDReuse, table: reusedTable))
+    }
+
+    func testShowProcessInDetailsSelectsOnlyExactLiveIdentity() throws {
+        let (_, store, _) = makeDependencies()
+        let base = try XCTUnwrap(store.latestSnapshot)
+        let original = try XCTUnwrap(base.processes.first { $0.id.pid == 410 })
+        let replacementIdentity = ProcessIdentity(pid: original.id.pid,
+                                                  startTime: ProcessStartTime(
+                                                    secondsSinceEpoch: original.id.startTime.secondsSinceEpoch + 100,
+                                                    microseconds: original.id.startTime.microseconds
+                                                  ))
+        let replacement = copyProcess(original, identity: replacementIdentity)
+        let snapshot = copy(base, timestamp: base.timestamp,
+                            processes: base.processes.map { $0.id == original.id ? replacement : $0 })
+        let details = DetailsViewController()
+        details.loadViewIfNeeded()
+        details.update(snapshot: snapshot)
+        let table = try XCTUnwrap(view(withIdentifier: "details.table", in: details.view) as? NSTableView)
+
+        details.selectProcess(identity: original.id)
+        XCTAssertEqual(table.selectedRow, -1, "a reused PID must not satisfy a stale process identity")
+
+        details.selectProcess(identity: replacementIdentity)
+        XCTAssertGreaterThanOrEqual(table.selectedRow, 0)
+        XCTAssertEqual(table.rowView(atRow: table.selectedRow, makeIfNecessary: true)?.accessibilityIdentifier(),
+                       "details.process.410")
+    }
+
     func testProcessPIDReuseClearsSelectionByFullIdentity() {
         let (dependencies, store, _) = makeDependencies()
-        let controller = ProcessesViewController(dependencies: dependencies)
+        let controller = ProcessesViewController(dependencies: dependencies, defaults: isolatedProcessDefaults())
         controller.loadViewIfNeeded()
         let snapshot = try! XCTUnwrap(store.latestSnapshot)
         controller.update(snapshot: snapshot)
@@ -70,7 +148,7 @@ final class UIStateTests: XCTestCase {
 
     func testProcessGroupAdvancedRowsKeepPartialValuesDetailsAndSortByNumericLowerBound() {
         let (dependencies, store, _) = makeDependencies()
-        let controller = ProcessesViewController(dependencies: dependencies)
+        let controller = ProcessesViewController(dependencies: dependencies, defaults: isolatedProcessDefaults())
         controller.loadViewIfNeeded()
         let snapshot = try! XCTUnwrap(store.latestSnapshot)
         let timestamp = snapshot.timestamp
@@ -171,7 +249,7 @@ final class UIStateTests: XCTestCase {
                                     title: "Disk Child Set", members: allMembers,
                                     read: measured(500), write: measured(500), timestamp: timestamp))
 
-        let controller = ProcessesViewController(dependencies: makeDependencies().0)
+        let controller = ProcessesViewController(dependencies: makeDependencies().0, defaults: isolatedProcessDefaults())
         controller.loadViewIfNeeded()
         controller.update(snapshot: copy(snapshot, timestamp: timestamp,
                                          processes: processes, processGroups: groups))
@@ -273,6 +351,13 @@ final class UIStateTests: XCTestCase {
                                  processActions: FixtureProcessActioner(configuration: configuration),
                                  integrations: integrations,
                                  fixtureMode: true), store, integrations)
+    }
+
+    private func isolatedProcessDefaults() -> UserDefaults {
+        let suite = "UIStateProcessDefaults-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        return defaults
     }
 
     private func copyProcess(_ source: ProcessSnapshot, identity: ProcessIdentity? = nil,

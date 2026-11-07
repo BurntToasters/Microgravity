@@ -56,6 +56,7 @@ enum AppComposition {
     #endif
 }
 
+@MainActor
 enum AppearancePreference {
     private static let key = "monitoring.appearance"
 

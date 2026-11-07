@@ -42,9 +42,9 @@ final class UsersDetailsSettingsTests: XCTestCase {
         XCTAssertNil(grouped[502])
     }
 
-    func testCurrentUserMarkerIsKeptOutOfTheName() {
-        XCTAssertEqual(UserAggregation.currentUserMarker(isCurrentUser: true), "You")
-        XCTAssertEqual(UserAggregation.currentUserMarker(isCurrentUser: false), "")
+    func testCurrentUserBadgeIsOptionalAndSeparateFromBareNameSortValue() {
+        XCTAssertEqual(UserAggregation.currentUserBadge(isCurrentUser: true), "You")
+        XCTAssertNil(UserAggregation.currentUserBadge(isCurrentUser: false))
     }
 
     func testAppBundlePathUsesOutermostBundleOrNil() {

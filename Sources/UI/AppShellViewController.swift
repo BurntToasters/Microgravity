@@ -52,9 +52,10 @@ protocol SnapshotUpdating: AnyObject {
 @MainActor
 final class RootViewController: NSViewController {
     private let dependencies: AppDependencies
-    private let sidebar: SidebarViewController
+    let sidebar: SidebarViewController
     private let pageHost: PageHostViewController
     private let splitController = NSSplitViewController()
+    private var selectedPage: DashboardPage?
 
     /// Fires after the detail page changes. The window uses it to rebuild the page's toolbar items.
     var onPageChange: ((PageToolbarProviding?) -> Void)?
@@ -106,7 +107,7 @@ final class RootViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         sidebar.onSelect = { [weak self] page in
-            self?.pageHost.show(page: page)
+            self?.showPage(page)
         }
         pageHost.onPageChange = { [weak self] controller in
             self?.onPageChange?(controller as? PageToolbarProviding)
@@ -122,7 +123,7 @@ final class RootViewController: NSViewController {
 
     func select(_ page: DashboardPage) {
         sidebar.select(page)
-        pageHost.show(page: page)
+        showPage(page)
     }
 
     /// Opens Details and requests selection by complete process identity.
@@ -139,6 +140,12 @@ final class RootViewController: NSViewController {
     private func apply(snapshot: MonitoringSnapshot) {
         pageHost.update(snapshot: snapshot)
         sidebar.refreshStatus(snapshot: snapshot)
+    }
+
+    private func showPage(_ page: DashboardPage) {
+        guard selectedPage != page else { return }
+        selectedPage = page
+        pageHost.show(page: page)
     }
 }
 

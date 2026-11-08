@@ -27,7 +27,7 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
     private var roots: [Node] = []
     private var collapsedGroupIDs: Set<String> = []
 
-    override init() {
+    init(autosaveName: String? = "history.outline") {
         outline = NSOutlineView()
         outline.setAccessibilityIdentifier("history.table")
         outline.setAccessibilityLabel("App history by application and day")
@@ -41,8 +41,8 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
         outline.gridStyleMask = []
         outline.indentationPerLevel = 14
         outline.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
-        outline.autosaveName = "history.outline"
-        outline.autosaveTableColumns = true
+        outline.autosaveName = autosaveName
+        outline.autosaveTableColumns = autosaveName != nil
         outline.headerView?.setAccessibilityIdentifier("history.table.header")
 
         for column in AppHistoryColumn.allCases {

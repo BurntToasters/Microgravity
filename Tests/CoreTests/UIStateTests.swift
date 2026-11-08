@@ -3,7 +3,41 @@ import XCTest
 @testable import Microgravity
 
 @MainActor
+private final class SnapshotTimestampRecorder {
+    var values: [Date] = []
+}
+
+@MainActor
 final class UIStateTests: XCTestCase {
+    func testFixtureRefreshPulseRepeatsAndStopsAcrossPauseResume() async throws {
+        let store = FixtureMonitoringStore(
+            configuration: FixtureConfiguration(arguments: ["--ui-test-refresh-pulse"]),
+            refreshPulseInitialDelayNanoseconds: 20_000_000,
+            refreshPulseIntervalNanoseconds: 20_000_000
+        )
+        let recorder = SnapshotTimestampRecorder()
+        store.onSnapshot = { recorder.values.append($0.timestamp) }
+
+        store.start(interval: .oneSecond)
+        try await Task.sleep(nanoseconds: 180_000_000)
+        XCTAssertGreaterThanOrEqual(recorder.values.count, 3, "Fixture pulse should publish repeatedly after initial snapshot.")
+
+        store.pause()
+        let pausedCount = recorder.values.count
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(recorder.values.count, pausedCount, "Paused fixture must not publish delayed snapshots.")
+
+        store.resume()
+        let resumedCount = recorder.values.count
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertGreaterThan(recorder.values.count, resumedCount, "Resume should schedule new fixture snapshots.")
+
+        store.stop()
+        let stoppedCount = recorder.values.count
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(recorder.values.count, stoppedCount, "Stopped fixture must cancel its repeating task.")
+    }
+
     func testProcessRootChildKeepsItsRowKindAcrossRefreshAndSortThenClearsOnCollapse() {
         let (dependencies, store, _) = makeDependencies()
         let controller = ProcessesViewController(dependencies: dependencies, defaults: isolatedProcessDefaults())
@@ -18,8 +52,11 @@ final class UIStateTests: XCTestCase {
         table.selectRowIndexes(IndexSet(integer: rootRow), byExtendingSelection: false)
         XCTAssertTrue(textField(withIdentifier: "process.selection.identity", in: controller.view)?.stringValue.contains("pid=410") == true)
 
-        controller.update(snapshot: copy(snapshot, timestamp: snapshot.timestamp.addingTimeInterval(1)))
-        XCTAssertEqual(selectedProcessName(controller: controller, table: table), "Fixture Editor Renderer")
+        for offset in 1...4 {
+            controller.update(snapshot: copy(snapshot, timestamp: snapshot.timestamp.addingTimeInterval(Double(offset))))
+            XCTAssertNotNil(processRow(named: "Fixture Renderer Worker", controller: controller, table: table))
+            XCTAssertEqual(selectedProcessName(controller: controller, table: table), "Fixture Editor Renderer")
+        }
 
         setProcessSort("process.column.pid", ascending: false, controller: controller, table: table)
         XCTAssertEqual(selectedProcessName(controller: controller, table: table), "Fixture Editor Renderer")

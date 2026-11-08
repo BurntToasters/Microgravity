@@ -23,7 +23,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
 
     private let dependencies: PageDependencies
     private let defaults: UserDefaults
-    private let outlineAutosaveName: String
+    private let outlineAutosaveName: String?
     private let outlineView = NSOutlineView()
     private let outlineScroll = NSScrollView()
     private let selectionBar = ProcessSelectionBar()
@@ -64,7 +64,15 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             ? ProcessInfo.processInfo.environment["MICROGRAVITY_UI_TEST_DEFAULTS_SUITE"]
             : nil
         self.defaults = defaults ?? fixtureSuite.flatMap(UserDefaults.init(suiteName:)) ?? .standard
-        outlineAutosaveName = fixtureSuite.map { "\(Self.autosaveName).\($0)" } ?? Self.autosaveName
+        if let fixtureSuite {
+            clearFixtureTableAutosave(named: "\(Self.autosaveName).\(fixtureSuite)")
+        }
+        if dependencies.fixtureMode,
+           ProcessInfo.processInfo.arguments.contains("--ui-test-reset-expansion-state") {
+            self.defaults.removeObject(forKey: ProcessGroupExpansionPersistence.defaultsKey)
+            _ = self.defaults.synchronize()
+        }
+        outlineAutosaveName = dependencies.fixtureMode ? nil : Self.autosaveName
         expandedGroups = ProcessGroupExpansionPersistence.load(from: self.defaults)
         columnOverrides = self.defaults.dictionary(forKey: ProcessesViewController.columnVisibilityKey)
             as? [String: Bool] ?? [:]
@@ -148,7 +156,8 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         }
         // Autosave after the columns exist so saved widths and order apply to them.
         outlineView.autosaveName = outlineAutosaveName
-        outlineView.autosaveTableColumns = true
+        outlineView.autosaveTableColumns = outlineAutosaveName != nil
+        outlineView.headerView?.setAccessibilityIdentifier("process.table.header")
         outlineView.sortDescriptors = [NSSortDescriptor(key: sort.column.rawValue, ascending: sort.ascending)]
         applyColumnVisibility()
 
@@ -840,5 +849,13 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
         return item
+    }
+}
+
+@MainActor
+func clearFixtureTableAutosave(named autosaveName: String) {
+    let defaults = UserDefaults.standard
+    for prefix in ["NSTableView Columns v3 ", "NSTableView Sort Ordering v2 ", "NSTableView Supports v2 "] {
+        defaults.removeObject(forKey: prefix + autosaveName)
     }
 }

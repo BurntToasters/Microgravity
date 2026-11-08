@@ -75,24 +75,29 @@ final class SettingsViewController: NSViewController {
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
-        scroll.documentView = content
+        let document = NSView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = document
+        document.addSubview(content)
         scroll.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(scroll)
         let clip = scroll.contentView
         let bottom = content.bottomAnchor.constraint(equalTo: clip.bottomAnchor)
         bottom.priority = .defaultLow
         let width = content.widthAnchor.constraint(equalTo: clip.widthAnchor, constant: -2 * PageLayout.horizontalInset)
-        width.priority = .defaultHigh
+        width.priority = .defaultLow
         NSLayoutConstraint.activate([
             scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: view.topAnchor, constant: PageLayout.topInset),
             scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -PageLayout.bottomInset),
-            content.topAnchor.constraint(equalTo: clip.topAnchor),
-            content.centerXAnchor.constraint(equalTo: clip.centerXAnchor),
+            document.widthAnchor.constraint(equalTo: clip.widthAnchor),
+            content.topAnchor.constraint(equalTo: document.topAnchor),
+            content.centerXAnchor.constraint(equalTo: document.centerXAnchor),
             content.widthAnchor.constraint(lessThanOrEqualToConstant: 720),
-            content.leadingAnchor.constraint(greaterThanOrEqualTo: clip.leadingAnchor, constant: PageLayout.horizontalInset),
-            content.trailingAnchor.constraint(lessThanOrEqualTo: clip.trailingAnchor, constant: -PageLayout.horizontalInset),
+            content.leadingAnchor.constraint(greaterThanOrEqualTo: document.leadingAnchor, constant: PageLayout.horizontalInset),
+            content.trailingAnchor.constraint(lessThanOrEqualTo: document.trailingAnchor, constant: -PageLayout.horizontalInset),
+            content.bottomAnchor.constraint(equalTo: document.bottomAnchor),
             width,
             bottom
         ])

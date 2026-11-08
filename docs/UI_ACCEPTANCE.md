@@ -145,8 +145,16 @@ The deterministic fixture suite captures an XCTest screenshot attachment for
 each principal navigation page. Attachments belong to the `.xcresult` bundle
 produced by the native test scheme.
 
-The final signed UI XCTest run on 2026-11-07 executed 18 tests: 15 passed and 3
-failed. Failures cover two snapshot-refresh waits and history numeric-sort
-ordering. See `docs/RELEASING.md` for details. The full suite has not completed
-with zero failures; these acceptance criteria do not claim completed manual or
-hosted validation.
+The latest signed suite executed 22 UI tests: 21 passed and 1 failed, with no
+skips. The visual minimum-size test measured 1280 × 820 instead of the required
+960 × 600; three resize-related assertions failed. It produced 24 default-size
+images (2,560 × 1,640 pixels) across eight pages and three appearances, but no
+minimum-size images. Manager review found the Settings Dark helper explanation
+truncated. The partial History CPU lower bound also still needs to be readable;
+numeric sorting tests pass, but that does not prove the formatted value is
+legible. The latest 229-test composite hard gate failed (Core 207, UI 21 passed,
+UI 1 failed), so the earlier 224-test pass on the preceding patch is not current
+release evidence. An external host audit of the accepted cleanup patch found
+zero nonempty fixture domains and zero fixture autosave keys. Manual all-page
+visual review, VoiceOver, live controlled-process sheet checks, and hosted CI
+validation remain incomplete.

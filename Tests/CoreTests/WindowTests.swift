@@ -52,6 +52,38 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(secondWindow.frame.size, frame.size)
     }
 
+    func testMainWindowKeepsCurrentFrameWhenChangingPages() {
+        let name = uniqueAutosaveName()
+        Self.clearSavedFrame(name)
+        addTeardownBlock { Self.clearSavedFrame(name) }
+
+        let controller = MainWindowController(dependencies: makeDependencies(), frameAutosaveName: name)
+        let window = try! XCTUnwrap(controller.window)
+        defer {
+            window.setFrameAutosaveName("")
+            window.close()
+        }
+        controller.showWindow(nil)
+        let userFrame = NSRect(x: 105, y: 115, width: 1100, height: 700)
+        window.setFrame(userFrame, display: false)
+        let root = controller.root
+
+        root.sidebar.select(.settings)
+        window.contentView?.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+
+        XCTAssertEqual(window.frame, userFrame,
+                       "The native sidebar selection delegate must preserve the user's window frame.")
+
+        let processesMenuItem = NSMenuItem()
+        processesMenuItem.tag = try! XCTUnwrap(DashboardPage.allCases.firstIndex(of: .processes))
+        controller.showPage(processesMenuItem)
+        window.contentView?.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertEqual(window.frame, userFrame,
+                       "Menu navigation must preserve the user's current window frame too.")
+    }
+
     private func makeDependencies() -> AppDependencies {
         let configuration = FixtureConfiguration(arguments: [])
         return AppDependencies(

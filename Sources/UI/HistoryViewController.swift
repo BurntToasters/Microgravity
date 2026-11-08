@@ -5,12 +5,17 @@ final class HistoryViewController: NSViewController, SnapshotUpdating, PageToolb
     private static let resetItemIdentifier = NSToolbarItem.Identifier("history.toolbar.reset")
 
     private let dependencies: PageDependencies
-    private let outlineController = AppHistoryOutlineController()
+    private let outlineController: AppHistoryOutlineController
     private let banner = StatusBannerView(style: .info)
     private var resetItem: NSToolbarItem?
 
     init(dependencies: PageDependencies) {
         self.dependencies = dependencies
+        if dependencies.fixtureMode,
+           let fixtureSuite = ProcessInfo.processInfo.environment["MICROGRAVITY_UI_TEST_DEFAULTS_SUITE"] {
+            clearFixtureTableAutosave(named: "history.outline.\(fixtureSuite)")
+        }
+        outlineController = AppHistoryOutlineController(autosaveName: dependencies.fixtureMode ? nil : "history.outline")
         super.init(nibName: nil, bundle: nil)
     }
 

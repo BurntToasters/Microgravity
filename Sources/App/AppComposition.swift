@@ -12,6 +12,8 @@ struct AppDependencies {
 /// Single composition point for production and isolated UI-test dependencies.
 @MainActor
 enum AppComposition {
+    private static let fixtureDefaultsSuitePrefix = "Microgravity.UITests."
+
     static func make() -> AppDependencies {
         #if DEBUG
         if isFixtureUITest {
@@ -19,9 +21,12 @@ enum AppComposition {
             let fixture = FixtureConfiguration(arguments: arguments)
             let store = FixtureMonitoringStore(configuration: fixture)
             store.start(interval: .oneSecond)
+            let processActions = FixtureProcessActioner(configuration: fixture) { identity in
+                store.removeProcessForFixtureAction(identity)
+            }
             return AppDependencies(
                 monitoringStore: store,
-                processActions: FixtureProcessActioner(configuration: fixture),
+                processActions: processActions,
                 integrations: UnavailableSystemIntegrationAPI(),
                 fixtureMode: true
             )
@@ -43,6 +48,30 @@ enum AppComposition {
         )
     }
 
+    static var fixtureDefaultsSuiteForCleanup: String? {
+        #if DEBUG
+        guard isFixtureUITest,
+              let suite = ProcessInfo.processInfo.environment["MICROGRAVITY_UI_TEST_DEFAULTS_SUITE"],
+              isValidFixtureDefaultsSuite(suite) else {
+            return nil
+        }
+        return suite
+        #else
+        return nil
+        #endif
+    }
+
+    static func isValidFixtureDefaultsSuite(_ suite: String) -> Bool {
+        guard suite.hasPrefix(fixtureDefaultsSuitePrefix) else { return false }
+        let methodName = suite.dropFirst(fixtureDefaultsSuitePrefix.count)
+        let bytes = Array(methodName.utf8)
+        guard methodName.hasPrefix("test"), bytes.count > 4 else { return false }
+        return bytes.allSatisfy { byte in
+            (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+                || (byte >= 48 && byte <= 57) || byte == 95
+        }
+    }
+
     #if DEBUG
     private static var isFixtureUITest: Bool {
         let process = ProcessInfo.processInfo
@@ -60,12 +89,22 @@ enum AppComposition {
 enum AppearancePreference {
     private static let key = "monitoring.appearance"
 
+    private static var defaults: UserDefaults {
+        #if DEBUG
+        if let suite = AppComposition.fixtureDefaultsSuiteForCleanup,
+           let fixtureDefaults = UserDefaults(suiteName: suite) {
+            return fixtureDefaults
+        }
+        #endif
+        return .standard
+    }
+
     static func current() -> String {
-        UserDefaults.standard.string(forKey: key) ?? "system"
+        defaults.string(forKey: key) ?? "system"
     }
 
     static func apply(_ value: String) {
-        UserDefaults.standard.set(value, forKey: key)
+        defaults.set(value, forKey: key)
         switch value {
         case "light": NSApp.appearance = NSAppearance(named: .aqua)
         case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)

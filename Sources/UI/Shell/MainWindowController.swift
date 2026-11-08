@@ -5,15 +5,20 @@ final class MainWindowController: NSWindowController {
     static let defaultContentSize = NSSize(width: 1280, height: 820)
     static let minimumContentSize = NSSize(width: 960, height: 600)
     nonisolated static let frameAutosaveName = "Main"
+    private static let fixtureVisualWindowIdentifier = NSUserInterfaceItemIdentifier("ui-test.visual-window")
 
     private let dependencies: AppDependencies
-    private let root: RootViewController
+    let root: RootViewController
     private let mainToolbar: MainToolbar
 
-    init(dependencies: AppDependencies, frameAutosaveName: String = MainWindowController.frameAutosaveName) {
+    init(dependencies: AppDependencies, frameAutosaveName: String? = MainWindowController.frameAutosaveName,
+         identifiesFixtureVisualWindow: Bool = false) {
         self.dependencies = dependencies
         let root = RootViewController(dependencies: dependencies)
         let window = Self.makeWindow(root: root, frameAutosaveName: frameAutosaveName)
+        if identifiesFixtureVisualWindow {
+            window.identifier = Self.fixtureVisualWindowIdentifier
+        }
         let mainToolbar = MainToolbar(splitView: root.splitView)
         window.toolbar = mainToolbar.toolbar
         self.root = root
@@ -33,7 +38,7 @@ final class MainWindowController: NSWindowController {
 
     /// Sets the content controller first so the window is sized from the real content, then
     /// applies the intended size. Autosave comes last so a saved frame from a previous launch wins.
-    private static func makeWindow(root: RootViewController, frameAutosaveName: String) -> NSWindow {
+    private static func makeWindow(root: RootViewController, frameAutosaveName: String?) -> NSWindow {
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: defaultContentSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -49,8 +54,10 @@ final class MainWindowController: NSWindowController {
         window.contentMinSize = minimumContentSize
         window.setContentSize(defaultContentSize)
         window.center()
-        // Returns false if another live window already owns this name; a saved frame is restored only when it succeeds.
-        window.setFrameAutosaveName(frameAutosaveName)
+        // Autosave comes last so a saved frame wins; fixture windows use isolated names or disable autosave.
+        if let frameAutosaveName {
+            window.setFrameAutosaveName(frameAutosaveName)
+        }
         return window
     }
 

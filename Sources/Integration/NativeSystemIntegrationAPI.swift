@@ -74,8 +74,14 @@ final class NativeSystemIntegrationAPI: NSObject, SystemIntegrationAPI, SPUUpdat
         await runStatusRefresh()
     }
 
+    private func helperSigningRequirement() async -> String? {
+        await Task.detached(priority: .utility) {
+            SigningIdentity.requirement(for: helperSigningIdentifier)
+        }.value
+    }
+
     private func performStatusRefresh() async {
-        guard let requirement = SigningIdentity.requirement(for: helperSigningIdentifier) else {
+        guard let requirement = await helperSigningRequirement() else {
             helperConnectionStatus = .unavailable("A signed app is required for the helper.")
             onStatusChange?()
             return
@@ -91,7 +97,7 @@ final class NativeSystemIntegrationAPI: NSObject, SystemIntegrationAPI, SPUUpdat
         onStatusChange?()
     }
     func configureHelper() async -> IntegrationActionResult {
-        guard SigningIdentity.requirement(for: helperSigningIdentifier) != nil else {
+        guard await helperSigningRequirement() != nil else {
             return .unavailable("A signed app is required for the helper.")
         }
         do { try daemon.register(); await refreshStatusAfterChange(); return .completed }

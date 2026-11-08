@@ -11,6 +11,7 @@ struct FixtureConfiguration: Sendable {
     let networkUnavailable: Bool
     let duplicateGroups: Bool
     let refreshPulse: Bool
+    let successfulForceQuit: Bool
 
     init(arguments: [String]) {
         let flags = Set(arguments)
@@ -22,6 +23,7 @@ struct FixtureConfiguration: Sendable {
         networkUnavailable = flags.contains("--ui-test-network-unavailable")
         duplicateGroups = flags.contains("--ui-test-duplicate-groups")
         refreshPulse = flags.contains("--ui-test-refresh-pulse")
+        successfulForceQuit = flags.contains("--ui-test-successful-force-quit")
     }
 }
 
@@ -35,9 +37,18 @@ final class FixtureMonitoringStore: MonitoringStore {
     var onSnapshot: (@MainActor @Sendable (MonitoringSnapshot) -> Void)?
 
     private let configuration: FixtureConfiguration
+    private let refreshPulseInitialDelayNanoseconds: UInt64
+    private let refreshPulseIntervalNanoseconds: UInt64
+    private var refreshPulseTask: Task<Void, Never>?
+    private var refreshPulseGeneration = 0
+    private var nextRefreshSampleIndex = 30
 
-    init(configuration: FixtureConfiguration) {
+    init(configuration: FixtureConfiguration,
+         refreshPulseInitialDelayNanoseconds: UInt64 = 8_000_000_000,
+         refreshPulseIntervalNanoseconds: UInt64 = 5_000_000_000) {
         self.configuration = configuration
+        self.refreshPulseInitialDelayNanoseconds = refreshPulseInitialDelayNanoseconds
+        self.refreshPulseIntervalNanoseconds = refreshPulseIntervalNanoseconds
         let now = Date()
         latestSnapshot = FixtureMonitoringStore.makeSnapshot(configuration: configuration, timestamp: now, sampleIndex: 29)
         graphSamples = (0..<30).map { index in
@@ -49,25 +60,19 @@ final class FixtureMonitoringStore: MonitoringStore {
     }
 
     func start(interval: MonitoringInterval) {
+        cancelRefreshPulse()
         self.interval = interval
         isRunning = true
         isPaused = false
         if let latestSnapshot { onSnapshot?(latestSnapshot) }
-        if configuration.refreshPulse {
-            Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                guard let self, self.isRunning, !self.isPaused else { return }
-                let snapshot = Self.makeSnapshot(configuration: self.configuration, timestamp: Date(), sampleIndex: 30)
-                self.latestSnapshot = snapshot
-                self.onSnapshot?(snapshot)
-            }
-        }
+        scheduleRefreshPulse()
     }
 
     func setInterval(_ interval: MonitoringInterval) { self.interval = interval }
 
     func pause() {
         isPaused = true
+        cancelRefreshPulse()
         if let latestSnapshot { onSnapshot?(latestSnapshot) }
     }
 
@@ -75,11 +80,48 @@ final class FixtureMonitoringStore: MonitoringStore {
         isPaused = false
         isRunning = true
         if let latestSnapshot { onSnapshot?(latestSnapshot) }
+        scheduleRefreshPulse()
     }
 
     func stop() {
+        cancelRefreshPulse()
         isPaused = false
         isRunning = false
+    }
+
+    private func scheduleRefreshPulse() {
+        guard configuration.refreshPulse, isRunning, !isPaused else { return }
+        refreshPulseGeneration &+= 1
+        let generation = refreshPulseGeneration
+        let initialDelay = refreshPulseInitialDelayNanoseconds
+        let interval = refreshPulseIntervalNanoseconds
+        refreshPulseTask = Task { @MainActor [weak self] in
+            var isFirstPulse = true
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: isFirstPulse ? initialDelay : interval)
+                } catch {
+                    return
+                }
+                guard let self,
+                      generation == self.refreshPulseGeneration,
+                      self.isRunning,
+                      !self.isPaused else { return }
+                isFirstPulse = false
+                let sampleIndex = self.nextRefreshSampleIndex
+                self.nextRefreshSampleIndex += 1
+                let snapshot = Self.makeSnapshot(configuration: self.configuration,
+                                                 timestamp: Date(), sampleIndex: sampleIndex)
+                self.latestSnapshot = snapshot
+                self.onSnapshot?(snapshot)
+            }
+        }
+    }
+
+    private func cancelRefreshPulse() {
+        refreshPulseGeneration &+= 1
+        refreshPulseTask?.cancel()
+        refreshPulseTask = nil
     }
 
     func refreshNow() async {
@@ -102,6 +144,48 @@ final class FixtureMonitoringStore: MonitoringStore {
                                        history: [], applicationHistory: [])
         self.latestSnapshot = reset
         onSnapshot?(reset)
+    }
+
+    func removeProcessForFixtureAction(_ identity: ProcessIdentity) {
+        guard let snapshot = latestSnapshot,
+              snapshot.processes.contains(where: { $0.id == identity }) else { return }
+
+        let processes = snapshot.processes.filter { $0.id != identity }
+        let groups = snapshot.processGroups.compactMap { group -> ProcessGroupSnapshot? in
+            let members = group.members.filter { $0 != identity }
+            guard !members.isEmpty else { return nil }
+            return ProcessGroupSnapshot(
+                id: group.id,
+                title: group.title,
+                ownerUID: group.ownerUID,
+                executablePath: group.executablePath,
+                association: group.association,
+                historyIdentity: group.historyIdentity,
+                members: members,
+                cpuPercent: group.cpuPercent,
+                memoryBytes: group.memoryBytes,
+                diskReadBytesPerSecond: group.diskReadBytesPerSecond,
+                diskWriteBytesPerSecond: group.diskWriteBytesPerSecond,
+                networkReceiveBytesPerSecond: group.networkReceiveBytesPerSecond,
+                networkTransmitBytesPerSecond: group.networkTransmitBytesPerSecond
+            )
+        }
+        let updated = MonitoringSnapshot(
+            timestamp: snapshot.timestamp,
+            system: snapshot.system,
+            processes: processes,
+            processGroups: groups,
+            startupItems: snapshot.startupItems,
+            services: snapshot.services,
+            users: snapshot.users,
+            discoveryCoverage: snapshot.discoveryCoverage,
+            capabilities: snapshot.capabilities,
+            advancedMetrics: snapshot.advancedMetrics,
+            history: snapshot.history,
+            applicationHistory: snapshot.applicationHistory
+        )
+        latestSnapshot = updated
+        onSnapshot?(updated)
     }
 
     private static func makeSnapshot(configuration: FixtureConfiguration, timestamp: Date,
@@ -321,7 +405,7 @@ final class FixtureMonitoringStore: MonitoringStore {
         return metrics
     }
 
-    private static func identity(pid: Int32, offset: Int64) -> ProcessIdentity {
+    nonisolated static func identity(pid: Int32, offset: Int64) -> ProcessIdentity {
         ProcessIdentity(pid: pid, startTime: ProcessStartTime(secondsSinceEpoch: 1_700_000_000 + offset,
                                                                microseconds: Int32(offset * 10_000)))
     }
@@ -339,12 +423,25 @@ final class FixtureMonitoringStore: MonitoringStore {
 
 actor FixtureProcessActioner: ProcessActioning {
     private let configuration: FixtureConfiguration
+    private let onSuccessfulTermination: (@MainActor @Sendable (ProcessIdentity) -> Void)?
 
-    init(configuration: FixtureConfiguration) {
+    init(configuration: FixtureConfiguration,
+         onSuccessfulTermination: (@MainActor @Sendable (ProcessIdentity) -> Void)? = nil) {
         self.configuration = configuration
+        self.onSuccessfulTermination = onSuccessfulTermination
     }
 
     func terminate(identity: ProcessIdentity, force: Bool) async -> ProcessActionResult {
+        if configuration.successfulForceQuit {
+            let expected = FixtureMonitoringStore.identity(pid: 411, offset: 2)
+            guard force, identity == expected else {
+                return ProcessActionResult(identity: identity, force: force,
+                                           outcome: .rejected(.identityChanged,
+                                                              detail: "Fixture action did not match its expected process identity."))
+            }
+            await onSuccessfulTermination?(identity)
+            return ProcessActionResult(identity: identity, force: true, outcome: .signalSent)
+        }
         let rejection: ProcessActionRejection = configuration.staleTarget ? .identityChanged : .helperUnavailable
         let detail = configuration.staleTarget ? nil : "Fixture mode never signals a host process."
         return ProcessActionResult(identity: identity, force: force,

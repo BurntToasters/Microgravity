@@ -192,7 +192,7 @@ export function validateWorkspace({ release = false, bundle = null } = {}) {
   const info = versionInfo();
   add(failures, packageJson.name === "microgravity", "package name must be microgravity");
   add(failures, packageJson.license === "GPL-3.0-only", "package license must be GPL-3.0-only");
-  add(failures, packageJson.engines?.node === ">=22.12", "Node engine must be >=22.12");
+  add(failures, packageJson.engines?.node === ">=24.13", "Node engine must be >=24.13");
   try { syncVersion({ check: true }); } catch (error) { failures.push(error.message); }
 
   const baseConfig = fs.readFileSync(path.join(root, "config/base.xcconfig"), "utf8");

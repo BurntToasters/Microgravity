@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { appcastFilename, copyStableAppcastAsBetaFallback, writeAppcast } from "./lib/appcast.mjs";
-import { releaseNotes as formatReleaseNotes } from "./lib/changelog.mjs";
+import { changelogSection, releaseNotes as formatReleaseNotes } from "./lib/changelog.mjs";
 import { output, repository, repositoryUrl, root, run, sha256File, versionInfo } from "./lib/core.mjs";
 import { githubOutput, githubRun } from "./lib/github.mjs";
 import { buildRelease } from "./build.mjs";
@@ -275,8 +275,10 @@ function continueRelease() {
     return;
   }
   const { zip } = buildRelease();
-  const notes = formatReleaseNotes(info, fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8"));
-  const { assets, plan } = prepareReleaseAssets({ info, zip, notes });
+  const changelog = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
+  // GitHub gets the download header and the changes; Sparkle's update window gets only the changes.
+  const notes = formatReleaseNotes(info, changelog);
+  const { assets, plan } = prepareReleaseAssets({ info, zip, notes: changelogSection(info.version, changelog) });
   const manifest = createArtifactManifest(session, assets);
   fs.writeFileSync(artifactManifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   validateArtifactManifest(manifest, session, path.dirname(zip), plan.assetNames);

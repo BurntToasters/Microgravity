@@ -1,6 +1,6 @@
 # Microgravity release procedure
 
-Use a macOS release host with Xcode 26 or newer, Node.js 22.12 or newer, and the `gh` and `gpg` command-line tools. The Xcode project builds the app for macOS 14 and newer. Development and CI builds are unsigned and need no signing credentials.
+Use a macOS release host with Xcode 26 or newer, Node.js 24.13 or newer, and the `gh` and `gpg` command-line tools. The Xcode project builds the app for macOS 14 and newer. Development and CI builds are unsigned and need no signing credentials.
 
 ## Configure the release host
 

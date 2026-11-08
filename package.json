@@ -6,7 +6,7 @@
   "buildNumber": 1,
   "license": "GPL-3.0-only",
   "engines": {
-    "node": ">=22.12"
+    "node": ">=24.13"
   },
   "scripts": {
     "project:sync": "node scripts/generate-project.mjs",

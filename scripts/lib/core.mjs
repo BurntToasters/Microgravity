@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
-if (nodeMajor < 22 || (nodeMajor === 22 && nodeMinor < 12)) {
-  throw new Error("Microgravity scripts require Node.js 22.12 or newer.");
+if (nodeMajor < 24 || (nodeMajor === 24 && nodeMinor < 13)) {
+  throw new Error("Microgravity scripts require Node.js 24.13 or newer.");
 }
 
 try {

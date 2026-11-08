@@ -280,7 +280,7 @@ final class InventoryViewController: NSViewController, SnapshotUpdating, PageToo
         button.title = title
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
         button.imagePosition = .imageLeading
-        button.bezelStyle = .texturedRounded
+        button.bezelStyle = .toolbar
         button.target = self
         button.action = action
         button.setAccessibilityIdentifier(identifier)
@@ -300,6 +300,6 @@ final class InventoryViewController: NSViewController, SnapshotUpdating, PageToo
     }
 
     private func slug(_ value: String) -> String {
-        InventoryRows.slug(value)
+        UIText.slug(value)
     }
 }

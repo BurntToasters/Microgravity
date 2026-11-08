@@ -79,21 +79,23 @@ final class UsersViewController: NSViewController, SnapshotUpdating {
         let sorted = snapshot.users.sorted { $0.shortName.localizedStandardCompare($1.shortName) == .orderedAscending }
         let userSlugCounts = Dictionary(grouping: sorted, by: { slug($0.shortName) }).mapValues(\.count)
         let processesByUID = UserAggregation.processesByUID(snapshot.processes)
+        let timestamp = snapshot.timestamp
         let rows = sorted.map { user -> AccessibleTableRow in
             let owned = processesByUID[user.uid] ?? []
-            let processCount: String
+            let processCount: MetricCellPresentation
             if let processAvailability, !processAvailability.available {
-                processCount = UIFormat.availability(processAvailability)
+                processCount = MetricCellPresentation.unavailable(processAvailability)
             } else {
-                processCount = String(owned.count)
+                processCount = MetricCellPresentation(MetricReading(value: Double(owned.count), unit: .count, timestamp: timestamp))
             }
-            let cpu = aggregate(owned.map(\.cpuPercent), unit: .percent, capability: processAvailability)
-            let memory = aggregate(owned.map(\.memoryBytes), unit: .bytes, capability: processAvailability)
+            let cpu = aggregate(owned.map(\.cpuPercent), unit: .percent, capability: processAvailability, timestamp: timestamp)
+            let memory = aggregate(owned.map(\.memoryBytes), unit: .bytes, capability: processAvailability, timestamp: timestamp)
             let sessionNames = user.loginSessions.isEmpty ? "No active sessions reported" : user.loginSessions.joined(separator: ", ")
             let duplicateSuffix = (userSlugCounts[slug(user.shortName)] ?? 0) > 1 ? ".uid.\(user.uid)" : ""
             return AccessibleTableRow(
                 id: "users.row.\(slug(user.shortName))\(duplicateSuffix)",
-                values: [user.shortName, String(user.uid), sessionNames, processCount, cpu, memory],
+                values: [user.shortName, String(user.uid), sessionNames,
+                         processCount.valueText, cpu.valueText, memory.valueText],
                 sortKeys: [
                     .text(user.shortName),
                     .number(Double(user.uid)),
@@ -103,14 +105,23 @@ final class UsersViewController: NSViewController, SnapshotUpdating {
                     aggregateSortKey(owned.map(\.memoryBytes), capability: processAvailability)
                 ],
                 icon: userIcon,
-                badge: UserAggregation.currentUserBadge(isCurrentUser: user.isCurrentUser)
+                badge: UserAggregation.currentUserBadge(isCurrentUser: user.isCurrentUser),
+                cellDetails: [
+                    nil, nil, nil,
+                    AccessibleTableCellDetail(processCount),
+                    AccessibleTableCellDetail(cpu),
+                    AccessibleTableCellDetail(memory)
+                ]
             )
         }
         model.replaceRows(rows, in: table)
         model.configureEmptyState(symbolName: "person.2", title: "No user sessions",
                                   caption: emptyCaption(snapshot: snapshot))
+        // Only missing session or process data is a problem worth a warning; a normal listing is information.
         if let capability = snapshot.capabilities[.userSessions], !capability.available {
             state.setMessage(UIFormat.availability(capability), style: .warning)
+        } else if let capability = snapshot.capabilities[.processes], !capability.available {
+            state.setMessage("Process data unavailable · " + UIFormat.availability(capability), style: .warning)
         } else {
             state.setMessage("\(sorted.count) user records · updated \(UIFormat.time(snapshot.timestamp))", style: .info)
         }
@@ -123,14 +134,17 @@ final class UsersViewController: NSViewController, SnapshotUpdating {
         return "Discovery reported no user records."
     }
 
-    private func aggregate(_ readings: [MetricReading], unit: MetricUnit,
-                           capability: MetricAvailability?) -> String {
-        if let capability, !capability.available { return UIFormat.availability(capability) }
+    /// Sum of one user's readings. A user with no processes shows a measured zero with its unit, not a bare "0".
+    private func aggregate(_ readings: [MetricReading], unit: MetricUnit, capability: MetricAvailability?,
+                           timestamp: Date) -> MetricCellPresentation {
+        if let capability, !capability.available { return MetricCellPresentation.unavailable(capability) }
         guard !readings.isEmpty else {
-            return capability?.available == true ? "0" : UIFormat.availability(capability)
+            guard capability?.available == true else {
+                return MetricCellPresentation.unavailable(reason: .notCollected, detail: "capability not reported")
+            }
+            return MetricCellPresentation(MetricReading(value: 0, unit: unit, timestamp: timestamp))
         }
-        let aggregate = SystemMonitorCollector.combineRates(readings, unit: unit, timestamp: Date())
-        return UIFormat.metric(aggregate)
+        return MetricCellPresentation(SystemMonitorCollector.combineRates(readings, unit: unit, timestamp: timestamp))
     }
 
     private func aggregateSortKey(_ readings: [MetricReading], capability: MetricAvailability?) -> ComparableSortKey {
@@ -141,7 +155,6 @@ final class UsersViewController: NSViewController, SnapshotUpdating {
     }
 
     private func slug(_ value: String) -> String {
-        String(value.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" })
-            .split(separator: "-").joined(separator: "-")
+        UIText.slug(value)
     }
 }

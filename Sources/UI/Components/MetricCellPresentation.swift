@@ -79,4 +79,26 @@ struct MetricCellPresentation: Equatable {
     static func unavailable(_ availability: MetricAvailability) -> MetricCellPresentation {
         unavailable(reason: availability.reason, detail: availability.detail)
     }
+
+    /// One cell for several readings, such as "R 4 KB/s · W 8 KB/s". Each part keeps its own tooltip, prefixed
+    /// with its label. The cell is "—" only when every part is unavailable; a partly missing pair is marked partial.
+    static func combined(_ parts: [(label: String, presentation: MetricCellPresentation)]) -> MetricCellPresentation {
+        let unavailableCount = parts.filter { !$0.presentation.isAvailable }.count
+        let valueText = unavailableCount == parts.count
+            ? "—"
+            : parts.map { "\($0.label) \($0.presentation.valueText)" }.joined(separator: " · ")
+        let badge: Badge
+        if unavailableCount == parts.count {
+            badge = .unavailable
+        } else if unavailableCount > 0 || parts.contains(where: { $0.presentation.badge == .partial }) {
+            badge = .partial
+        } else {
+            badge = .none
+        }
+        let tips = parts.compactMap { part in part.presentation.toolTip.map { "\(part.label): \($0)" } }
+        let spoken = parts.map { "\($0.label) \($0.presentation.accessibilityDescription)" }.joined(separator: ", ")
+        return MetricCellPresentation(valueText: valueText, badge: badge,
+                                      toolTip: tips.isEmpty ? nil : tips.joined(separator: "\n"),
+                                      accessibilityDescription: spoken)
+    }
 }

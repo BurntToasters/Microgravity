@@ -5,10 +5,7 @@ enum DetailsPresentation {
     /// The outermost `.app` bundle on `executablePath`, used to pick the row icon. Nil for plain executables,
     /// which then share the generic executable icon.
     static func appBundlePath(forExecutable executablePath: String?) -> String? {
-        guard let executablePath, !executablePath.isEmpty else { return nil }
-        let components = URL(fileURLWithPath: executablePath).pathComponents
-        guard let index = components.firstIndex(where: { $0.hasSuffix(".app") }) else { return nil }
-        return NSString.path(withComponents: Array(components[...index]))
+        UIText.appBundlePath(forExecutable: executablePath)
     }
 }
 
@@ -118,6 +115,15 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
             )
             let diskValues = [process.diskReadBytesPerSecond.value, process.diskWriteBytesPerSecond.value].compactMap { $0 }
             let diskSortKey = ComparableSortKey.numeric(diskValues.isEmpty ? nil : diskValues.reduce(0, +))
+            // Cells show the number (or "—"); the reason for a partial or missing value goes to the tooltip.
+            let cpu = MetricCellPresentation(process.cpuPercent)
+            let memory = MetricCellPresentation(process.memoryBytes)
+            let disk = MetricCellPresentation.combined([
+                (label: "R", presentation: MetricCellPresentation(process.diskReadBytesPerSecond)),
+                (label: "W", presentation: MetricCellPresentation(process.diskWriteBytesPerSecond))
+            ])
+            let networkCell = MetricCellPresentation(network)
+            let gpuCell = MetricCellPresentation(gpu)
             return AccessibleTableRow(
                 id: "details.process.\(process.id.pid)",
                 values: [
@@ -125,11 +131,11 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
                     String(process.id.pid),
                     UIFormat.ownerName(process.ownerUID),
                     process.parentIdentity.map { String($0.pid) } ?? "—",
-                    UIFormat.metric(process.cpuPercent),
-                    UIFormat.metric(process.memoryBytes),
-                    "R \(UIFormat.metric(process.diskReadBytesPerSecond)) · W \(UIFormat.metric(process.diskWriteBytesPerSecond))",
-                    UIFormat.metric(network),
-                    UIFormat.metric(gpu),
+                    cpu.valueText,
+                    memory.valueText,
+                    disk.valueText,
+                    networkCell.valueText,
+                    gpuCell.valueText,
                     process.executablePath ?? "Unavailable"
                 ],
                 sortKeys: [
@@ -144,7 +150,16 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
                     .numeric(gpu.value),
                     .text(process.executablePath ?? "Unavailable")
                 ],
-                icon: AppIconProvider.icon(forBundlePath: DetailsPresentation.appBundlePath(forExecutable: process.executablePath))
+                icon: AppIconProvider.icon(forBundlePath: DetailsPresentation.appBundlePath(forExecutable: process.executablePath)),
+                cellDetails: [
+                    nil, nil, nil, nil,
+                    AccessibleTableCellDetail(cpu),
+                    AccessibleTableCellDetail(memory),
+                    AccessibleTableCellDetail(disk),
+                    AccessibleTableCellDetail(networkCell),
+                    AccessibleTableCellDetail(gpuCell),
+                    nil
+                ]
             )
         }
         processIdentityByRowID = Dictionary(uniqueKeysWithValues: sorted.map {
@@ -161,19 +176,40 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
         let time = UIFormat.time(snapshot.timestamp)
         if let processAvailability, !processAvailability.available {
             processesUnavailableText = UIFormat.availability(processAvailability)
+            capability.clearButton()
             capability.setMessage(processesUnavailableText, style: .warning)
         } else {
             processesUnavailableText = nil
-            var parts = ["\(sorted.count) processes · updated \(time)"]
+            // Per-process GPU is never collected, so it is not reported here; its column is simply hidden.
+            var text = "\(sorted.count) processes · updated \(time)"
+            var offersHelperSetup = false
             if isUnavailable(networkCapability) {
-                parts.append("Network: \(UIFormat.availability(networkCapability))")
+                if networkNeedsHelper(networkCapability) {
+                    text += " · Per-process network needs the optional helper."
+                    offersHelperSetup = true
+                } else {
+                    text += " · Network: \(UIFormat.availability(networkCapability))"
+                }
             }
-            if isUnavailable(gpuCapability) {
-                parts.append("GPU: \(UIFormat.availability(gpuCapability))")
+            // Missing optional features are information with a way forward, not a warning.
+            capability.setMessage(text, style: .info)
+            if offersHelperSetup {
+                capability.setButton(title: "Set Up Helper…") {
+                    NSApp.sendAction(#selector(MainWindowController.showSettings(_:)), to: nil, from: nil)
+                }
+            } else {
+                capability.clearButton()
             }
-            capability.setMessage(parts.joined(separator: " · "), style: parts.count > 1 ? .warning : .info)
         }
         filterRows()
+    }
+
+    /// True when the network capability is missing because the optional helper is not installed or not running.
+    private func networkNeedsHelper(_ availability: MetricAvailability?) -> Bool {
+        guard let availability, !availability.available else { return false }
+        return availability.reason == .unsupported
+            || availability.reason == .notCollected
+            || availability.detail == HelperSamplingClient.unavailableError
     }
 
     /// Selects a requested process only when its PID and start time still match the current snapshot.

@@ -64,20 +64,53 @@ final class HistoryInventoryTests: XCTestCase {
 
     // MARK: App History builder
 
-    func testHistoryWindowIsInclusiveUTCAndDaysAreNewestFirst() {
+    func testHistoryWindowIsInclusiveLocalDaysAndDaysAreNewestFirst() {
         let summaries = [
             summary(day: "2026-04-01", app: "app-a", name: "A", cpu: 1),
             summary(day: "2026-04-02", app: "app-a", name: "A", cpu: 2),
             summary(day: "2026-05-01", app: "app-a", name: "A", cpu: 3),
             summary(day: "2026-05-02", app: "app-b", name: "B", cpu: 4)
         ]
-        let result = AppHistoryBuilder.summarize(summaries, through: date("2026-05-01T19:00:00Z"))
+        let result = AppHistoryBuilder.summarize(summaries, through: local("2026-05-01", hour: 19),
+                                                 showsBackgroundProcesses: false)
 
         XCTAssertEqual(result.groups.count, 1)
         let group = result.groups[0]
         XCTAssertEqual(group.total.title, "A")
-        XCTAssertEqual(group.days.map(\.title), ["2026-05-01", "2026-04-02"])
-        XCTAssertEqual(group.days[0].id, "history.day.2026-05-01.a")
+        XCTAssertEqual(group.days.map(\.dayStart), [local("2026-05-01"), local("2026-04-02")])
+        XCTAssertEqual(group.days.map(\.id), ["history.day.2026-05-01.a", "history.day.2026-04-02.a"])
+        XCTAssertEqual(group.days[0].title, "Today")
+        XCTAssertEqual(group.days[1].title, mediumTitle(local("2026-04-02")))
+    }
+
+    func testDayTitlesAreTodayYesterdayThenMediumLocalDates() {
+        let summaries = [
+            summary(day: "2026-05-07", app: "app", name: "App", cpu: 1),
+            summary(day: "2026-05-09", app: "app", name: "App", cpu: 1),
+            summary(day: "2026-05-10", app: "app", name: "App", cpu: 1)
+        ]
+        // Early morning and late evening share one local day, so the label does not depend on the hour.
+        for hour in [0, 23] {
+            let result = AppHistoryBuilder.summarize(summaries, through: local("2026-05-10", hour: hour),
+                                                     showsBackgroundProcesses: false)
+            let days = try! XCTUnwrap(result.groups.first).days
+            XCTAssertEqual(days.map(\.title), ["Today", "Yesterday", mediumTitle(local("2026-05-07"))])
+        }
+    }
+
+    func testDayRowsSortByDateWhenTheApplicationColumnIsSorted() {
+        let summaries = [
+            summary(day: "2026-05-10", app: "app", name: "App", cpu: 1),
+            summary(day: "2026-05-07", app: "app", name: "App", cpu: 1),
+            summary(day: "2026-05-09", app: "app", name: "App", cpu: 1)
+        ]
+        let result = AppHistoryBuilder.summarize(summaries, through: local("2026-05-10", hour: 12),
+                                                 showsBackgroundProcesses: false)
+        let days = try! XCTUnwrap(result.groups.first).days
+        // "Today" and "Yesterday" would sort wrongly as text; dates sort correctly.
+        let ascending = AppHistorySort.ordered(days, row: { $0 },
+                                               by: AppHistorySortOrder(column: .application, ascending: true))
+        XCTAssertEqual(ascending.compactMap(\.dayStart), [local("2026-05-07"), local("2026-05-09"), local("2026-05-10")])
     }
 
     func testGapDaysUseGapIdentifiersAndCollidingNamesGetApplicationSuffix() {
@@ -85,7 +118,8 @@ final class HistoryInventoryTests: XCTestCase {
             summary(day: "2026-05-01", app: "editor-1", name: "Editor", cpu: 5, gaps: 1),
             summary(day: "2026-05-01", app: "editor-2", name: "Editor", cpu: 6)
         ]
-        let result = AppHistoryBuilder.summarize(summaries, through: date("2026-05-01T12:00:00Z"))
+        let result = AppHistoryBuilder.summarize(summaries, through: local("2026-05-01", hour: 12),
+                                                 showsBackgroundProcesses: false)
 
         // Both names are "Editor", so their order is not defined; compare as a set.
         XCTAssertEqual(Set(result.groups.map(\.total.id)), [
@@ -96,6 +130,41 @@ final class HistoryInventoryTests: XCTestCase {
         XCTAssertEqual(gapGroup.days.first?.id, "history.gap.2026-05-01.editor.application.editor-1")
         XCTAssertEqual(result.gaps, 1)
         XCTAssertEqual(result.counterResets, 0)
+    }
+
+    func testBackgroundEntriesStayHiddenUnlessRequested() {
+        let summaries = [
+            summary(day: "2026-05-01", app: "editor", name: "Editor", cpu: 1, association: .applicationBundle),
+            summary(day: "2026-05-01", app: "daemon", name: "Daemon", cpu: 2, gaps: 1, association: .standalone),
+            summary(day: "2026-05-01", app: "helper", name: "Helper", cpu: 3, association: .parentProcess)
+        ]
+        let through = local("2026-05-01", hour: 12)
+
+        let applicationsOnly = AppHistoryBuilder.summarize(summaries, through: through, showsBackgroundProcesses: false)
+        XCTAssertEqual(applicationsOnly.groups.map(\.total.title), ["Editor"])
+        XCTAssertEqual(applicationsOnly.hiddenBackgroundCount, 2)
+        XCTAssertEqual(applicationsOnly.gaps, 0, "a gap in a hidden background process must not reach the banner")
+
+        let everything = AppHistoryBuilder.summarize(summaries, through: through, showsBackgroundProcesses: true)
+        XCTAssertEqual(everything.groups.map(\.total.title), ["Daemon", "Editor", "Helper"])
+        XCTAssertEqual(everything.hiddenBackgroundCount, 0)
+        XCTAssertEqual(everything.gaps, 1)
+        XCTAssertTrue(AppHistoryBuilder.isApplicationBundle(
+            ApplicationHistoryIdentity(id: "editor", name: "Editor", executablePath: nil, association: .applicationBundle)))
+    }
+
+    func testBackgroundFilterKeepsRowIdentifiersStable() {
+        let summaries = [
+            summary(day: "2026-05-01", app: "editor-1", name: "Editor", cpu: 5, association: .applicationBundle),
+            summary(day: "2026-05-01", app: "editor-2", name: "Editor", cpu: 6, association: .standalone)
+        ]
+        let through = local("2026-05-01", hour: 12)
+        let filtered = AppHistoryBuilder.summarize(summaries, through: through, showsBackgroundProcesses: false)
+        let all = AppHistoryBuilder.summarize(summaries, through: through, showsBackgroundProcesses: true)
+
+        XCTAssertEqual(filtered.groups.map(\.total.id), ["history.total.editor.application.editor-1"])
+        XCTAssertTrue(all.groups.map(\.total.id).contains("history.total.editor.application.editor-1"),
+                      "a collision suffix must not depend on whether background entries are shown")
     }
 
     func testMissingValuesStayUnavailableAndPartialTotalsAreMarked() {
@@ -196,6 +265,25 @@ final class HistoryInventoryTests: XCTestCase {
                                     "a numeric value must fill the cell so its text reaches the trailing edge")
     }
 
+    func testCoverageColumnStartsHiddenAndTheHeaderMenuCanShowIt() throws {
+        XCTAssertTrue(AppHistoryColumn.coverage.isHiddenByDefault)
+        XCTAssertFalse(AppHistoryColumn.cpu.isHiddenByDefault)
+
+        let controller = AppHistoryOutlineController(autosaveName: nil)
+        let outline = try XCTUnwrap(controller.scrollView.documentView as? NSOutlineView)
+        let coverage = try XCTUnwrap(outline.tableColumns.first { $0.identifier.rawValue == AppHistoryColumn.coverage.rawValue })
+        XCTAssertTrue(coverage.isHidden)
+
+        let menu = NSMenu()
+        controller.menuNeedsUpdate(menu)
+        XCTAssertFalse(menu.items.contains { ($0.representedObject as? String) == AppHistoryColumn.application.rawValue },
+                       "the application column carries the disclosure triangles and cannot be hidden")
+        let item = try XCTUnwrap(menu.items.first { ($0.representedObject as? String) == AppHistoryColumn.coverage.rawValue })
+        XCTAssertEqual(item.state, .off)
+        _ = item.target?.perform(item.action, with: item)
+        XCTAssertFalse(coverage.isHidden)
+    }
+
     func testSortingUsesNumericValuesAndSendsUnavailableLast() {
         let rows = [
             row(id: "nine", title: "Nine", cpu: 9),
@@ -222,7 +310,7 @@ final class HistoryInventoryTests: XCTestCase {
 
     // MARK: App History status
 
-    func testBannerPrefersFailureThenGapsThenInformation() {
+    func testBannerPrefersFailureThenPartialInformationThenCounts() {
         let failed = AppHistoryStatus.banner(
             availability: MetricAvailability(available: false, reason: .collectionFailed, detail: "disk full"),
             applicationCount: 2, gaps: 3, counterResets: 0, timestamp: date("2026-05-01T12:00:00Z")
@@ -230,15 +318,26 @@ final class HistoryInventoryTests: XCTestCase {
         XCTAssertEqual(failed.style, .error)
         XCTAssertTrue(failed.text.contains("disk full"))
 
+        // Gaps are information: the affected values already carry the "≥" marker.
         let gapped = AppHistoryStatus.banner(availability: nil, applicationCount: 2, gaps: 1, counterResets: 1,
                                              timestamp: date("2026-05-01T12:00:00Z"))
-        XCTAssertEqual(gapped.style, .warning)
+        XCTAssertEqual(gapped.style, .info)
+        XCTAssertTrue(gapped.text.hasPrefix("Some values are partial"), gapped.text)
         XCTAssertTrue(gapped.text.contains("1 gap(s)"))
+        XCTAssertTrue(gapped.text.contains("1 counter reset(s)"))
 
         let empty = AppHistoryStatus.banner(availability: nil, applicationCount: 0, gaps: 0, counterResets: 0,
                                             timestamp: date("2026-05-01T12:00:00Z"))
         XCTAssertEqual(empty.style, .info)
         XCTAssertEqual(empty.text, "No application history recorded yet.")
+
+        let onlyBackground = AppHistoryStatus.banner(availability: nil, applicationCount: 0, hiddenBackgroundCount: 2,
+                                                     gaps: 0, counterResets: 0, timestamp: date("2026-05-01T12:00:00Z"))
+        XCTAssertTrue(onlyBackground.text.contains("2 background processes hidden"), onlyBackground.text)
+
+        let withHidden = AppHistoryStatus.banner(availability: nil, applicationCount: 3, hiddenBackgroundCount: 1,
+                                                 gaps: 0, counterResets: 0, timestamp: date("2026-05-01T12:00:00Z"))
+        XCTAssertTrue(withHidden.text.hasPrefix("3 applications · 1 background process hidden"), withHidden.text)
     }
 
     // MARK: Helpers
@@ -248,10 +347,11 @@ final class HistoryInventoryTests: XCTestCase {
     }
 
     private func summary(day: String, app: String, name: String, cpu: Double,
-                         gaps: Int = 0, resets: Int = 0) -> ApplicationDailyHistorySummary {
+                         gaps: Int = 0, resets: Int = 0,
+                         association: ProcessGroupAssociation = .applicationBundle) -> ApplicationDailyHistorySummary {
         ApplicationDailyHistorySummary(
-            dayStart: date("\(day)T00:00:00Z"),
-            application: ApplicationHistoryIdentity(id: app, name: name, executablePath: nil, association: .standalone),
+            dayStart: local(day),
+            application: ApplicationHistoryIdentity(id: app, name: name, executablePath: nil, association: association),
             cpuSeconds: cpu, diskReadBytes: nil, diskWriteBytes: nil,
             networkReceiveBytes: nil, networkTransmitBytes: nil,
             sampleCount: 3, gaps: gaps, counterResets: resets
@@ -260,6 +360,21 @@ final class HistoryInventoryTests: XCTestCase {
 
     private func row(id: String, title: String, cpu: Double?) -> AppHistoryRow {
         AppHistoryRow(id: id, values: [title, "", "", "", "", "", ""], numbers: [nil, cpu, nil, nil, nil, nil, nil])
+    }
+
+    /// Local midnight (or `hour` o'clock) of a `yyyy-MM-dd` day, matching how the history store keys its days.
+    private func local(_ day: String, hour: Int = 0) -> Date {
+        let parts = day.split(separator: "-").compactMap { Int($0) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2], hour: hour))!
+    }
+
+    private func mediumTitle(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter.string(from: date)
     }
 
     private func date(_ iso: String) -> Date {

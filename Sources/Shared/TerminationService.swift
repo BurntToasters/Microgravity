@@ -67,7 +67,7 @@ enum TerminationService {
     /// A rejected target leaves the form unused; a consumed form is single-use.
     static func authorizeTarget(_ requested: HelperTargetIdentity, authorization: Data, clientPID: Int32,
                                 observed: ((Int32) -> HelperTarget?)? = nil) -> TargetAuthorization {
-        let resolve: (Int32) -> HelperTarget? = observed ?? { lookup($0) }
+        let resolve: (Int32) -> HelperTarget? = observed ?? { HelperTerminationPolicy.lookupTarget(pid: $0) }
         guard let initial = resolve(requested.pid),
               permits(initial, requested: requested, clientPID: clientPID),
               let final = resolve(requested.pid), final == initial,
@@ -94,17 +94,6 @@ enum TerminationService {
         return HelperTerminationPolicy.permits(observed, requested: identity, clientPID: clientPID, helperPID: getpid())
     }
 
-    private static func lookup(_ pid: Int32) -> HelperTarget? {
-        guard pid > 1 else { return nil }
-        var info = proc_bsdinfo()
-        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size)) == MemoryLayout<proc_bsdinfo>.size else { return nil }
-        var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        // An unknown path is protected because system ownership cannot be ruled out.
-        let pathLength = proc_pidpath(pid, &path, UInt32(path.count))
-        let executable = pathLength > 0 ? String(cString: path) : ""
-        let protectedPath = executable.isEmpty || ["/System/Library/", "/usr/libexec/", "/usr/sbin/", "/sbin/"].contains { executable.hasPrefix($0) }
-        return HelperTarget(pid: pid, seconds: Int64(info.pbi_start_tvsec), microseconds: Int32(info.pbi_start_tvusec), owner: UInt32(info.pbi_uid), protected: protectedPath || (info.pbi_flags & UInt32(PROC_FLAG_SYSTEM)) != 0)
-    }
 }
 
 /// Stores consumed authorization digests. Pruning and insertion occur under one

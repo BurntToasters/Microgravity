@@ -153,6 +153,32 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(window.contentMinSize, NSSize(width: 960, height: 600))
     }
 
+    /// The sidebar reads top to bottom in `DashboardPage` order, so View-menu ⌘1…⌘8 match what the user sees.
+    func testSidebarListsPagesInTheViewMenuShortcutOrder() {
+        let controller = MainWindowController(dependencies: makeDependencies(), frameAutosaveName: nil)
+        let window = try! XCTUnwrap(controller.window)
+        defer { window.close() }
+        controller.showWindow(nil)
+        settle(window)
+
+        var cells: [NSTableCellView] = []
+        collectNavigationCells(in: window.contentView, into: &cells)
+        let listed = cells
+            .sorted { $0.convert($0.bounds, to: nil).maxY > $1.convert($1.bounds, to: nil).maxY }
+            .compactMap { $0.identifier?.rawValue }
+        XCTAssertEqual(listed, DashboardPage.allCases.map { "navigation.item.\($0.rawValue)" })
+    }
+
+    private func collectNavigationCells(in view: NSView?, into cells: inout [NSTableCellView]) {
+        guard let view else { return }
+        if let cell = view as? NSTableCellView, cell.identifier?.rawValue.hasPrefix("navigation.item.") == true {
+            cells.append(cell)
+        }
+        for subview in view.subviews {
+            collectNavigationCells(in: subview, into: &cells)
+        }
+    }
+
     /// Runs the same frame-preserving interactions the app performs: sidebar selection, menu navigation, and appearance.
     private func assertFrameSurvivesInteractions(_ controller: MainWindowController, expected: NSRect) {
         let window = try! XCTUnwrap(controller.window)

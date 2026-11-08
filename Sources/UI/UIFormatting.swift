@@ -79,6 +79,10 @@ enum UIFormat {
         case nil: text = "Unavailable"
         }
         guard let detail, !detail.isEmpty else { return text }
+        // The helper's internal error code means nothing to a user; say what it stands for.
+        if detail == HelperSamplingClient.unavailableError {
+            return "\(text) · the optional helper is not available"
+        }
         return "\(text) · \(detail)"
     }
 
@@ -90,12 +94,6 @@ enum UIFormat {
 
     static func time(_ date: Date) -> String {
         Self.timeFormatter.string(from: date)
-    }
-
-    static func identityStart(_ startTime: ProcessStartTime) -> String {
-        let seconds = TimeInterval(startTime.secondsSinceEpoch)
-        let micros = TimeInterval(startTime.microseconds) / 1_000_000
-        return Self.identityFormatter.string(from: Date(timeIntervalSince1970: seconds + micros))
     }
 
     static func ownerName(_ uid: UInt32?) -> String {
@@ -128,11 +126,25 @@ enum UIFormat {
         formatter.timeStyle = .medium
         return formatter
     }()
+}
 
-    private static let identityFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
-        return formatter
-    }()
+/// Pure text helpers shared by the UI models. Kept free of AppKit state so tests can call them directly.
+enum UIText {
+    /// Lowercase, dash-separated slug used in accessibility identifiers and row IDs.
+    /// Runs of non-alphanumeric characters collapse to one dash, and leading or trailing dashes are dropped.
+    static func slug(_ value: String) -> String {
+        String(value.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" })
+            .split(separator: "-").joined(separator: "-")
+    }
+
+    /// The outermost `.app` bundle containing `executablePath`, for example `/Applications/Notes.app`
+    /// for `/Applications/Notes.app/Contents/MacOS/Notes`. Nil when no path component is an app bundle.
+    /// The suffix match is case-insensitive, and the result keeps a leading slash for absolute paths.
+    static func appBundlePath(forExecutable executablePath: String?) -> String? {
+        guard let executablePath, !executablePath.isEmpty else { return nil }
+        let parts = executablePath.split(separator: "/", omittingEmptySubsequences: true)
+        guard let index = parts.firstIndex(where: { $0.lowercased().hasSuffix(".app") }) else { return nil }
+        let joined = parts[...index].joined(separator: "/")
+        return executablePath.hasPrefix("/") ? "/" + joined : joined
+    }
 }

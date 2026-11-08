@@ -35,22 +35,27 @@ enum LaunchDiscovery {
         }
     }
 
-    private struct DirectorySpec {
+    struct DirectorySpec: Equatable {
         let path: String
         let kind: DiscoveredEntryKind
         let isService: Bool
     }
 
-    static func collect(processes: [ProcessSnapshot]) -> LaunchDiscoveryResult {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let directories = [
+    /// Directories scanned for launch entries. Per-user agents in ~/Library/LaunchAgents are launch agents.
+    static func directorySpecs(home: String) -> [DirectorySpec] {
+        [
             DirectorySpec(path: "/System/Library/LaunchAgents", kind: .launchAgent, isService: false),
             DirectorySpec(path: "/Library/LaunchAgents", kind: .launchAgent, isService: false),
-            DirectorySpec(path: "\(home)/Library/LaunchAgents", kind: .loginItem, isService: false),
+            DirectorySpec(path: "\(home)/Library/LaunchAgents", kind: .launchAgent, isService: false),
             DirectorySpec(path: "/Library/StartupItems", kind: .loginItem, isService: false),
             DirectorySpec(path: "/System/Library/LaunchDaemons", kind: .launchDaemon, isService: true),
             DirectorySpec(path: "/Library/LaunchDaemons", kind: .launchDaemon, isService: true),
         ]
+    }
+
+    static func collect(processes: [ProcessSnapshot]) -> LaunchDiscoveryResult {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let directories = directorySpecs(home: home)
         let runningPaths = Set(processes.compactMap(\.executablePath))
         var startup: [DiscoveredEntrySnapshot] = []
         var services: [DiscoveredEntrySnapshot] = []
@@ -256,10 +261,15 @@ enum UserDiscovery {
         var names: [UInt32: String] = [:]
         var scannedRecords = 0
         let sessionRecordLimit = 4_096
+        var hitRecordBound = false
         setutxent()
         while let entry = getutxent() {
             scannedRecords += 1
-            if scannedRecords > sessionRecordLimit { break }
+            // Reading record limit+1 proves the file holds more than the bound, so the scan is truncated.
+            if scannedRecords > sessionRecordLimit {
+                hitRecordBound = true
+                break
+            }
             let record = entry.pointee
             guard record.ut_type == USER_PROCESS else { continue }
             let username = fixedString(record.ut_user)
@@ -280,9 +290,11 @@ enum UserDiscovery {
             return UserSessionSnapshot(uid: uid, shortName: name, isCurrentUser: uid == currentUID,
                                        loginSessions: (sessions[uid] ?? []).sorted())
         }
+        // The GUI-session limitation is always reported as a note. Only a truncated scan makes coverage incomplete.
         var reasons = ["utmpx reports terminal login sessions; Fast User Switching and GUI session state may be incomplete."]
-        if scannedRecords > sessionRecordLimit { reasons.append("utmpx scan reached the 4,096-record bound.") }
-        return UserDiscoveryResult(users: users, coverage: DiscoveryCoverage(complete: false, reasons: reasons))
+        if hitRecordBound { reasons.append("utmpx scan reached the 4,096-record bound; some sessions may be missing.") }
+        return UserDiscoveryResult(users: users,
+                                   coverage: DiscoveryCoverage(complete: !hitRecordBound, reasons: reasons))
     }
 
     private static func fixedString<T>(_ value: T) -> String {

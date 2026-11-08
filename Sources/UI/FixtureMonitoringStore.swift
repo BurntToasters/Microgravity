@@ -293,10 +293,11 @@ final class FixtureMonitoringStore: MonitoringStore {
             )]
         )
 
+        // History days are local midnights, as the history store keys them.
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        calendar.timeZone = .current
         let nowDay = calendar.startOfDay(for: timestamp)
-        let historyDay = nowDay.addingTimeInterval(-86_400)
+        let historyDay = calendar.date(byAdding: .day, value: -1, to: nowDay) ?? nowDay.addingTimeInterval(-86_400)
         let history = [DailyHistorySummary(dayStart: historyDay, cpuSeconds: 4_320,
                                            diskReadBytes: 300_000_000, diskWriteBytes: 64_000_000,
                                            networkReceiveBytes: 80_000_000, networkTransmitBytes: 18_000_000,

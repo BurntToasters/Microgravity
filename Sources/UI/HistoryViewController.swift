@@ -2,34 +2,53 @@ import AppKit
 
 @MainActor
 final class HistoryViewController: NSViewController, SnapshotUpdating, PageToolbarProviding {
+    /// UserDefaults key for the "Show Background Processes" choice.
+    static let showsBackgroundProcessesDefaultsKey = "history.showBackgroundProcesses"
     private static let resetItemIdentifier = NSToolbarItem.Identifier("history.toolbar.reset")
+    private static let backgroundItemIdentifier = NSToolbarItem.Identifier("history.toolbar.background")
 
     private let dependencies: PageDependencies
+    private let defaults: UserDefaults
     private let outlineController: AppHistoryOutlineController
     private let banner = StatusBannerView(style: .info)
+    private let backgroundButton = NSButton(checkboxWithTitle: "Show Background Processes", target: nil, action: nil)
     private var resetItem: NSToolbarItem?
+    private var backgroundItem: NSToolbarItem?
+    private var lastSnapshot: MonitoringSnapshot?
+    private(set) var showsBackgroundProcesses: Bool
 
-    init(dependencies: PageDependencies) {
+    /// Fixture runs read and write their own defaults suite, never the app's real domain.
+    /// - Parameter defaults: Overrides the store. Tests pass an isolated suite.
+    init(dependencies: PageDependencies, defaults: UserDefaults? = nil) {
         self.dependencies = dependencies
+        self.defaults = defaults ?? Self.defaultsStore(fixtureMode: dependencies.fixtureMode)
         if dependencies.fixtureMode,
            let fixtureSuite = ProcessInfo.processInfo.environment["MICROGRAVITY_UI_TEST_DEFAULTS_SUITE"] {
             clearFixtureTableAutosave(named: "history.outline.\(fixtureSuite)")
         }
         outlineController = AppHistoryOutlineController(autosaveName: dependencies.fixtureMode ? nil : "history.outline")
+        showsBackgroundProcesses = self.defaults.bool(forKey: Self.showsBackgroundProcessesDefaultsKey)
         super.init(nibName: nil, bundle: nil)
     }
 
     required init?(coder: NSCoder) { nil }
 
+    private static func defaultsStore(fixtureMode: Bool) -> UserDefaults {
+        guard fixtureMode else { return .standard }
+        let suite = ProcessInfo.processInfo.environment["MICROGRAVITY_UI_TEST_DEFAULTS_SUITE"] ?? "Microgravity.fixtures"
+        return UserDefaults(suiteName: suite) ?? .standard
+    }
+
     // MARK: PageToolbarProviding
 
-    var toolbarItemIdentifiers: [NSToolbarItem.Identifier] { [Self.resetItemIdentifier] }
+    var toolbarItemIdentifiers: [NSToolbarItem.Identifier] { [Self.backgroundItemIdentifier, Self.resetItemIdentifier] }
 
     func toolbarItem(for identifier: NSToolbarItem.Identifier) -> NSToolbarItem? {
+        if identifier == Self.backgroundItemIdentifier { return backgroundToolbarItem(identifier) }
         guard identifier == Self.resetItemIdentifier else { return nil }
         if let resetItem { return resetItem }
         let button = NSButton(title: "Reset History…", target: self, action: #selector(confirmReset))
-        button.bezelStyle = .texturedRounded
+        button.bezelStyle = .toolbar
         button.setAccessibilityIdentifier("history.action.reset")
         let item = NSToolbarItem(itemIdentifier: identifier)
         item.label = "Reset History"
@@ -40,6 +59,26 @@ final class HistoryViewController: NSViewController, SnapshotUpdating, PageToolb
         menuItem.target = self
         item.menuFormRepresentation = menuItem
         resetItem = item
+        return item
+    }
+
+    private func backgroundToolbarItem(_ identifier: NSToolbarItem.Identifier) -> NSToolbarItem {
+        if let backgroundItem { return backgroundItem }
+        backgroundButton.target = self
+        backgroundButton.action = #selector(toggleBackgroundProcesses(_:))
+        backgroundButton.state = showsBackgroundProcesses ? .on : .off
+        backgroundButton.setAccessibilityIdentifier("history.action.show-background")
+        let item = NSToolbarItem(itemIdentifier: identifier)
+        item.label = "Show Background Processes"
+        item.paletteLabel = "Show Background Processes"
+        item.toolTip = "Include background daemons and services, not only applications you open."
+        item.view = backgroundButton
+        let menuItem = NSMenuItem(title: "Show Background Processes", action: #selector(toggleBackgroundProcesses(_:)),
+                                  keyEquivalent: "")
+        menuItem.target = self
+        menuItem.state = backgroundButton.state
+        item.menuFormRepresentation = menuItem
+        backgroundItem = item
         return item
     }
 
@@ -77,21 +116,43 @@ final class HistoryViewController: NSViewController, SnapshotUpdating, PageToolb
     }
 
     func update(snapshot: MonitoringSnapshot) {
-        let summary = AppHistoryBuilder.summarize(snapshot.applicationHistory, through: snapshot.timestamp)
+        lastSnapshot = snapshot
+        render(snapshot)
+    }
+
+    private func render(_ snapshot: MonitoringSnapshot) {
+        let summary = AppHistoryBuilder.summarize(snapshot.applicationHistory, through: snapshot.timestamp,
+                                                  showsBackgroundProcesses: showsBackgroundProcesses)
         let availability = snapshot.capabilities[.history]
         outlineController.update(groups: summary.groups)
 
         let status = AppHistoryStatus.banner(
             availability: availability,
             applicationCount: summary.groups.count,
+            hiddenBackgroundCount: summary.hiddenBackgroundCount,
             gaps: summary.gaps,
             counterResets: summary.counterResets,
             timestamp: snapshot.timestamp
         )
         banner.setMessage(status.text, style: status.style)
 
-        let empty = AppHistoryStatus.emptyState(availability: availability)
+        let empty = AppHistoryStatus.emptyState(
+            availability: availability,
+            hiddenBackgroundCount: summary.groups.isEmpty ? summary.hiddenBackgroundCount : 0
+        )
         outlineController.setEmptyState(title: empty.title, caption: empty.caption)
+    }
+
+    // MARK: Actions
+
+    @objc private func toggleBackgroundProcesses(_ sender: Any?) {
+        // The checkbox sets its own state; the menu item just flips the choice.
+        let next = (sender as? NSButton).map { $0.state == .on } ?? !showsBackgroundProcesses
+        showsBackgroundProcesses = next
+        defaults.set(next, forKey: Self.showsBackgroundProcessesDefaultsKey)
+        backgroundButton.state = next ? .on : .off
+        backgroundItem?.menuFormRepresentation?.state = next ? .on : .off
+        if let lastSnapshot { render(lastSnapshot) }
     }
 
     // MARK: Reset
@@ -105,7 +166,8 @@ final class HistoryViewController: NSViewController, SnapshotUpdating, PageToolb
                 messageText: "Reset App History",
                 informativeText: "This clears Microgravity’s stored 30-day aggregate history. It does not change process or operating-system state.",
                 buttons: ["Reset History", "Cancel"],
-                defaultButtonIdentifier: "history.reset.confirm"
+                defaultButtonIdentifier: "history.reset.confirm",
+                destructiveButtonIndex: 0
             )
             guard response == .alertFirstButtonReturn else { return }
             do {

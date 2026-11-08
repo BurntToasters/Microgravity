@@ -200,12 +200,158 @@ final class UsersDetailsSettingsTests: XCTestCase {
         }
     }
 
-    private func makeDetailsSnapshot(processes: [ProcessSnapshot]) -> MonitoringSnapshot {
+    private func makeDetailsSnapshot(processes: [ProcessSnapshot], users: [UserSessionSnapshot] = [],
+                                     capabilities: [MetricKind: MetricAvailability] = [:]) -> MonitoringSnapshot {
         let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
         let base = CoreTestFixtures.snapshot(timestamp: timestamp)
         return MonitoringSnapshot(timestamp: timestamp, system: base.system, processes: processes,
-                                  processGroups: [], startupItems: [], services: [], users: [],
-                                  discoveryCoverage: [:], capabilities: [:])
+                                  processGroups: [], startupItems: [], services: [], users: users,
+                                  discoveryCoverage: [:], capabilities: capabilities)
+    }
+
+    /// The table cell's view for `rowID`'s `key` column, not just its label.
+    private func cellView(in table: NSTableView, row: Int, key: String) -> NSTableCellView? {
+        guard let column = table.tableColumns.firstIndex(where: { $0.identifier.rawValue == key }) else { return nil }
+        return table.view(atColumn: column, row: row, makeIfNecessary: true) as? NSTableCellView
+    }
+
+    /// True when the cell shows a visible marker image (partial or unavailable).
+    private func hasMarker(_ cell: NSView) -> Bool {
+        allDescendants(of: cell).compactMap { $0 as? NSImageView }.contains { !$0.isHidden && $0.image != nil }
+    }
+
+    /// The status banner that holds the text field with `identifier`.
+    private func bannerView(identifier: String, in root: NSView) -> StatusBannerView? {
+        guard let field = allDescendants(of: root).compactMap({ $0 as? NSTextField })
+            .first(where: { $0.accessibilityIdentifier() == identifier }) else { return nil }
+        var ancestor: NSView? = field.superview
+        while let view = ancestor {
+            if let banner = view as? StatusBannerView { return banner }
+            ancestor = view.superview
+        }
+        return nil
+    }
+
+    private func button(titled title: String, in root: NSView) -> NSButton? {
+        allDescendants(of: root).compactMap { $0 as? NSButton }.first { $0.title == title }
+    }
+
+    private func makeUsersTable(_ controller: UsersViewController) throws -> NSTableView {
+        _ = controller.view
+        controller.view.frame = NSRect(x: 0, y: 0, width: 1000, height: 600)
+        controller.view.layoutSubtreeIfNeeded()
+        return try XCTUnwrap(allDescendants(of: controller.view).compactMap { $0 as? NSTableView }
+            .first { $0.accessibilityIdentifier() == "users.table" })
+    }
+
+    func testPartialAndUnavailableDetailsCellsShowShortValuesAndKeepTheReasonInTheTooltip() throws {
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let identity = ProcessIdentity(pid: 77, startTime: ProcessStartTime(secondsSinceEpoch: 77, microseconds: 0))
+        let partial = ProcessSnapshot(
+            id: identity, parentIdentity: nil, childIdentities: [], name: "Partial", executablePath: nil,
+            ownerUID: 501, isCurrentUser: false,
+            cpuPercent: MetricReading(value: 12, unit: .percent, timestamp: timestamp,
+                                      detail: "Partial: 3 of 10 members unavailable", isPartial: true),
+            memoryBytes: MetricReading(value: 1_024, unit: .bytes, timestamp: timestamp),
+            diskReadBytesPerSecond: MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp, reason: .permissionDenied),
+            diskWriteBytesPerSecond: MetricReading(value: 2_048, unit: .bytesPerSecond, timestamp: timestamp),
+            diskReadTotalBytes: MetricReading(value: 1, unit: .bytes, timestamp: timestamp),
+            diskWriteTotalBytes: MetricReading(value: 1, unit: .bytes, timestamp: timestamp),
+            advancedMetrics: [.processNetwork: MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp,
+                                                             reason: .notCollected,
+                                                             detail: HelperSamplingClient.unavailableError)])
+        let controller = DetailsViewController(autosaveName: nil)
+        _ = controller.view
+        controller.update(snapshot: makeDetailsSnapshot(processes: [partial], capabilities: [
+            .processes: MetricAvailability(available: true),
+            // The capability itself is available (the column stays visible); this process's reading is missing.
+            .processNetwork: MetricAvailability(available: true)
+        ]))
+        controller.view.frame = NSRect(x: 0, y: 0, width: 1200, height: 700)
+        controller.view.layoutSubtreeIfNeeded()
+        let table = try XCTUnwrap(allDescendants(of: controller.view).compactMap { $0 as? NSTableView }
+            .first { $0.accessibilityIdentifier() == "details.table" })
+        let row = try XCTUnwrap(rowIndex(of: "details.process.77", in: table))
+
+        // Partial CPU: the number alone in the cell, the reason in the tooltip, a marker, and a full spoken description.
+        let cpu = try XCTUnwrap(cellLabel(in: table, row: row, key: "cpu"))
+        XCTAssertEqual(cpu.stringValue, UIFormat.value(partial.cpuPercent))
+        XCTAssertFalse(cpu.stringValue.contains("partial"))
+        XCTAssertEqual(cpu.toolTip, "Partial value. Partial: 3 of 10 members unavailable")
+        XCTAssertEqual(cpu.accessibilityLabel(), "12%, partial, Partial: 3 of 10 members unavailable")
+        let cpuCell = try XCTUnwrap(cellView(in: table, row: row, key: "cpu"))
+        let memoryCell = try XCTUnwrap(cellView(in: table, row: row, key: "memory"))
+        XCTAssertTrue(hasMarker(cpuCell))
+        XCTAssertFalse(hasMarker(memoryCell), "a complete value has no marker")
+
+        // Partly unavailable disk pair: the measured half stays visible and the missing half is "—".
+        let disk = try XCTUnwrap(cellLabel(in: table, row: row, key: "disk"))
+        XCTAssertEqual(disk.stringValue, "R — · W \(UIFormat.bytesPerSecond(2_048))")
+        XCTAssertTrue(disk.toolTip?.hasPrefix("R: ") == true, disk.toolTip ?? "no tooltip")
+        let diskCell = try XCTUnwrap(cellView(in: table, row: row, key: "disk"))
+        XCTAssertTrue(hasMarker(diskCell))
+
+        // Unavailable network: "—" with the reason in the tooltip; the helper code is spelled out for people.
+        let network = try XCTUnwrap(cellLabel(in: table, row: row, key: "network"))
+        XCTAssertEqual(network.stringValue, "—")
+        XCTAssertEqual(network.toolTip, "Not collected · the optional helper is not available")
+        let networkCell = try XCTUnwrap(cellView(in: table, row: row, key: "network"))
+        XCTAssertTrue(hasMarker(networkCell))
+    }
+
+    func testDetailsMissingHelperIsInformationWithASetupButton() throws {
+        let controller = DetailsViewController(autosaveName: nil)
+        _ = controller.view
+        controller.update(snapshot: makeDetailsSnapshot(processes: [makeDetailsProcess(pid: 9, name: "Plain", cpu: 1)], capabilities: [
+            .processes: MetricAvailability(available: true),
+            .processNetwork: MetricAvailability(available: false, reason: .collectionFailed,
+                                                detail: HelperSamplingClient.unavailableError),
+            // Per-process GPU is never collected; it must not be reported as a problem.
+            .processGPUTime: MetricAvailability(available: false, reason: .unsupported,
+                                                detail: "Per-process GPU time is not collected.")
+        ]))
+
+        let banner = try XCTUnwrap(bannerView(identifier: "details.capability-state", in: controller.view))
+        XCTAssertEqual(banner.style, .info, "a missing optional helper is information, not a warning")
+        XCTAssertTrue(banner.textField.stringValue.contains("needs the optional helper"), banner.textField.stringValue)
+        XCTAssertFalse(banner.textField.stringValue.contains("GPU"))
+        let setUp = try XCTUnwrap(button(titled: "Set Up Helper…", in: banner))
+        XCTAssertFalse(setUp.isHidden)
+
+        controller.update(snapshot: makeDetailsSnapshot(processes: [], capabilities: [
+            .processes: MetricAvailability(available: false, reason: .permissionDenied, detail: "Process list denied")
+        ]))
+        let warning = try XCTUnwrap(bannerView(identifier: "details.capability-state", in: controller.view))
+        XCTAssertEqual(warning.style, .warning, "unavailable processes are a warning")
+        XCTAssertTrue(button(titled: "Set Up Helper…", in: warning)?.isHidden ?? true, "no setup offer when processes are missing")
+    }
+
+    func testUsersAggregatesShowUnitsWhenEmptyAndExplainUnavailableData() throws {
+        let users = [UserSessionSnapshot(uid: 501, shortName: "alice", isCurrentUser: false, loginSessions: [])]
+        let controller = UsersViewController()
+        let table = try makeUsersTable(controller)
+        controller.update(snapshot: makeDetailsSnapshot(processes: [], users: users, capabilities: [
+            .processes: MetricAvailability(available: true),
+            .userSessions: MetricAvailability(available: true)
+        ]))
+        let row = 0
+        XCTAssertEqual(try XCTUnwrap(cellLabel(in: table, row: row, key: "process-count")).stringValue, "0")
+        XCTAssertEqual(try XCTUnwrap(cellLabel(in: table, row: row, key: "cpu")).stringValue, "0%",
+                       "a measured zero keeps its unit")
+        XCTAssertEqual(try XCTUnwrap(cellLabel(in: table, row: row, key: "memory")).stringValue,
+                       UIFormat.value(MetricReading(value: 0, unit: .bytes, timestamp: Date())),
+                       "a measured zero keeps its unit, as every other byte value does")
+        XCTAssertEqual(try XCTUnwrap(bannerView(identifier: "users.discovery-state", in: controller.view)).style, .info)
+
+        controller.update(snapshot: makeDetailsSnapshot(processes: [], users: users, capabilities: [
+            .processes: MetricAvailability(available: false, reason: .permissionDenied),
+            .userSessions: MetricAvailability(available: true)
+        ]))
+        let cpu = try XCTUnwrap(cellLabel(in: table, row: row, key: "cpu"))
+        XCTAssertEqual(cpu.stringValue, "—")
+        XCTAssertEqual(cpu.toolTip, "Permission denied")
+        XCTAssertEqual(try XCTUnwrap(cellLabel(in: table, row: row, key: "process-count")).stringValue, "—")
+        XCTAssertEqual(try XCTUnwrap(bannerView(identifier: "users.discovery-state", in: controller.view)).style, .warning)
     }
 
     private func makeDetailsProcess(pid: Int32, name: String, cpu: Double) -> ProcessSnapshot {

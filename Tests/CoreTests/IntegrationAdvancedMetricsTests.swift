@@ -103,30 +103,100 @@ final class IntegrationAdvancedMetricsTests: XCTestCase {
         XCTAssertNil(AdvancedMetricsParser.power(Data(repeating: 65, count: 4 * 1024 * 1024 + 1)).gpuPercent)
         XCTAssertNil(AdvancedMetricsParser.power(Data("not plist".utf8)).gpuPercent)
     }
-    func testEstimatedComponentPowerRequiresAllThreeKnownMilliwattFields() throws {
-        func parse(_ fields: [String: Any]) throws -> AdvancedMetricsParser.Power {
-            let data = try PropertyListSerialization.data(fromPropertyList: ["processor": fields], format: .xml, options: 0)
-            return AdvancedMetricsParser.power(data)
-        }
-        XCTAssertEqual(try parse(["cpu_power_mw": 1000, "gpu_power_mw": 2500, "ane_power_mw": 500]).watts, 4)
-        XCTAssertNil(try parse(["cpu_power_mw": 1000, "gpu_power_mw": 0]).watts)
-        XCTAssertNil(try parse(["cpu_power_mw": -1, "gpu_power_mw": 0, "ane_power_mw": 0]).watts)
-        XCTAssertNil(try parse(["cpu_power_mw": true, "gpu_power_mw": 0, "ane_power_mw": 0]).watts)
+    func testPerProcessGPUTimeIsUnsupportedAndNeverEmitted() async throws {
+        let clock = TestClock(Date(timeIntervalSince1970: 1_000))
+        let identity = ProcessIdentity(pid: 42, startTime: .init(secondsSinceEpoch: 100, microseconds: 0))
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: ["gpu": ["idle_ratio": 0.5], "tasks": [["pid": 42, "gpu_time_ms": 1250]]],
+            format: .xml, options: 0)
+        let client = FixedAdvancedSamplingClient([.powermetrics: response(.powermetrics, at: clock.now(), output: data)])
+        let collector = NativeAdvancedMetricsCollector(client: client, now: { clock.now() },
+                                                       processIdentities: { [identity.pid: identity] })
+
+        _ = await collector.collectAdvancedMetrics(at: clock.now())
+        let snapshot = try await waitForGPUAvailability(true, collector: collector, clock: clock)
+        XCTAssertEqual(snapshot.capabilities[.processGPUTime],
+                       MetricAvailability(available: false, reason: .unsupported,
+                                          detail: "Per-process GPU time is not collected."))
+        XCTAssertTrue(snapshot.perProcess.values.allSatisfy { $0[.processGPUTime] == nil })
     }
 
-    func testProcessGPURequiresExplicitTimeUnitsAndRejectsDuplicates() throws {
-        let tasks: [[String: Any]] = [
-            ["pid": 42, "gpu_time_ms": 1250], ["pid": 43, "gpu_time_ns": 500_000_000],
-            ["pid": 44, "gpu_time": 99], ["pid": 45, "gpu_time_ms": -1],
-            ["pid": 46, "gpu_time_ms": 2], ["pid": 46, "gpu_time_ms": 3]
-        ]
-        let data = try PropertyListSerialization.data(fromPropertyList: ["tasks": tasks], format: .xml, options: 0)
-        let parsed = AdvancedMetricsParser.power(data)
-        XCTAssertEqual(parsed.processGPUSeconds[42], 1.25)
-        XCTAssertEqual(parsed.processGPUSeconds[43], 0.5)
-        XCTAssertNil(parsed.processGPUSeconds[44])
-        XCTAssertNil(parsed.processGPUSeconds[45])
-        XCTAssertNil(parsed.processGPUSeconds[46])
+    func testHelperAbsenceBacksOffToSixtySecondsAndRecoversToFiveSecondCadence() async throws {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let clock = TestClock(start)
+        let gpuOutput = try PropertyListSerialization.data(fromPropertyList: ["gpu": ["idle_ratio": 0.5]], format: .xml, options: 0)
+        let client = ToggleHelperClient(clock: clock, gpuOutput: gpuOutput)
+        let collector = NativeAdvancedMetricsCollector(client: client, now: { clock.now() }, processIdentities: { [:] })
+
+        _ = await collector.collectAdvancedMetrics(at: start)
+        try await waitUntil("the first refresh completes") { await collector.refreshCompletionCountForTesting() == 1 }
+        var snapshot = await collector.collectAdvancedMetrics(at: start)
+        XCTAssertEqual(snapshot.capabilities[.gpu]?.detail, "helperUnavailable")
+        var refreshCount = await collector.refreshRequestCountForTesting()
+        XCTAssertEqual(refreshCount, 1)
+        var sampleCount = await client.sampleCount()
+        XCTAssertEqual(sampleCount, 0, "no helper samples are requested while the helper is absent")
+
+        for offset in [TimeInterval(5), 30, 59] {
+            clock.set(start.addingTimeInterval(offset))
+            snapshot = await collector.collectAdvancedMetrics(at: clock.now())
+            XCTAssertEqual(snapshot.capabilities[.gpu]?.detail, "helperUnavailable",
+                           "the cached helper reason stays accurate past 30 s")
+        }
+        refreshCount = await collector.refreshRequestCountForTesting()
+        XCTAssertEqual(refreshCount, 1, "no refresh is requested before 60 s")
+
+        clock.set(start.addingTimeInterval(60))
+        _ = await collector.collectAdvancedMetrics(at: clock.now())
+        refreshCount = await collector.refreshRequestCountForTesting()
+        XCTAssertEqual(refreshCount, 2)
+        try await waitUntil("the second refresh completes") { await collector.refreshCompletionCountForTesting() == 2 }
+        // The refresh's prepare call has read the helper state before this point, so the helper can appear now.
+        await client.setInstalled(true)
+
+        clock.set(start.addingTimeInterval(65))
+        _ = await collector.collectAdvancedMetrics(at: clock.now())
+        refreshCount = await collector.refreshRequestCountForTesting()
+        XCTAssertEqual(refreshCount, 2, "still inside the 60 s retry interval")
+
+        clock.set(start.addingTimeInterval(120))
+        _ = await collector.collectAdvancedMetrics(at: clock.now())
+        refreshCount = await collector.refreshRequestCountForTesting()
+        XCTAssertEqual(refreshCount, 3)
+        _ = try await waitForGPUAvailability(true, collector: collector, clock: clock)
+
+        clock.set(start.addingTimeInterval(125))
+        _ = await collector.collectAdvancedMetrics(at: clock.now())
+        refreshCount = await collector.refreshRequestCountForTesting()
+        XCTAssertEqual(refreshCount, 4, "a successful sample restores the five-second cadence")
+        try await waitUntil("the fourth refresh completes") { await collector.refreshCompletionCountForTesting() == 4 }
+
+        let prepareCount = await client.prepareCount()
+        XCTAssertEqual(prepareCount, 4, "helper registration is checked once per refresh")
+        sampleCount = await client.sampleCount()
+        XCTAssertEqual(sampleCount, 4, "the two recovered refreshes sampled both kinds")
+    }
+
+    func testHelperUnavailableSampleResponseAlsoBacksOffToSixtySeconds() async throws {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let clock = TestClock(start)
+        let client = FixedAdvancedSamplingClient([
+            .nettop: response(.nettop, at: start, error: "helperUnavailable"),
+            .powermetrics: response(.powermetrics, at: start, error: "helperUnavailable"),
+        ])
+        let collector = NativeAdvancedMetricsCollector(client: client, now: { clock.now() }, processIdentities: { [:] })
+
+        _ = await collector.collectAdvancedMetrics(at: start)
+        try await waitUntil("the first refresh completes") { await collector.refreshCompletionCountForTesting() == 1 }
+        clock.set(start.addingTimeInterval(59))
+        _ = await collector.collectAdvancedMetrics(at: clock.now())
+        var refreshCount = await collector.refreshRequestCountForTesting()
+        XCTAssertEqual(refreshCount, 1, "no new refresh until 60 s after a helperUnavailable response")
+
+        clock.set(start.addingTimeInterval(60))
+        _ = await collector.collectAdvancedMetrics(at: clock.now())
+        refreshCount = await collector.refreshRequestCountForTesting()
+        XCTAssertEqual(refreshCount, 2)
     }
 
     func testNetworkRatesRequireStableIdentityAndRejectReset() {
@@ -203,6 +273,15 @@ private func gpuSample(at timestamp: Date) throws -> HelperSampleResponse {
     return response(.powermetrics, at: timestamp, output: data)
 }
 
+private func waitUntil(_ description: String, _ condition: () async -> Bool) async throws {
+    for _ in 0..<200 {
+        if await condition() { return }
+        try await Task.sleep(nanoseconds: 1_000_000)
+    }
+    XCTFail("timed out waiting until \(description)")
+    throw NSError(domain: "IntegrationAdvancedMetricsTests", code: 3)
+}
+
 private func waitForGPUAvailability(_ available: Bool, collector: NativeAdvancedMetricsCollector,
                                     clock: TestClock) async throws -> AdvancedMetricsSnapshot {
     for _ in 0..<200 {
@@ -212,6 +291,36 @@ private func waitForGPUAvailability(_ available: Bool, collector: NativeAdvanced
     }
     XCTFail("GPU sample did not reach the expected capability state")
     throw NSError(domain: "IntegrationAdvancedMetricsTests", code: 2)
+}
+
+/// Helper presence is toggled by the test; samples succeed for powermetrics only once it is installed.
+private actor ToggleHelperClient: AdvancedSamplingClient {
+    private let clock: TestClock
+    private let gpuOutput: Data
+    private var installed = false
+    private var prepares = 0
+    private var samples = 0
+
+    init(clock: TestClock, gpuOutput: Data) {
+        self.clock = clock
+        self.gpuOutput = gpuOutput
+    }
+
+    func setInstalled(_ value: Bool) { installed = value }
+    func prepareCount() -> Int { prepares }
+    func sampleCount() -> Int { samples }
+
+    func prepareRefresh() async -> Bool {
+        prepares += 1
+        return installed
+    }
+
+    func sample(_ kind: HelperSampleKind) async -> HelperSampleResponse {
+        samples += 1
+        let at = clock.now()
+        guard installed else { return response(kind, at: at, error: "helperUnavailable") }
+        return kind == .powermetrics ? response(kind, at: at, output: gpuOutput) : response(kind, at: at, error: "unsupported")
+    }
 }
 
 private actor FixedAdvancedSamplingClient: AdvancedSamplingClient {

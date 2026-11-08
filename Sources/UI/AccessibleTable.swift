@@ -49,6 +49,36 @@ enum ComparableSortKey {
     }
 }
 
+/// Hover help, trailing marker and spoken text for one cell. The visible value stays short; the reason goes here.
+struct AccessibleTableCellDetail: Equatable {
+    /// A partial value shows a warning marker; an unavailable value shows a question marker.
+    let symbolName: String?
+    let isPartial: Bool
+    /// Tooltip for the cell, or nil for none.
+    let toolTip: String?
+    /// Spoken description of the cell. Nil speaks the cell's value.
+    let accessibilityDescription: String?
+
+    init(symbolName: String? = nil, isPartial: Bool = false, toolTip: String? = nil,
+         accessibilityDescription: String? = nil) {
+        self.symbolName = symbolName
+        self.isPartial = isPartial
+        self.toolTip = toolTip
+        self.accessibilityDescription = accessibilityDescription
+    }
+}
+
+extension AccessibleTableCellDetail {
+    /// Marker, tooltip and spoken text from a metric presentation, so table cells follow `MetricCellPresentation`.
+    @MainActor
+    init(_ presentation: MetricCellPresentation) {
+        self.init(symbolName: presentation.badge.symbolName,
+                  isPartial: presentation.badge == .partial,
+                  toolTip: presentation.toolTip,
+                  accessibilityDescription: presentation.accessibilityDescription)
+    }
+}
+
 /// One table row. `id` is the row's identity: selection, row views and diffing all follow it.
 struct AccessibleTableRow {
     let id: String
@@ -58,19 +88,22 @@ struct AccessibleTableRow {
     let icon: NSImage?
     /// Optional compact badge shown beside the first-column value. It does not participate in sorting.
     let badge: String?
+    /// Optional per-cell detail, index-aligned with `values`. Nil entries add no marker, tooltip or spoken text.
+    let cellDetails: [AccessibleTableCellDetail?]
 
     init(id: String, values: [String], sortKeys: [ComparableSortKey]? = nil, icon: NSImage? = nil,
-         badge: String? = nil) {
+         badge: String? = nil, cellDetails: [AccessibleTableCellDetail?] = []) {
         self.id = id
         self.values = values
         self.sortKeys = sortKeys ?? values.map(ComparableSortKey.text)
         self.icon = icon
         self.badge = badge
+        self.cellDetails = cellDetails
     }
 
     /// Whether cells would look identical; used to decide which rows need a reload.
     fileprivate func hasSameContent(as other: Self) -> Bool {
-        values == other.values && icon === other.icon && badge == other.badge
+        values == other.values && icon === other.icon && badge == other.badge && cellDetails == other.cellDetails
     }
 }
 
@@ -194,7 +227,8 @@ final class AccessibleTableModel: NSObject, NSTableViewDataSource, NSTableViewDe
             isNumeric: column.isNumeric,
             icon: isIconColumn ? item.icon : nil,
             showsIconSlot: isIconColumn,
-            badge: columnIndex == 0 ? item.badge : nil
+            badge: columnIndex == 0 ? item.badge : nil,
+            detail: columnIndex < item.cellDetails.count ? item.cellDetails[columnIndex] : nil
         )
         return cell
     }
@@ -346,6 +380,7 @@ private struct EmptyStateConfiguration {
 private final class AccessibleTableCellView: NSTableCellView {
     private let label = NSTextField(labelWithString: "")
     private let iconView = NSImageView()
+    private let markerView = NSImageView()
     private let badgeView = AccessibleTableBadgeView()
     private let stack = NSStackView()
 
@@ -362,6 +397,13 @@ private final class AccessibleTableCellView: NSTableCellView {
         iconView.setContentHuggingPriority(.required, for: .horizontal)
         iconView.isHidden = true
 
+        markerView.imageScaling = .scaleProportionallyDown
+        markerView.setAccessibilityElement(false)
+        markerView.setContentHuggingPriority(.required, for: .horizontal)
+        markerView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        markerView.translatesAutoresizingMaskIntoConstraints = false
+        markerView.isHidden = true
+
         badgeView.setContentHuggingPriority(.required, for: .horizontal)
         badgeView.setContentCompressionResistancePriority(.required, for: .horizontal)
 
@@ -370,12 +412,15 @@ private final class AccessibleTableCellView: NSTableCellView {
         stack.spacing = 6
         stack.addArrangedSubview(iconView)
         stack.addArrangedSubview(label)
+        stack.addArrangedSubview(markerView)
         stack.addArrangedSubview(badgeView)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
             iconView.widthAnchor.constraint(equalToConstant: AppIconProvider.pointSize),
             iconView.heightAnchor.constraint(equalToConstant: AppIconProvider.pointSize),
+            markerView.widthAnchor.constraint(equalToConstant: 12),
+            markerView.heightAnchor.constraint(equalToConstant: 12),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor)
@@ -386,7 +431,8 @@ private final class AccessibleTableCellView: NSTableCellView {
     required init?(coder: NSCoder) { nil }
 
     func configure(value: String, accessibilityID: String, alignment: NSTextAlignment,
-                   isNumeric: Bool, icon: NSImage?, showsIconSlot: Bool, badge: String?) {
+                   isNumeric: Bool, icon: NSImage?, showsIconSlot: Bool, badge: String?,
+                   detail: AccessibleTableCellDetail?) {
         label.stringValue = value
         label.alignment = alignment
         // Right-aligned values fill the cell so trailing text alignment reaches the trailing inset, matching
@@ -396,10 +442,26 @@ private final class AccessibleTableCellView: NSTableCellView {
             ? .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
             : .systemFont(ofSize: 12)
         label.setAccessibilityIdentifier(accessibilityID)
-        label.setAccessibilityLabel(value)
+        label.setAccessibilityLabel(detail?.accessibilityDescription ?? value)
+        label.toolTip = detail?.toolTip
+        toolTip = detail?.toolTip
         iconView.image = icon
         iconView.isHidden = !showsIconSlot
+        configureMarker(detail)
         badgeView.configure(text: badge, accessibilityID: accessibilityID + ".badge")
+    }
+
+    /// Trailing marker for partial (orange warning) and unavailable (grey question mark) values.
+    private func configureMarker(_ detail: AccessibleTableCellDetail?) {
+        guard let symbolName = detail?.symbolName else {
+            markerView.image = nil
+            markerView.isHidden = true
+            return
+        }
+        markerView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .medium))
+        markerView.contentTintColor = detail?.isPartial == true ? .systemOrange : .secondaryLabelColor
+        markerView.isHidden = false
     }
 }
 

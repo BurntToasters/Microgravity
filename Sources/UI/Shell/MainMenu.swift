@@ -18,8 +18,10 @@ enum MainMenu {
         menu.addItem(submenuItem(menu: windowMenu))
         NSApp.windowsMenu = windowMenu
 
-        // An empty help menu still gets the system Search field.
+        // Setting NSApp.helpMenu gives the menu the system Search field.
         let helpMenu = NSMenu(title: "Help")
+        helpMenu.addItem(NSMenuItem(title: "Microgravity Help", action: #selector(MainWindowController.showHelp(_:)), keyEquivalent: ""))
+        helpMenu.addItem(NSMenuItem(title: "Report an Issue…", action: #selector(MainWindowController.reportIssue(_:)), keyEquivalent: ""))
         menu.addItem(submenuItem(menu: helpMenu))
         NSApp.helpMenu = helpMenu
         return menu
@@ -28,6 +30,7 @@ enum MainMenu {
     private static func appItems() -> [NSMenuItem] {
         let settings = NSMenuItem(title: "Settings…", action: #selector(MainWindowController.showSettings(_:)), keyEquivalent: ",")
         let updates = NSMenuItem(title: "Check for Updates…", action: #selector(MainWindowController.checkForUpdates(_:)), keyEquivalent: "")
+        let support = NSMenuItem(title: "Support Microgravity…", action: #selector(MainWindowController.openSupportPage(_:)), keyEquivalent: "")
         let hideOthers = NSMenuItem(title: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
         hideOthers.keyEquivalentModifierMask = [.command, .option]
         return [
@@ -35,6 +38,7 @@ enum MainMenu {
             .separator(),
             settings,
             updates,
+            support,
             .separator(),
             NSMenuItem(title: "Hide Microgravity", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
             hideOthers,
@@ -77,8 +81,8 @@ enum MainMenu {
         let find = NSMenuItem(title: "Find Process", action: #selector(ProcessesViewController.focusProcessSearch(_:)), keyEquivalent: "f")
         let quit = NSMenuItem(title: "Quit Process", action: #selector(ProcessesViewController.quitSelectedProcess(_:)), keyEquivalent: "q")
         quit.keyEquivalentModifierMask = [.command, .option]
-        let forceQuit = NSMenuItem(title: "Force Quit…", action: #selector(ProcessesViewController.forceQuitSelectedProcess(_:)), keyEquivalent: "q")
-        forceQuit.keyEquivalentModifierMask = [.command, .option, .shift]
+        // No shortcut: ⇧⌥⌘Q is the system Log Out-without-confirmation shortcut.
+        let forceQuit = NSMenuItem(title: "Force Quit…", action: #selector(ProcessesViewController.forceQuitSelectedProcess(_:)), keyEquivalent: "")
         let details = NSMenuItem(title: "Show in Details", action: #selector(ProcessesViewController.showSelectedProcessInDetails(_:)), keyEquivalent: "i")
         return [find, .separator(), quit, forceQuit, .separator(), details]
     }

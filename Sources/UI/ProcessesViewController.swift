@@ -20,6 +20,14 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     private static let columnVisibilityKey = "process.columns.visibility"
     private static let autosaveName = "process.outline"
     private static let systemProtectedMessage = "System processes are protected and can't be quit from Microgravity."
+    /// Longest diff applied row by row; longer changes at one level reload that level instead.
+    private static let incrementalOperationLimit = 40
+    private static let startTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .medium
+        return formatter
+    }()
 
     private let dependencies: PageDependencies
     private let defaults: UserDefaults
@@ -177,6 +185,10 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             tableColumn.width = Self.defaultWidth(for: column)
             tableColumn.minWidth = Self.minimumWidth(for: column)
             tableColumn.headerCell.alignment = column == .name || column == .user ? .left : .right
+            if column == .cpu {
+                // Process CPU is a share of the whole machine, unlike Activity Monitor's per-core percentages.
+                tableColumn.headerToolTip = "Share of total CPU capacity across all cores. 100% means every core is busy."
+            }
             tableColumn.sortDescriptorPrototype = NSSortDescriptor(key: column.rawValue, ascending: true)
             tableColumn.headerCell.setAccessibilityIdentifier(column.rawValue)
             outlineView.addTableColumn(tableColumn)
@@ -233,7 +245,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         searchItem.searchField.delegate = self
         (searchItem.searchField.cell as? NSSearchFieldCell)?.sendsSearchStringImmediately = true
 
-        quitButton.bezelStyle = .rounded
+        quitButton.bezelStyle = .toolbar
         quitButton.target = self
         quitButton.action = #selector(quitSelectedProcess(_:))
         quitButton.setAccessibilityIdentifier("process.action.quit")
@@ -243,14 +255,14 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         quitItem.toolTip = "Quit the selected process (⌘⌥Q)"
         quitItem.view = quitButton
 
-        forceQuitButton.bezelStyle = .rounded
+        forceQuitButton.bezelStyle = .toolbar
         forceQuitButton.target = self
         forceQuitButton.action = #selector(forceQuitSelectedProcess(_:))
         forceQuitButton.setAccessibilityIdentifier("process.action.force-quit")
         forceQuitButton.isEnabled = false
         forceQuitItem.label = "Force Quit…"
         forceQuitItem.paletteLabel = "Force Quit Process"
-        forceQuitItem.toolTip = "Force quit the selected process (⌘⌥⇧Q)"
+        forceQuitItem.toolTip = "Force quit the selected process. Its child processes are not targeted."
         forceQuitItem.view = forceQuitButton
 
         let byApp = NSMenuItem(title: "Group by App", action: #selector(setProcessGrouping(_:)), keyEquivalent: "")
@@ -339,25 +351,39 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             shownChildren[id] = nil
         }
 
-        let topOperations = ProcessRowModel.operations(from: topLevelIDs, to: output.topLevel)
-        var childOperations: [(parent: ProcessRowID, operations: [ProcessRowDiffOperation<ProcessRowID>])] = []
-        for id in output.topLevel {
-            guard let shown = shownChildren[id], let wanted = output.children[id] else { continue }
-            let operations = ProcessRowModel.operations(from: shown, to: wanted)
-            if !operations.isEmpty { childOperations.append((id, operations)) }
-        }
-        // Sampling reorders rows every refresh; rows change place instantly so the table never slides under the user.
-        withoutAnimation {
-            outlineView.beginUpdates()
-            for operation in topOperations {
-                perform(operation, parent: nil)
-            }
-            for (parent, operations) in childOperations {
-                for operation in operations {
-                    perform(operation, parent: parent)
+        // A level whose diff is longer than the limit is reloaded instead. Sampling reorders most rows on every
+        // refresh, and one move per row costs more than a reload of that level.
+        if let topOperations = ProcessRowModel.boundedOperations(from: topLevelIDs, to: output.topLevel,
+                                                                 limit: Self.incrementalOperationLimit) {
+            var childOperations: [(parent: ProcessRowID, operations: [ProcessRowDiffOperation<ProcessRowID>])] = []
+            var reloadedChildLevels: [ProcessRowID] = []
+            for id in output.topLevel {
+                guard let shown = shownChildren[id], let wanted = output.children[id] else { continue }
+                guard let operations = ProcessRowModel.boundedOperations(from: shown, to: wanted,
+                                                                         limit: Self.incrementalOperationLimit) else {
+                    reloadedChildLevels.append(id)
+                    continue
                 }
+                if !operations.isEmpty { childOperations.append((id, operations)) }
             }
-            outlineView.endUpdates()
+            // Rows change place instantly so the table never slides under the user.
+            withoutAnimation {
+                outlineView.beginUpdates()
+                for operation in topOperations {
+                    perform(operation, parent: nil)
+                }
+                for (parent, operations) in childOperations {
+                    for operation in operations {
+                        perform(operation, parent: parent)
+                    }
+                }
+                outlineView.endUpdates()
+            }
+            for id in reloadedChildLevels {
+                reloadChildLevel(id, wanted: output.children[id] ?? [])
+            }
+        } else {
+            reloadTopLevel(output)
         }
 
         // Groups that are newly expanded: their members are inserted after the group row exists.
@@ -372,6 +398,34 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         items = items.filter { output.rows[$0.key] != nil }
         syncSelection(visible: visibleRowIDs)
         updateSelectionDetails()
+    }
+
+    /// Reloads the top level when its diff is too long to apply step by step. The reload collapses every group,
+    /// so the expansion pass in `applyModel` restores the groups that `output` expands.
+    private func reloadTopLevel(_ output: ProcessOutline) {
+        withoutAnimation {
+            for id in Array(shownChildren.keys) {
+                if let item = items[id], outlineView.row(forItem: item) >= 0 {
+                    outlineView.collapseItem(item)
+                }
+            }
+        }
+        shownChildren = [:]
+        topLevelIDs = output.topLevel
+        withoutAnimation { outlineView.reloadData() }
+    }
+
+    /// Reloads one expanded group's member rows in place when its diff is too long to apply step by step.
+    private func reloadChildLevel(_ parent: ProcessRowID, wanted: [ProcessRowID]) {
+        guard let item = items[parent] else { return }
+        shownChildren[parent] = wanted
+        withoutAnimation {
+            let wasExpanded = outlineView.isItemExpanded(item)
+            outlineView.reloadItem(item, reloadChildren: true)
+            if wasExpanded, !outlineView.isItemExpanded(item) {
+                outlineView.expandItem(item)
+            }
+        }
     }
 
     private var visibleRowIDs: [ProcessRowID] {
@@ -489,12 +543,21 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         }
     }
 
-    private func applyColumnVisibility() {
+    /// Applies the computed hidden states. Name refits only when a column's hidden state changed (or `forceFit`),
+    /// so a Name width the user dragged survives every sample.
+    @discardableResult
+    private func applyColumnVisibility(forceFit: Bool = false) -> Bool {
+        var changed = false
         for column in ProcessColumn.allCases where column.isHideable {
             guard let tableColumn = outlineView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(column.rawValue)) else { continue }
-            tableColumn.isHidden = columnHidden(column)
+            let hidden = columnHidden(column)
+            if tableColumn.isHidden != hidden {
+                tableColumn.isHidden = hidden
+                changed = true
+            }
         }
-        fitNameColumn(force: true)
+        if changed || forceFit { fitNameColumn(force: true) }
+        return changed
     }
 
     private func rebuildColumnMenu() {
@@ -512,7 +575,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         guard let key = sender.representedObject as? String, let column = ProcessColumn(rawValue: key) else { return }
         columnOverrides[column.suffix] = columnHidden(column)
         defaults.set(columnOverrides, forKey: Self.columnVisibilityKey)
-        applyColumnVisibility()
+        applyColumnVisibility(forceFit: true)
     }
 
     // MARK: - Selection details
@@ -538,18 +601,23 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         let title = row?.title ?? process.name
         let path = row?.executablePath ?? process.executablePath
         let owner = UIFormat.ownerName(process.ownerUID)
-        let start = String(UIFormat.identityStart(process.id.startTime).prefix(19))
+        let started = Self.startTimeFormatter.string(from: Self.startDate(process.id.startTime))
         let icon = row?.isGroup == true
             ? AppIconProvider.icon(forBundlePath: row?.iconBundlePath)
             : AppIconProvider.genericExecutableIcon()
         selectionBar.show(
             title: title,
             summary: "PID \(process.id.pid) · \(owner) · \(path ?? "Path unavailable")",
-            identity: "Started \(start)",
-            identityAccessibilityLabel: "PID \(process.id.pid), started \(start)",
+            identity: "Started \(started)",
+            identityAccessibilityLabel: "PID \(process.id.pid), started \(started)",
             icon: icon
         )
         setActionsEnabled(true)
+    }
+
+    /// The process start time as a `Date`, for the localized selection-bar label.
+    private static func startDate(_ startTime: ProcessStartTime) -> Date {
+        Date(timeIntervalSince1970: TimeInterval(startTime.secondsSinceEpoch) + TimeInterval(startTime.microseconds) / 1_000_000)
     }
 
     private func setActionsEnabled(_ enabled: Bool) {
@@ -799,17 +867,29 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         let targetIsSystemOwned = process.ownerUID == 0
         Task { [weak self] in
             guard let self else { return }
+            // Both actions confirm first, like Activity Monitor. The confirm button is the destructive first button.
+            let response: NSApplication.ModalResponse
             if force {
-                let response = await SheetAlert.present(
+                response = await SheetAlert.present(
                     on: view.window,
                     style: .warning,
                     messageText: "Confirm Force Quit",
                     informativeText: "Force quit \(name) (process \(identity.pid)) only. Its child processes are not targeted.",
                     buttons: ["Force Quit", "Cancel"],
-                    defaultButtonIdentifier: "process.force-quit.confirm"
+                    defaultButtonIdentifier: "process.force-quit.confirm",
+                    destructiveButtonIndex: 0
                 )
-                guard response == .alertFirstButtonReturn else { return }
+            } else {
+                response = await SheetAlert.present(
+                    on: view.window,
+                    style: .warning,
+                    messageText: "Quit “\(name)”?",
+                    buttons: ["Quit", "Cancel"],
+                    defaultButtonIdentifier: "process.quit.confirm",
+                    destructiveButtonIndex: 0
+                )
             }
+            guard response == .alertFirstButtonReturn else { return }
             let result = await dependencies.processActions.terminate(identity: identity, force: force)
             switch result.outcome {
             case .signalSent:

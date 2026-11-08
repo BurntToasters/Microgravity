@@ -3,6 +3,27 @@ import Foundation
 import Security
 import ServiceManagement
 
+/// Owns the AuthorizationRef behind an external form sent to the helper. The helper
+/// rebuilds the authorization from that form, so the reference must stay alive until
+/// the helper replies. `release()` runs after `send` completes; `deinit` is a fallback.
+private final class AdministratorAuthorization: @unchecked Sendable {
+    let externalForm: Data
+    private var reference: AuthorizationRef?
+
+    init(reference: AuthorizationRef, externalForm: Data) {
+        self.reference = reference
+        self.externalForm = externalForm
+    }
+
+    func release() {
+        guard let reference else { return }
+        self.reference = nil
+        AuthorizationFree(reference, [])
+    }
+
+    deinit { release() }
+}
+
 actor PrivilegedProcessActionController: ProcessActioning {
     private let local = LocalProcessActionController()
     func terminate(identity: ProcessIdentity, force: Bool) async -> ProcessActionResult {
@@ -11,7 +32,7 @@ actor PrivilegedProcessActionController: ProcessActioning {
               reason == .differentUser || reason == .permissionDenied else { return localResult }
         let target = HelperTargetIdentity(pid: identity.pid, seconds: identity.startTime.secondsSinceEpoch,
                                           microseconds: identity.startTime.microseconds)
-        guard let observed = Self.observeTarget(pid: identity.pid) else {
+        guard let observed = HelperTerminationPolicy.lookupTarget(pid: identity.pid) else {
             return ProcessActionResult(identity: identity, force: force,
                                        outcome: .rejected(.processExited, detail: "The target exited before administrator authorization."))
         }
@@ -46,13 +67,15 @@ actor PrivilegedProcessActionController: ProcessActioning {
               let requirement = SigningIdentity.requirement(for: helperSigningIdentifier) else {
             return ProcessActionResult(identity: identity, force: force, outcome: .rejected(.helperUnavailable, detail: "A signed and approved helper is required."))
         }
-        guard let authorization = await MainActor.run(body: { Self.authorize() }) else {
-            return ProcessActionResult(identity: identity, force: force, outcome: .rejected(.permissionDenied, detail: "Administrator authorization was not granted."))
-        }
         guard let request = try? JSONEncoder().encode(HelperTerminationPayload(version: helperProtocolVersion, target: target, force: force)) else {
             return ProcessActionResult(identity: identity, force: force, outcome: .rejected(.helperUnavailable, detail: "Could not encode request."))
         }
-        let result = await Self.send(request, authorization: authorization, requirement: requirement)
+        guard let authorization = await Self.authorize(pid: identity.pid) else {
+            return ProcessActionResult(identity: identity, force: force, outcome: .rejected(.permissionDenied, detail: "Administrator authorization was not granted."))
+        }
+        let result = await Self.send(request, authorization: authorization.externalForm, requirement: requirement)
+        // Used after the await so the reference stays alive until the helper has replied.
+        authorization.release()
         let outcome: ProcessActionOutcome
         switch result {
         case "signalSent": outcome = .signalSent
@@ -64,39 +87,52 @@ actor PrivilegedProcessActionController: ProcessActioning {
         return ProcessActionResult(identity: identity, force: force, outcome: outcome)
     }
 
-    private static func observeTarget(pid: Int32) -> HelperTarget? {
-        guard pid > 1 else { return nil }
-        var info = proc_bsdinfo()
-        guard proc_pidinfo(pid_t(pid), PROC_PIDTBSDINFO, 0, &info,
-                           Int32(MemoryLayout<proc_bsdinfo>.size)) == MemoryLayout<proc_bsdinfo>.size else { return nil }
-        var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        let pathLength = proc_pidpath(pid_t(pid), &path, UInt32(path.count))
-        let executable = pathLength > 0 ? String(cString: path) : ""
-        let protectedPath = executable.isEmpty
-            || ["/System/Library/", "/usr/libexec/", "/usr/sbin/", "/sbin/"].contains { executable.hasPrefix($0) }
-        return HelperTarget(pid: pid,
-                            seconds: Int64(info.pbi_start_tvsec),
-                            microseconds: Int32(info.pbi_start_tvusec),
-                            owner: UInt32(info.pbi_uid),
-                            protected: protectedPath || (info.pbi_flags & UInt32(PROC_FLAG_SYSTEM)) != 0)
+    /// The Security dialog blocks until the user answers, so it runs off the main actor.
+    nonisolated private static func authorize(pid: Int32) async -> AdministratorAuthorization? {
+        await Task.detached(priority: .userInitiated) {
+            PrivilegedProcessActionController.grantAdministratorAuthorization(pid: pid)
+        }.value
     }
 
-    @MainActor private static func authorize() -> Data? {
+    nonisolated private static func grantAdministratorAuthorization(pid: Int32) -> AdministratorAuthorization? {
         var reference: AuthorizationRef?
         guard AuthorizationCreate(nil, nil, [], &reference) == errAuthorizationSuccess, let reference else { return nil }
-        defer { AuthorizationFree(reference, []) }
-        let granted = "system.privilege.admin".withCString { name -> Bool in
-            var item = AuthorizationItem(name: name, valueLength: 0, value: nil, flags: 0)
-            return withUnsafeMutablePointer(to: &item) { pointer in
-                var rights = AuthorizationRights(count: 1, items: pointer)
-                return AuthorizationCopyRights(reference, &rights, nil, [.interactionAllowed, .extendRights], nil) == errAuthorizationSuccess
+        guard acquireAdministratorRight(reference, pid: pid) else {
+            AuthorizationFree(reference, [])
+            return nil
+        }
+        var external = AuthorizationExternalForm()
+        guard AuthorizationMakeExternalForm(reference, &external) == errAuthorizationSuccess else {
+            AuthorizationFree(reference, [])
+            return nil
+        }
+        let form = withUnsafeBytes(of: &external) { Data($0) }
+        return AdministratorAuthorization(reference: reference, externalForm: form)
+    }
+
+    /// Requests only the admin right; the environment prompt explains why the dialog appears.
+    /// The prompt bytes and C key stay alive for the whole AuthorizationCopyRights call.
+    nonisolated private static func acquireAdministratorRight(_ reference: AuthorizationRef, pid: Int32) -> Bool {
+        var prompt = Array("Microgravity needs an administrator to quit “PID \(pid)”, which belongs to another user.".utf8)
+        return prompt.withUnsafeMutableBytes { promptBytes in
+            kAuthorizationEnvironmentPrompt.withCString { promptKey in
+                var environmentItem = AuthorizationItem(name: promptKey, valueLength: promptBytes.count,
+                                                        value: promptBytes.baseAddress, flags: 0)
+                return withUnsafeMutablePointer(to: &environmentItem) { environmentItems in
+                    var environment = AuthorizationEnvironment(count: 1, items: environmentItems)
+                    return "system.privilege.admin".withCString { name in
+                        var item = AuthorizationItem(name: name, valueLength: 0, value: nil, flags: 0)
+                        return withUnsafeMutablePointer(to: &item) { items in
+                            var rights = AuthorizationRights(count: 1, items: items)
+                            return AuthorizationCopyRights(reference, &rights, &environment,
+                                                           [.interactionAllowed, .extendRights], nil) == errAuthorizationSuccess
+                        }
+                    }
+                }
             }
         }
-        guard granted else { return nil }
-        var external = AuthorizationExternalForm()
-        guard AuthorizationMakeExternalForm(reference, &external) == errAuthorizationSuccess else { return nil }
-        return withUnsafeBytes(of: &external) { Data($0) }
     }
+
     private static func send(_ request: Data, authorization: Data, requirement: String) async -> String {
         await withCheckedContinuation { continuation in
             let connection = NSXPCConnection(machServiceName: helperMachService, options: .privileged)
@@ -117,4 +153,3 @@ actor PrivilegedProcessActionController: ProcessActioning {
         }
     }
 }
-

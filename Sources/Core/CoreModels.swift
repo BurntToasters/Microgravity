@@ -582,6 +582,12 @@ public protocol MonitoringStore: AnyObject {
     func stop()
     func refreshNow() async
     func resetHistory() async throws
+    /// Commits buffered history totals to storage. Stores without buffered history keep the no-op default.
+    func flushHistory() async
+}
+
+extension MonitoringStore {
+    public func flushHistory() async {}
 }
 
 public protocol MonitoringHistoryManaging: Sendable {
@@ -589,6 +595,12 @@ public protocol MonitoringHistoryManaging: Sendable {
     func summaries(lastDays: Int, through date: Date) async throws -> [DailyHistorySummary]
     func reset() async throws
     func applicationSummaries(lastDays: Int, through date: Date) async throws -> [ApplicationDailyHistorySummary]
+    /// Commits buffered totals to durable storage. Conformers that write through keep the no-op default.
+    func flush() async throws
+}
+
+extension MonitoringHistoryManaging {
+    public func flush() async throws {}
 }
 
 public enum ProcessActionRejection: String, Codable, Hashable, Sendable {

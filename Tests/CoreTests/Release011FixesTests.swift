@@ -85,7 +85,49 @@ final class Release011FixesTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(nameColumn.width, nameColumn.minWidth)
     }
 
+    func testUserDraggedNameWidthSurvivesSampleUpdates() throws {
+        let configuration = FixtureConfiguration(arguments: [])
+        let store = FixtureMonitoringStore(configuration: configuration)
+        let controller = ProcessesViewController(dependencies: PageDependencies(
+            monitoringStore: store,
+            processActions: FixtureProcessActioner(configuration: configuration),
+            integrations: UnavailableSystemIntegrationAPI(), fixtureMode: true))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 700), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentViewController = controller
+        window.setContentSize(NSSize(width: 1100, height: 700))
+        settle(window)
+        let outline = try XCTUnwrap(findOutline(in: controller.view))
+        let nameColumn = try XCTUnwrap(outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(ProcessColumn.name.rawValue)))
+        let snapshot = try XCTUnwrap(store.latestSnapshot)
+        // The first snapshot can change column visibility (GPU, Network) and refit Name once; drag after that.
+        controller.update(snapshot: snapshot)
+        settle(window)
+
+        nameColumn.width = nameColumn.minWidth + 37
+        let dragged = nameColumn.width
+        for _ in 0..<3 {
+            controller.update(snapshot: snapshot)
+        }
+        settle(window)
+        XCTAssertEqual(nameColumn.width, dragged, accuracy: 0.5, "Sampling must not reset a Name width the user dragged.")
+    }
+
     // MARK: Smaller layout fixes
+
+    func testCPUHeaderExplainsThatProcessCPUIsAShareOfAllCores() throws {
+        let configuration = FixtureConfiguration(arguments: [])
+        let controller = ProcessesViewController(dependencies: PageDependencies(
+            monitoringStore: FixtureMonitoringStore(configuration: configuration),
+            processActions: FixtureProcessActioner(configuration: configuration),
+            integrations: UnavailableSystemIntegrationAPI(), fixtureMode: true))
+        controller.loadViewIfNeeded()
+        let outline = try XCTUnwrap(findOutline(in: controller.view))
+        let cpu = try XCTUnwrap(outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(ProcessColumn.cpu.rawValue)))
+        XCTAssertEqual(cpu.headerToolTip, "Share of total CPU capacity across all cores. 100% means every core is busy.")
+    }
 
     func testLongProcessNamesKeepTheirEndAndShowTheFullNameOnHover() throws {
         let cell = ProcessNameCellView(frame: NSRect(x: 0, y: 0, width: 160, height: 28))

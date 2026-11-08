@@ -30,32 +30,66 @@ private final class SysctlStub: @unchecked Sendable {
 }
 
 final class SystemMonitorCollectorTests: XCTestCase {
-    func testProcessIdentityCoverageMarksUnreadableInitialIdentityIncomplete() {
+    func testProcessIdentityCoverageTreatsExitedOrReusedPIDAsDepartedNotIncomplete() {
+        let listed = ProcessIdentity(pid: 88, startTime: .init(secondsSinceEpoch: 1_800_000_000, microseconds: 0))
+        let reused = ProcessIdentity(pid: 88, startTime: .init(secondsSinceEpoch: 1_800_000_001, microseconds: 0))
         var coverage = ProcessIdentityCoverage()
 
-        XCTAssertFalse(coverage.include(initial: nil, revalidated: nil))
-        XCTAssertFalse(coverage.complete)
-        XCTAssertEqual(coverage.omissions, [.initialIdentityUnavailable])
+        XCTAssertFalse(coverage.include(listed: listed, revalidation: .gone))
+        XCTAssertFalse(coverage.include(listed: listed, revalidation: .identity(reused)))
+        XCTAssertEqual(coverage.departedCount, 2)
+        XCTAssertTrue(coverage.complete, "a process that left during the sample is a race, not an omission")
+        XCTAssertTrue(coverage.omissions.isEmpty)
     }
 
-    func testProcessIdentityCoverageMarksFailedOrChangedRevalidationIncomplete() {
+    func testProcessIdentityCoverageMarksUnreadableRevalidationIncomplete() {
         let identity = ProcessIdentity(pid: 88, startTime: .init(secondsSinceEpoch: 1_800_000_000, microseconds: 0))
-        let reusedIdentity = ProcessIdentity(pid: 88, startTime: .init(secondsSinceEpoch: 1_800_000_001, microseconds: 0))
         var coverage = ProcessIdentityCoverage()
 
-        XCTAssertFalse(coverage.include(initial: identity, revalidated: nil))
-        XCTAssertFalse(coverage.include(initial: identity, revalidated: reusedIdentity))
+        XCTAssertFalse(coverage.include(listed: identity, revalidation: .unreadable))
         XCTAssertFalse(coverage.complete)
-        XCTAssertEqual(coverage.omissions, [.revalidationUnavailable, .identityChanged])
+        XCTAssertEqual(coverage.omissions, [.revalidationUnavailable])
+        XCTAssertEqual(coverage.departedCount, 0)
     }
 
     func testProcessIdentityCoverageKeepsStableIdentityComplete() {
         let identity = ProcessIdentity(pid: 88, startTime: .init(secondsSinceEpoch: 1_800_000_000, microseconds: 0))
         var coverage = ProcessIdentityCoverage()
 
-        XCTAssertTrue(coverage.include(initial: identity, revalidated: identity))
+        XCTAssertTrue(coverage.include(listed: identity, revalidation: .identity(identity)))
         XCTAssertTrue(coverage.complete)
         XCTAssertTrue(coverage.omissions.isEmpty)
+        XCTAssertEqual(coverage.departedCount, 0)
+    }
+
+    func testProcessNameUsesExecutableLastComponentInsteadOfTruncatedKernelName() {
+        let path = "/Applications/Long Application Name Studio.app/Contents/MacOS/Long Application Name Studio"
+        XCTAssertEqual(SystemMonitorCollector.processName(executablePath: path, kernelName: "Long Applicatio"),
+                       "Long Application Name Studio")
+    }
+
+    func testProcessNameFallsBackToKernelNameWithoutExecutablePath() {
+        XCTAssertEqual(SystemMonitorCollector.processName(executablePath: nil, kernelName: "kernel_task"),
+                       "kernel_task")
+        XCTAssertEqual(SystemMonitorCollector.processName(executablePath: "", kernelName: "launchd"), "launchd")
+    }
+
+    /// One sample on a normal Mac must list every process, including other users' processes, and report
+    /// the process and user-session capabilities as available.
+    func testLiveSnapshotListsOtherUsersProcessesAndReportsProcessesAvailable() async throws {
+        let collector = SystemMonitorCollector()
+        _ = await collector.collect(at: Date())
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let snapshot = await collector.collect(at: Date())
+
+        XCTAssertTrue(snapshot.processes.contains { $0.id.pid == 1 && $0.ownerUID == 0 },
+                      "launchd (pid 1, owned by root) must be listed")
+        XCTAssertTrue(snapshot.processes.contains { $0.ownerUID != getuid() },
+                      "processes owned by other users must not be dropped")
+        XCTAssertEqual(snapshot.capabilities[.processes]?.available, true,
+                       snapshot.capabilities[.processes]?.detail ?? "process enumeration should be complete")
+        XCTAssertEqual(snapshot.capabilities[.userSessions]?.available, true,
+                       snapshot.capabilities[.userSessions]?.detail ?? "user sessions should be complete")
     }
 
     func testMemoryBreakdownCountsReclaimableInternalAndAvoidsCachePageOverlap() {

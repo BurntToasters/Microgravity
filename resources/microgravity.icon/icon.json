@@ -6,13 +6,13 @@
     {
       "layers" : [
         {
-          "image-name" : "Micro Gravity 3.png",
+          "image-name" : "Micro Gravity.png",
           "name" : "Micro Gravity",
           "position-specializations" : [
             {
               "idiom" : "square",
               "value" : {
-                "scale" : 1.05,
+                "scale" : 1.02,
                 "translation-in-points" : [
                   0,
                   0

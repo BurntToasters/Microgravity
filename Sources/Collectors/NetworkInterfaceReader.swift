@@ -3,9 +3,9 @@ import Foundation
 
 struct NetworkInterfaceCounter: Equatable, Sendable {
     /// Name prefixes of loopback, tunnel, and virtual interfaces. Their traffic is either
-    /// the same packets counted again on a physical interface (utun, bridge, gif, stf) or
-    /// internal to the machine (lo, loopback-style links); they never count toward system totals.
-    static let virtualNamePrefixes = ["lo", "utun", "gif", "stf", "anpi", "awdl", "llw", "bridge", "ap", "p2p"]
+    /// the same packets counted again on a physical interface (utun, ipsec, ppp, bridge, gif, stf)
+    /// or internal to the machine (lo, loopback-style links); they never count toward system totals.
+    static let virtualNamePrefixes = ["lo", "utun", "ipsec", "ppp", "gif", "stf", "anpi", "awdl", "llw", "bridge", "ap", "p2p"]
 
     // ifi_type values from net/if_types.h (IFT_LOOPBACK, IFT_GIF, IFT_STF, IFT_BRIDGE).
     static let virtualInterfaceTypes: Set<UInt8> = [0x18, 0x37, 0x39, 0xd1]

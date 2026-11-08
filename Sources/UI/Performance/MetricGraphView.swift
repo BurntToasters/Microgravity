@@ -20,7 +20,7 @@ struct MetricGraphSeries {
 private final class GapToolTipOwner: NSObject, NSViewToolTipOwner, @unchecked Sendable {
     func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint,
               userData data: UnsafeMutableRawPointer?) -> String {
-        "Sample gap · paused"
+        MetricGraphView.sampleGapToolTip
     }
 }
 
@@ -29,7 +29,7 @@ private let gapToolTipOwner = GapToolTipOwner()
 /// Line graph for one or more series over time, with a 1.5 pt line, a gradient fill, and axis labels in `.detail` style.
 ///
 /// Readings are placed by timestamp (`.time`) or by slot (`.index`). Unavailable readings break the line and are
-/// never drawn as zero. A `.sleepGap` reading also gets a dotted marker and a "Sample gap · paused" tooltip.
+/// never drawn as zero. A `.sleepGap` reading also gets a dotted marker and a "Sample gap" tooltip.
 @MainActor
 final class MetricGraphView: NSView {
     enum Style {
@@ -47,6 +47,9 @@ final class MetricGraphView: NSView {
         /// The newest reading sits at the right edge of `capacity` slots.
         case index(capacity: Int)
     }
+
+    /// Tooltip for a sleep-gap marker. Nothing is said about pausing: a gap can come from sleep or from a missed sample.
+    nonisolated static let sampleGapToolTip = "Sample gap"
 
     let style: Style
     private(set) var series: [MetricGraphSeries] = []

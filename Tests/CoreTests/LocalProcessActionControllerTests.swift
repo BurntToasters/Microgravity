@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import Microgravity
 
@@ -56,6 +57,32 @@ final class LocalProcessActionControllerTests: XCTestCase {
             XCTAssertEqual(reason, expected)
         }
         XCTAssertTrue(signals.values.isEmpty)
+    }
+
+    func testOtherUsersLiveProcessIsDifferentUserAndNeverSignaled() async {
+        let target = identity(pid: 500, second: 1)
+        let signals = SignalRecorder()
+        let controller = LocalProcessActionController(
+            currentUID: 501, ownPID: 20,
+            targetLookup: { _ in ProcessControlTarget(identity: target, ownerUID: 0, isProtected: false) },
+            signalSender: { pid, signal in signals.append(pid: pid, signal: signal); return 0 })
+
+        let result = await controller.terminate(identity: target, force: true)
+
+        XCTAssertEqual(result.outcome, .rejected(.differentUser, detail: nil))
+        XCTAssertTrue(signals.values.isEmpty)
+    }
+
+    func testSignalEPERMIsReportedAsPermissionDeniedWithItsErrno() async {
+        let target = identity(pid: 500, second: 1)
+        let controller = LocalProcessActionController(
+            currentUID: 501, ownPID: 20,
+            targetLookup: { _ in ProcessControlTarget(identity: target, ownerUID: 501, isProtected: false) },
+            signalSender: { _, _ in errno = EPERM; return -1 })
+
+        let result = await controller.terminate(identity: target, force: true)
+
+        XCTAssertEqual(result.outcome, .rejected(.permissionDenied, detail: String(cString: strerror(EPERM))))
     }
 
     func testSuccessfulActionUsesRequestedSignalAndReturnsOutcome() async {

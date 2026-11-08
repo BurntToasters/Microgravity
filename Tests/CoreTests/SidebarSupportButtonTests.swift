@@ -16,7 +16,8 @@ final class SidebarSupportButtonTests: XCTestCase {
         var opened: [URL] = []
         let sidebar = makeSidebar(width: 220) { opened.append($0) }
 
-        XCTAssertEqual(sidebar.supportButton.title, "❤️ Support Me")
+        XCTAssertEqual(sidebar.supportButton.title, "Support Microgravity")
+        XCTAssertNotNil(sidebar.supportButton.image, "The button carries the SF Symbol heart.")
         XCTAssertEqual(sidebar.supportButton.accessibilityIdentifier(), "sidebar.support")
         sidebar.supportButton.performClick(nil)
 

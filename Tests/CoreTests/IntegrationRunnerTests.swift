@@ -15,6 +15,10 @@ final class IntegrationRunnerTests: XCTestCase {
         XCTAssertFalse(net.arguments.contains("-c"))
         XCTAssertFalse(power.arguments.contains("-c"))
     }
+    func testPowermetricsArgumentsSampleOnlyPowerAndNoProcessTasks() {
+        XCTAssertEqual(SamplingRunner.fixedCommand(.powermetrics).arguments,
+                       ["-f", "plist", "-i", "1000", "-n", "1", "-s", "cpu_power,gpu_power"])
+    }
     func testRateLimitAndBoundedOutput() async {
         let runner = SamplingRunner(command: { _ in .init(executable: "/usr/bin/yes", arguments: []) }, outputLimit: 1024)
         let first = await run(runner)

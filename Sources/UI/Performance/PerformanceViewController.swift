@@ -41,7 +41,7 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating, PageT
         super.init(nibName: nil, bundle: nil)
         pauseButton.target = self
         pauseButton.action = #selector(toggleSampling)
-        pauseButton.bezelStyle = .texturedRounded
+        pauseButton.bezelStyle = .toolbar
         pauseButton.setAccessibilityIdentifier("performance.action.pause")
         refreshPopUp.addItems(withTitles: MonitoringInterval.allCases.map(SamplingControls.shortTitle))
         refreshPopUp.target = self
@@ -184,7 +184,7 @@ struct ThroughputGraphPresentation {
         scaleAccessibilityLabel = "\(graphName) graph scale maximum"
 
         let values = (firstHistory + secondHistory).compactMap(\.value).filter { $0.isFinite && $0 >= 0 }
-        graphMaximum = max(values.max() ?? 1, 0.0001)
+        graphMaximum = Self.niceMaximum(max(values.max() ?? 1, 0.0001))
         scaleText = values.isEmpty
             ? "Scale maximum: no data"
             : "Scale maximum: \(UIFormat.bytesPerSecond(graphMaximum))"
@@ -192,5 +192,30 @@ struct ThroughputGraphPresentation {
         accessibilitySummary = values.isEmpty
             ? "\(graphName) graph. No graph samples have available data. \(current). Scale maximum: no data."
             : "\(graphName) graph. \(current). \(scaleText)."
+    }
+
+    /// Rounds `value` up to 1, 2, 5 or 10 times a power of ten. The scale label then holds still while samples
+    /// move a little, instead of jittering with every new peak.
+    static func niceMaximum(_ value: Double) -> Double {
+        guard value.isFinite, value > 0 else { return 1 }
+        var exponent = floor(log10(value))
+        // log10 can land one power of ten off near exact powers of ten, so correct it against the value.
+        if pow(10, exponent + 1) <= value { exponent += 1 }
+        if pow(10, exponent) > value { exponent -= 1 }
+        let scale = pow(10, exponent)
+        let mantissa = value / scale
+        // A small tolerance keeps values such as 0.0001 from rounding up a step on floating-point error.
+        let tolerance = 1e-9
+        let step: Double
+        if mantissa <= 1 + tolerance {
+            step = 1
+        } else if mantissa <= 2 + tolerance {
+            step = 2
+        } else if mantissa <= 5 + tolerance {
+            step = 5
+        } else {
+            step = 10
+        }
+        return step * scale
     }
 }

@@ -85,9 +85,12 @@ public actor LocalProcessActionController: ProcessActioning {
         }
 
         let signal = force ? SIGKILL : SIGTERM
-        guard signalSender(identity.pid, Int32(signal)) == 0 else {
-            let reason: ProcessActionRejection = errno == EPERM ? .permissionDenied : .signalFailed
-            return rejected(identity, force, reason, detail: String(cString: strerror(errno)))
+        let status = signalSender(identity.pid, signal)
+        // Capture errno before anything else can overwrite it.
+        let failure = errno
+        guard status == 0 else {
+            let reason: ProcessActionRejection = failure == EPERM ? .permissionDenied : .signalFailed
+            return rejected(identity, force, reason, detail: String(cString: strerror(failure)))
         }
         return ProcessActionResult(identity: identity, force: force, outcome: .signalSent)
     }
@@ -98,33 +101,14 @@ public actor LocalProcessActionController: ProcessActioning {
     }
 
     private static func lookupTarget(_ pid: Int32) -> ProcessControlTarget? {
-        guard pid > 0 else { return nil }
-        var info = proc_bsdinfo()
-        let result = proc_pidinfo(pid_t(pid), PROC_PIDTBSDINFO, 0, &info,
-                                  Int32(MemoryLayout<proc_bsdinfo>.size))
-        guard result == MemoryLayout<proc_bsdinfo>.size else { return nil }
-        let start = ProcessStartTime(secondsSinceEpoch: Int64(info.pbi_start_tvsec),
-                                     microseconds: Int32(info.pbi_start_tvusec))
-        let path = executablePath(pid)
-        let systemFlag = UInt32(PROC_FLAG_SYSTEM)
-        let systemLocation = path.map {
-            $0.hasPrefix("/System/Library/")
-                || $0.hasPrefix("/usr/libexec/") || $0.hasPrefix("/usr/sbin/")
-                || $0.hasPrefix("/sbin/")
-        } ?? false
+        guard let target = HelperTerminationPolicy.lookupTarget(pid: pid) else { return nil }
+        let start = ProcessStartTime(secondsSinceEpoch: target.seconds, microseconds: target.microseconds)
         return ProcessControlTarget(identity: ProcessIdentity(pid: pid, startTime: start),
-                                    ownerUID: UInt32(info.pbi_uid),
-                                    isProtected: (info.pbi_flags & systemFlag) != 0 || systemLocation)
+                                    ownerUID: target.owner,
+                                    isProtected: target.protected)
     }
 
     private static func sendSignal(_ pid: Int32, _ signal: Int32) -> Int32 {
         kill(pid_t(pid), signal)
-    }
-
-    private static func executablePath(_ pid: Int32) -> String? {
-        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        let count = proc_pidpath(pid_t(pid), &buffer, UInt32(buffer.count))
-        guard count > 0 else { return nil }
-        return String(cString: buffer)
     }
 }

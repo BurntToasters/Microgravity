@@ -31,6 +31,16 @@ enum AppComposition {
                 fixtureMode: true
             )
         }
+        if isXCTestHost {
+            // Core unit tests run with this app as their host. The inert composition never samples,
+            // never writes the user's history database, and never touches privileged or system services.
+            return AppDependencies(
+                monitoringStore: DefaultMonitoringStore(collector: SystemMonitorCollector()),
+                processActions: LocalProcessActionController(),
+                integrations: UnavailableSystemIntegrationAPI(),
+                fixtureMode: false
+            )
+        }
         #endif
 
         let store = DefaultMonitoringStore(
@@ -73,14 +83,15 @@ enum AppComposition {
     }
 
     #if DEBUG
-    private static var isFixtureUITest: Bool {
-        let process = ProcessInfo.processInfo
-        let arguments = process.arguments
-        let environment = process.environment
-        let hasTestRunnerMarker = environment["XCTestConfigurationFilePath"] != nil
+    private static var isXCTestHost: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["XCTestConfigurationFilePath"] != nil
             || environment["XCTestBundlePath"] != nil
             || environment["XCInjectBundleInto"] != nil
-        return hasTestRunnerMarker && arguments.contains("--ui-test-fixtures")
+    }
+
+    private static var isFixtureUITest: Bool {
+        isXCTestHost && ProcessInfo.processInfo.arguments.contains("--ui-test-fixtures")
     }
     #endif
 }

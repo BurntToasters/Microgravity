@@ -33,7 +33,7 @@ private final class FlippedDocumentView: NSView {
 /// System Settings 14 style form: right-aligned labels in column 0, controls in column 1, one card per section.
 @MainActor
 final class SettingsViewController: NSViewController {
-    /// Matches the Performance page's caption and the M5 policy decision: quit is limited to other standard users.
+    /// Matches the Performance page's caption: quit is limited to other standard users.
     private static let helperPolicyCaption = "Lets you quit processes owned by other standard users. System and root processes stay protected."
 
     private let dependencies: PageDependencies
@@ -46,6 +46,7 @@ final class SettingsViewController: NSViewController {
     private let helperState = UIComponents.label("Checking helper status", size: 12)
     private let helperButton = NSButton(title: "Set Up Helper…", target: nil, action: nil)
     private let removeHelperButton = NSButton(title: "Remove Helper", target: nil, action: nil)
+    private let openHelperSettingsButton = NSButton(title: "Open System Settings…", target: nil, action: nil)
     private let loginSwitch = NSSwitch()
     private let loginDot = StatusDotView()
     private let loginItemState = UIComponents.label("Checking login item status", size: 12)
@@ -180,6 +181,8 @@ final class SettingsViewController: NSViewController {
         removeHelperButton.action = #selector(removeHelper)
         removeHelperButton.setAccessibilityIdentifier("settings.helper.remove")
         helperState.setAccessibilityIdentifier("settings.helper.state")
+        styleAsLinkButton(openHelperSettingsButton, identifier: "settings.helper.open-settings")
+        openHelperSettingsButton.action = #selector(openLoginItemSettings)
 
         loginSwitch.target = self
         loginSwitch.action = #selector(toggleLoginItem(_:))
@@ -188,15 +191,8 @@ final class SettingsViewController: NSViewController {
         loginSwitch.toolTip = "Start Microgravity when you log in"
         loginSwitch.isEnabled = false
         loginItemState.setAccessibilityIdentifier("settings.login-item.state")
-        openLoginSettingsButton.target = self
+        styleAsLinkButton(openLoginSettingsButton, identifier: "settings.login-item.open-settings")
         openLoginSettingsButton.action = #selector(openLoginItemSettings)
-        openLoginSettingsButton.isBordered = false
-        openLoginSettingsButton.attributedTitle = NSAttributedString(string: "Open Login Items Settings…", attributes: [
-            .foregroundColor: NSColor.linkColor,
-            .font: NSFont.systemFont(ofSize: 12)
-        ])
-        openLoginSettingsButton.setAccessibilityIdentifier("settings.login-item.open-settings")
-        openLoginSettingsButton.isHidden = true
 
         updateCheckButton.target = self
         updateCheckButton.action = #selector(checkForUpdates)
@@ -209,7 +205,7 @@ final class SettingsViewController: NSViewController {
         updatesState.setAccessibilityIdentifier("settings.updates.state")
 
         let grid = makeFormGrid()
-        grid.addRow(with: [formLabel("Privileged helper:"), statusRow(helperDot, helperState)])
+        grid.addRow(with: [formLabel("Privileged helper:"), statusRow(helperDot, helperState, extra: openHelperSettingsButton)])
         grid.addRow(with: [NSGridCell.emptyContentView, caption(Self.helperPolicyCaption)])
         grid.addRow(with: [NSGridCell.emptyContentView, buttonRow([helperButton, removeHelperButton])])
         let loginRow = grid.addRow(with: [formLabel("Open at login:"), loginSwitch])
@@ -219,8 +215,20 @@ final class SettingsViewController: NSViewController {
         updatesRow.topPadding = 12
         grid.addRow(with: [NSGridCell.emptyContentView, buttonRow([updateCheckButton, updateInstallButton])])
         return UIComponents.card(title: "Optional integrations",
-                                 subtitle: "Available only when the platform integration is installed.",
+                                 subtitle: "Optional features that need your approval in macOS.",
                                  content: grid)
+    }
+
+    /// Borderless, link-colored button for a secondary action next to a status line. Hidden until a state needs it.
+    private func styleAsLinkButton(_ button: NSButton, identifier: String) {
+        button.target = self
+        button.isBordered = false
+        button.attributedTitle = NSAttributedString(string: button.title, attributes: [
+            .foregroundColor: NSColor.linkColor,
+            .font: NSFont.systemFont(ofSize: 12)
+        ])
+        button.setAccessibilityIdentifier(identifier)
+        button.isHidden = true
     }
 
     // MARK: - Form building
@@ -360,7 +368,8 @@ final class SettingsViewController: NSViewController {
                 messageText: "Reset App History",
                 informativeText: "This clears Microgravity’s stored 30-day aggregate history. It does not change process or operating-system state.",
                 buttons: ["Reset History", "Cancel"],
-                defaultButtonIdentifier: "settings.history.reset.confirm"
+                defaultButtonIdentifier: "settings.history.reset.confirm",
+                destructiveButtonIndex: 0
             )
             guard response == .alertFirstButtonReturn else { return }
             do {
@@ -438,18 +447,19 @@ final class SettingsViewController: NSViewController {
     private func updateIntegrationControls() {
         let status = dependencies.integrations.status
         helperDot.tone = IntegrationStatusTone.helper(status.helper)
-        helperState.stringValue = describe(status.helper)
-        helperState.setAccessibilityLabel(helperState.stringValue)
-        if case .unavailable = status.helper {
+        setStatus(helperState, describe(status.helper))
+        // Setup registers the helper again, so it is off while the helper is already available or unavailable.
+        switch status.helper {
+        case .available, .unavailable:
             helperButton.isEnabled = false
-        } else {
+        case .notConfigured, .requiresApproval, .failed:
             helperButton.isEnabled = true
         }
+        openHelperSettingsButton.isHidden = status.helper != .requiresApproval
         removeHelperButton.isEnabled = canRemoveHelper(status)
 
         loginDot.tone = IntegrationStatusTone.loginItem(status.loginItem)
-        loginItemState.stringValue = describe(status.loginItem)
-        loginItemState.setAccessibilityLabel(loginItemState.stringValue)
+        setStatus(loginItemState, describe(status.loginItem))
         switch status.loginItem {
         case .enabled:
             loginSwitch.state = .on
@@ -464,8 +474,7 @@ final class SettingsViewController: NSViewController {
         openLoginSettingsButton.isHidden = status.loginItem != .requiresApproval
 
         updatesDot.tone = IntegrationStatusTone.updates(status.updates)
-        updatesState.stringValue = describe(status.updates)
-        updatesState.setAccessibilityLabel(updatesState.stringValue)
+        setStatus(updatesState, describe(status.updates))
         switch status.updates {
         case .idle, .checking, .current, .failed:
             updateCheckButton.isEnabled = true
@@ -492,13 +501,20 @@ final class SettingsViewController: NSViewController {
         }
     }
 
+    /// Sets a status line and mirrors it into the accessibility label and tooltip, so a truncated line stays readable.
+    private func setStatus(_ field: NSTextField, _ text: String) {
+        field.stringValue = text
+        field.setAccessibilityLabel(text)
+        field.toolTip = text
+    }
+
     private func describe(_ status: IntegrationAvailability) -> String {
         switch status {
         case .available: return "Available"
         case .notConfigured: return "Not configured"
         case .requiresApproval: return "Requires approval in System Settings"
         case .unavailable(let reason): return "Unavailable · \(reason)"
-        case .failed(let reason): return "Unavailable · \(reason)"
+        case .failed(let reason): return "Failed · \(reason)"
         }
     }
 
@@ -508,7 +524,7 @@ final class SettingsViewController: NSViewController {
         case .disabled: return "Disabled"
         case .requiresApproval: return "Requires approval in System Settings"
         case .unavailable(let reason): return "Unavailable · \(reason)"
-        case .failed(let reason): return "Unavailable · \(reason)"
+        case .failed(let reason): return "Failed · \(reason)"
         }
     }
 
@@ -519,7 +535,7 @@ final class SettingsViewController: NSViewController {
         case .current: return "Up to date"
         case .updateAvailable(let version): return "Update available · \(version)"
         case .unavailable(let reason): return "Unavailable · \(reason)"
-        case .failed(let reason): return "Unavailable · \(reason)"
+        case .failed(let reason): return "Failed · \(reason)"
         }
     }
 
@@ -539,10 +555,9 @@ final class SettingsViewController: NSViewController {
     private func refreshSamplingState() {
         let store = dependencies.monitoringStore
         samplingButton.title = store.isPaused ? "Resume Sampling" : "Pause Sampling"
-        samplingState.stringValue = store.isPaused
+        setStatus(samplingState, store.isPaused
             ? "Paused · the last sample remains visible."
-            : "Sampling every \(store.interval.rawValue) seconds."
-        samplingState.setAccessibilityLabel(samplingState.stringValue)
+            : "Sampling every \(SamplingControls.longTitle(store.interval)).")
     }
 
     private func showIntegrationError(_ title: String, message: String) async {

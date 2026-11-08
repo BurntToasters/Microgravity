@@ -454,11 +454,11 @@ final class MicrogravityUITests: XCTestCase {
     func testVisualAcceptanceCapturesAllPagesAtBothSizesAndAppearances() {
         let pages: [(name: String, navigation: String, content: String)] = [
             ("Processes", "navigation.item.processes", "process.table"),
+            ("Details", "navigation.item.details", "details.table"),
             ("Performance", "navigation.item.performance", "performance.graph.cpu-total"),
             ("AppHistory", "navigation.item.history", "history.table"),
-            ("Startup", "navigation.item.startup", "startup.table"),
             ("Users", "navigation.item.users", "users.table"),
-            ("Details", "navigation.item.details", "details.table"),
+            ("Startup", "navigation.item.startup", "startup.table"),
             ("Services", "navigation.item.services", "services.table"),
             ("Settings", "navigation.item.settings", "settings.appearance")
         ]

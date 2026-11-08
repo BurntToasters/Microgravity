@@ -125,7 +125,6 @@ enum InventoryRows {
     }
 
     static func slug(_ value: String) -> String {
-        String(value.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" })
-            .split(separator: "-").joined(separator: "-")
+        UIText.slug(value)
     }
 }

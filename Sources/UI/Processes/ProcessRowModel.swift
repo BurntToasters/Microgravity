@@ -231,11 +231,19 @@ enum ProcessRowModel {
 
     /// Operations that turn `old` into `new`. Both lists must hold unique IDs.
     static func operations<ID: Hashable>(from old: [ID], to new: [ID]) -> [ProcessRowDiffOperation<ID>] {
+        boundedOperations(from: old, to: new, limit: Int.max) ?? []
+    }
+
+    /// Like `operations(from:to:)`, but returns nil as soon as more than `limit` steps are needed. Callers that
+    /// would rather reload a level than apply a long diff stop paying for the diff at that point.
+    static func boundedOperations<ID: Hashable>(from old: [ID], to new: [ID],
+                                                limit: Int) -> [ProcessRowDiffOperation<ID>]? {
         var operations: [ProcessRowDiffOperation<ID>] = []
         var mirror = old
         let kept = Set(new)
         for index in old.indices.reversed() where !kept.contains(old[index]) {
             operations.append(.remove(index: index))
+            if operations.count > limit { return nil }
             mirror.remove(at: index)
         }
         for target in new.indices {
@@ -250,6 +258,7 @@ enum ProcessRowModel {
                 operations.append(.insert(id, index: target))
                 mirror.insert(id, at: target)
             }
+            if operations.count > limit { return nil }
         }
         return operations
     }
@@ -279,17 +288,12 @@ enum ProcessRowModel {
 
     /// The `.app` bundle containing an executable path, for example `/Applications/Notes.app`.
     static func appBundlePath(for path: String?) -> String? {
-        guard let path, !path.isEmpty else { return nil }
-        let parts = path.split(separator: "/", omittingEmptySubsequences: true)
-        guard let index = parts.firstIndex(where: { $0.hasSuffix(".app") }) else { return nil }
-        let joined = parts[...index].joined(separator: "/")
-        return path.hasPrefix("/") ? "/" + joined : joined
+        UIText.appBundlePath(forExecutable: path)
     }
 
     /// Lowercase, dash-separated slug used in accessibility identifiers.
     static func slug(_ value: String) -> String {
-        String(value.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" })
-            .split(separator: "-").joined(separator: "-")
+        UIText.slug(value)
     }
 
     /// Heat fraction for a value against a maximum: nil when either is missing, otherwise clamped to 0...1.

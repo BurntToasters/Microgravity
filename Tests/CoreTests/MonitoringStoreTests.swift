@@ -262,7 +262,7 @@ final class MonitoringStoreTests: XCTestCase {
         let clock = MutableTestClock(start)
         let history = CountingHistoryStore()
         let store = DefaultMonitoringStore(collector: StaticCollector(), historyStore: history,
-                                           now: { clock.date })
+                                           now: { clock.date }, timeZone: TimeZone(secondsFromGMT: 0))
 
         await store.refreshNow()
         clock.advance(by: 1)
@@ -300,6 +300,21 @@ final class MonitoringStoreTests: XCTestCase {
         applicationReads = await history.applicationSummaryReadCount()
         XCTAssertEqual(reads, 4, "summary data should refresh after the throttle interval")
         XCTAssertEqual(applicationReads, 4)
+    }
+
+    func testPauseAndExplicitFlushCommitBufferedHistory() async {
+        let history = FlushCountingHistoryStore()
+        let store = DefaultMonitoringStore(collector: StaticCollector(), historyStore: history)
+
+        await store.refreshNow()
+        store.pause()
+        await store.historyFlushTask?.value
+        var flushes = await history.flushCount()
+        XCTAssertEqual(flushes, 1, "pausing must commit the buffered history")
+
+        await store.flushHistory()
+        flushes = await history.flushCount()
+        XCTAssertEqual(flushes, 2, "an explicit flush must reach the history store")
     }
 
     func testHistorySummaryFailureRemainsVisibleUntilTheNextRetry() async {
@@ -442,6 +457,17 @@ private actor CapturingHistoryStore: MonitoringHistoryManaging {
     func applicationSummaries(lastDays: Int, through date: Date) async throws -> [ApplicationDailyHistorySummary] { [] }
     func reset() async throws { snapshots.removeAll() }
     func recordedSnapshots() -> [MonitoringSnapshot] { snapshots }
+}
+
+private actor FlushCountingHistoryStore: MonitoringHistoryManaging {
+    private var flushes = 0
+
+    func record(snapshot: MonitoringSnapshot) async throws {}
+    func summaries(lastDays: Int, through date: Date) async throws -> [DailyHistorySummary] { [] }
+    func applicationSummaries(lastDays: Int, through date: Date) async throws -> [ApplicationDailyHistorySummary] { [] }
+    func reset() async throws {}
+    func flush() async throws { flushes += 1 }
+    func flushCount() -> Int { flushes }
 }
 
 private actor CountingHistoryStore: MonitoringHistoryManaging {

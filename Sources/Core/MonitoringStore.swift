@@ -20,11 +20,15 @@ public final class DefaultMonitoringStore: MonitoringStore {
     private let collector: any MonitoringCollecting
     private let historyStore: (any MonitoringHistoryManaging)?
     private let now: @Sendable () -> Date
+    private var dayCalendar: HistoryDayCalendar
     private var pollingTask: Task<Void, Never>?
     private var historyWriteTask: Task<Void, Error>?
+    /// Background commit requested by pause() or stop(). Exposed so tests can await it.
+    private(set) var historyFlushTask: Task<Void, Never>?
     private var isCollecting = false
     private var isResettingHistory = false
-    private var historyGapPending = false
+    /// Why the next history sample must not integrate across the previous one. Nil when no gap is pending.
+    private var historyGapReason: MetricUnavailableReason?
     private var graphGapPending = false
     private var historySummaryCache: HistorySummaryCache?
     private var historySummaryQueryTimestamp: Date?
@@ -38,14 +42,17 @@ public final class DefaultMonitoringStore: MonitoringStore {
         self.collector = collector
         self.historyStore = historyStore
         now = { Date() }
+        dayCalendar = HistoryDayCalendar()
     }
 
     init(collector: any MonitoringCollecting,
          historyStore: (any MonitoringHistoryManaging)? = nil,
-         now: @escaping @Sendable () -> Date) {
+         now: @escaping @Sendable () -> Date,
+         timeZone: TimeZone? = nil) {
         self.collector = collector
         self.historyStore = historyStore
         self.now = now
+        dayCalendar = HistoryDayCalendar(timeZone: timeZone)
     }
 
     public func start(interval: MonitoringInterval = .oneSecond) {
@@ -63,11 +70,12 @@ public final class DefaultMonitoringStore: MonitoringStore {
 
     public func pause() {
         isPaused = true
-        historyGapPending = true
+        historyGapReason = historyGapReason ?? .sleepGap
         graphGapPending = true
         publicationGeneration += 1
         pollingTask?.cancel()
         pollingTask = nil
+        scheduleHistoryFlush()
     }
 
     public func resume() {
@@ -82,6 +90,25 @@ public final class DefaultMonitoringStore: MonitoringStore {
         publicationGeneration += 1
         isRunning = false
         isPaused = false
+        scheduleHistoryFlush()
+    }
+
+    /// Commits buffered history totals now. A failure is reported like other history write failures.
+    public func flushHistory() async {
+        guard let historyStore else { return }
+        do {
+            try await historyStore.flush()
+        } catch {
+            historyWriteFailure = error.localizedDescription
+            if let latestSnapshot { republish(withCachedHistory(latestSnapshot)) }
+        }
+    }
+
+    private func scheduleHistoryFlush() {
+        guard historyStore != nil else { return }
+        historyFlushTask = Task { @MainActor [weak self] in
+            await self?.flushHistory()
+        }
     }
 
     public func refreshNow() async {
@@ -97,7 +124,7 @@ public final class DefaultMonitoringStore: MonitoringStore {
         guard generation == publicationGeneration, !isPaused else { return }
 
         guard let historyStore else {
-            historyGapPending = false
+            historyGapReason = nil
             publish(snapshot)
             return
         }
@@ -111,8 +138,8 @@ public final class DefaultMonitoringStore: MonitoringStore {
 
         // Writes stay ordered: refreshNow is serialized by isCollecting and does not
         // return until its write settles, so at most one record is ever in flight.
-        // The gap flag is read here, after any earlier write has settled.
-        let historySnapshot = historyGapPending ? snapshot.markingHistoryGap() : snapshot
+        // The gap reason is read here, after any earlier write has settled.
+        let historySnapshot = historyGapReason.map { snapshot.markingHistoryGap(reason: $0) } ?? snapshot
         let writeTask = Task { try await historyStore.record(snapshot: historySnapshot) }
         historyWriteTask = writeTask
         do {
@@ -120,14 +147,15 @@ public final class DefaultMonitoringStore: MonitoringStore {
         } catch {
             historyWriteTask = nil
             guard generation == publicationGeneration, !isPaused else { return }
-            historyGapPending = true
+            // A sample that failed to persist is a collection loss, not a sleep or pause.
+            historyGapReason = .collectionFailed
             historyWriteFailure = error.localizedDescription
             republish(withCachedHistory(snapshot))
             return
         }
         historyWriteTask = nil
         guard generation == publicationGeneration, !isPaused else { return }
-        historyGapPending = false
+        historyGapReason = nil
         let clearedWriteFailure = historyWriteFailure != nil
         historyWriteFailure = nil
 
@@ -193,7 +221,7 @@ public final class DefaultMonitoringStore: MonitoringStore {
         defer { isResettingHistory = false }
         if let historyWriteTask { try? await historyWriteTask.value }
         try await historyStore.reset()
-        historyGapPending = true
+        historyGapReason = historyGapReason ?? .sleepGap
         historySummaryCache = nil
         historySummaryQueryTimestamp = nil
         historySummaryQueryDay = nil
@@ -232,7 +260,8 @@ public final class DefaultMonitoringStore: MonitoringStore {
     }
 
     private func invalidateHistorySummaryCacheIfNeeded(through timestamp: Date) {
-        let dayStart = utcDayStart(timestamp)
+        let calendar = dayCalendar.current()
+        let dayStart = HistoryDayCalendar.dayStart(containing: timestamp, in: calendar)
         guard historySummaryQueryDay != dayStart else { return }
         historySummaryCache = nil
         historySummaryQueryTimestamp = nil
@@ -259,17 +288,12 @@ extension MonitoringStore {
     public func start() { start(interval: .oneSecond) }
 }
 
-private func utcDayStart(_ date: Date) -> Date {
-    var calendar = Calendar(identifier: .gregorian)
-    calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-    return calendar.startOfDay(for: date)
-}
-
 private extension MonitoringSnapshot {
-    func markingHistoryGap(markingAdvancedMetrics: Bool = false) -> MonitoringSnapshot {
+    func markingHistoryGap(reason: MetricUnavailableReason = .sleepGap,
+                           markingAdvancedMetrics: Bool = false) -> MonitoringSnapshot {
         func gap(_ reading: MetricReading) -> MetricReading {
             guard reading.isAvailable else { return reading }
-            return MetricReading(unavailable: reading.unit, timestamp: reading.timestamp, reason: .sleepGap)
+            return MetricReading(unavailable: reading.unit, timestamp: reading.timestamp, reason: reason)
         }
         let nextSystem = SystemMetricsSnapshot(
             capacityCores: system.capacityCores,

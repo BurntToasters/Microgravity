@@ -26,8 +26,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     private static let roots: [Node] = [
-        Node(group: "Monitor", pages: [.processes, .performance, .history]),
-        Node(group: "Inventory", pages: [.startup, .users, .details, .services]),
+        Node(group: "Monitor", pages: [.processes, .details, .performance, .history, .users]),
+        Node(group: "Inventory", pages: [.startup, .services]),
         Node(page: .settings)
     ]
 
@@ -37,7 +37,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     private let outlineView = NSOutlineView()
     private let footer: SidebarStatusFooter
     private let openURL: (URL) -> Void
-    let supportButton = NSButton(title: "❤️ Support Me", target: nil, action: nil)
+    let supportButton = NSButton(title: "Support Microgravity", target: nil, action: nil)
 
     /// `openURL` opens a link in the user's default browser; tests replace it.
     init(monitoringStore: any MonitoringStore, openURL: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }) {
@@ -88,9 +88,11 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         supportButton.bezelStyle = .push
         supportButton.controlSize = .small
         supportButton.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
+        supportButton.image = NSImage(systemSymbolName: "heart", accessibilityDescription: nil)
+        supportButton.imagePosition = .imageLeading
         supportButton.toolTip = "Open \(Self.supportURL.absoluteString) in your browser"
         supportButton.setAccessibilityIdentifier("sidebar.support")
-        supportButton.setAccessibilityLabel("Support Me")
+        supportButton.setAccessibilityLabel("Support Microgravity")
         supportButton.setAccessibilityHelp("Opens the support page in your default browser.")
         supportButton.translatesAutoresizingMaskIntoConstraints = false
 
@@ -123,6 +125,11 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     func refreshStatus(snapshot: MonitoringSnapshot? = nil) {
         footer.refresh(snapshot: snapshot)
+    }
+
+    /// Pauses the footer's 1 s timer while the window is hidden, minimized or fully covered.
+    func setWindowVisible(_ visible: Bool) {
+        footer.setWindowVisible(visible)
     }
 
     @objc func openSupportPage() {
@@ -223,6 +230,8 @@ final class SidebarStatusFooter: NSView {
     private let samplingLine = NSTextField(labelWithString: "")
     private let freshnessLine = NSTextField(labelWithString: "Waiting for the first sample")
     private var refreshTimer: Timer?
+    /// False while the window is hidden, minimized or fully covered. The timer does not run then.
+    private var isWindowVisible = true
 
     init(monitoringStore: any MonitoringStore) {
         self.monitoringStore = monitoringStore
@@ -256,20 +265,43 @@ final class SidebarStatusFooter: NSView {
             self, selector: #selector(samplingStateChanged),
             name: .samplingStateDidChange, object: nil
         )
-        // Pause or interval changes made on other pages do not publish a snapshot, so poll the store cheaply.
-        let timer = Timer(timeInterval: 1, target: self, selector: #selector(timerFired), userInfo: nil, repeats: true)
-        RunLoop.main.add(timer, forMode: .common)
-        refreshTimer = timer
         refresh()
     }
 
     required init?(coder: NSCoder) { nil }
 
+    /// The 1 s timer runs only while the footer is in a window that is visible. Pause or interval changes made
+    /// on other pages do not publish a snapshot, so the timer polls the store cheaply.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateTimer()
+    }
+
+    func setWindowVisible(_ visible: Bool) {
+        isWindowVisible = visible
+        updateTimer()
+    }
+
+    /// Starts the timer when the footer is shown and visible; invalidates it when the footer leaves its window.
+    private func updateTimer() {
+        guard window != nil, isWindowVisible else {
+            refreshTimer?.invalidate()
+            refreshTimer = nil
+            return
+        }
+        guard refreshTimer == nil else { return }
+        let timer = Timer(timeInterval: 1, target: self, selector: #selector(timerFired), userInfo: nil, repeats: true)
+        RunLoop.main.add(timer, forMode: .common)
+        refreshTimer = timer
+        // Catch up on anything missed while the timer was paused.
+        refresh()
+    }
+
     func refresh(snapshot: MonitoringSnapshot? = nil) {
         let paused = monitoringStore.isPaused
         samplingLine.stringValue = paused
             ? "Paused"
-            : "Sampling every \(SamplingControls.seconds(monitoringStore.interval)) s"
+            : "Sampling every \(SamplingControls.longTitle(monitoringStore.interval))"
         samplingLine.setAccessibilityLabel(samplingLine.stringValue)
         if let snapshot = snapshot ?? monitoringStore.latestSnapshot {
             let time = UIFormat.time(snapshot.timestamp)

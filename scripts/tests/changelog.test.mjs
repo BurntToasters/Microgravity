@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { changelogSection, placeholderReleaseNotes, releaseNotes, releaseNotesFailures } from "../lib/changelog.mjs";
+import { changelogSection, gpgFingerprint, placeholderReleaseNotes, releaseHeader, releaseNotes, releaseNotesFailures } from "../lib/changelog.mjs";
 import { root } from "../lib/core.mjs";
 
 // The 0.1.0 section is the first public release; it must carry real notes, not the placeholder.
@@ -32,11 +32,23 @@ test("changelogSection returns the final release through end of file", () => {
   assert.equal(changelogSection("1.0.0", contents), "## 1.0.0\n\n- Initial change.");
 });
 
-test("releaseNotes includes the section and tagged source attribution", () => {
-  assert.equal(
-    releaseNotes({ version: "2.0.0", tag: "v2.0.0" }, contents),
-    "## 2.0.0\n\n- Newest change.\n\nSource: v2.0.0 at 2.0.0. See the tagged repository for the complete corresponding source and bundled notices.\n",
-  );
+test("releaseNotes puts the download header above the section and ends with tagged source attribution", () => {
+  const notes = releaseNotes({ version: "2.0.0", tag: "v2.0.0", channel: "stable" }, contents);
+  assert.ok(notes.startsWith(releaseHeader({ version: "2.0.0", tag: "v2.0.0", channel: "stable" })));
+  assert.ok(notes.endsWith("## Changes in `v2.0.0:`\n\n- Newest change.\n\nSource: v2.0.0 at 2.0.0. See the tagged repository for the complete corresponding source and bundled notices.\n"));
+  assert.doesNotMatch(notes, /Beta build/);
+});
+
+test("releaseHeader links only this tag's release assets", () => {
+  const header = releaseHeader({ version: "2.1.0-beta.1", tag: "v2.1.0-beta.1", channel: "beta" });
+  assert.match(header, /^> \[!NOTE\]\n> 🅱️ This is a Beta build\./);
+  const links = [...header.matchAll(/\]\((https:\/\/github\.com\/[^)]+)\)/g)].map((match) => match[1]);
+  assert.deepEqual(links, [
+    "https://github.com/BurntToasters/Microgravity/releases/download/v2.1.0-beta.1/Microgravity-2.1.0-beta.1.zip",
+    "https://github.com/BurntToasters/Microgravity/releases/download/v2.1.0-beta.1/SHA256SUMS",
+    "https://github.com/BurntToasters/Microgravity/releases/download/v2.1.0-beta.1/SHA256SUMS.asc",
+  ]);
+  assert.match(header, new RegExp(gpgFingerprint));
 });
 
 test("changelogSection fails when the requested release is missing", () => {

@@ -1,25 +1,68 @@
 # Microgravity
 
-Microgravity is a native macOS 14+ process and system monitor. Its sidebar provides Processes, Performance, App History, Startup, Users, Details, Services, and Settings. Startup and Services are read-only inventories; process actions target the selected process identity and Force Quit asks for confirmation.
+Microgravity is a native process and system monitor for macOS, built with AppKit and Swift.
 
-## Build
+[<img width="150" alt="Download Microgravity for macOS" src="https://prod.rosie.run/img/download-for-macos.png"/>](https://github.com/BurntToasters/Microgravity/releases/latest)
 
-Install Xcode and Node.js 22.12 or newer, then run `npm ci` and `npm run build:debug`. The unsigned development app is written to `DerivedData/Build/Build/Products/Debug/Microgravity.app`. The non-UI checks and Core XCTest suite run without a GUI session; commands are in [docs/RELEASING.md](docs/RELEASING.md). `npm run test:all` runs both XCTest targets and is a hard release gate through `npm run release:prepare`. UI tests need a signed build, logged-in desktop session, and UI automation authorization. The latest signed `npm run test:all` run exited 0 with 243 tests executed (Core 220, UI 23), 0 failed, and 0 skipped, on commit `ec836a6` plus the uncommitted `gate/0.1.0` changes. The run reported a dirty worktree, so it provides no reusable release proof. The local result bundle is `DerivedData/Evidence/gate-2026-11-07/final-test-all.xcresult` (gitignored, not committed). Signing and distribution are described in [docs/RELEASING.md](docs/RELEASING.md) as well.
+<p align="center">
+  <img width="45%" alt="Processes with an expanded group" src="docs/screenshots/processes-dark.png" />
+  &nbsp;
+  <img width="45%" alt="Performance with unsupported energy shown" src="docs/screenshots/performance-dark.png" />
+  &nbsp;
+  <img width="45%" alt="Settings in Light appearance" src="docs/screenshots/settings-light.png" />
+  &nbsp;
+  <img width="45%" alt="Settings in Dark appearance" src="docs/screenshots/settings-dark.png" />
+</p>
+
+# Features
+
+- **Processes:** An outline of every process, grouped by app or as a flat list, with app icons, heat-mapped resource columns, and Quit and Force Quit for the selected process.
+- **Performance:** Sparklines and detail graphs for CPU, memory, disk, network, GPU and energy (where supported), per-core activity, swap and a memory pressure timeline.
+- **App History:** Per-app resource use by day, kept locally for up to 30 days.
+- **Startup and Services:** Read-only inventories of login items, launch agents and daemons, with Reveal in Finder.
+- **Users and Details:** CPU and memory per user session, and a searchable per-process table with PID, user, CPU, memory, disk, network and GPU.
+- **Settings:** Appearance, refresh interval, pause and resume sampling, history reset, the optional helper, the login item and updates.
+
+Partial or unavailable measurements are labeled with a reason. Missing values are never shown as zero.
+
+## System requirements
+
+- macOS 14 or later.
+- One universal build runs natively on Apple silicon and Intel Macs.
 
 ## Data and permissions
 
-The app collects local process and system measurements and stores aggregate history locally for up to 30 days. Settings can pause sampling and reset history. Optional helper, login item and update features report their availability in Settings and may require macOS approval. Some metrics and inventory locations can be unavailable or incomplete due to platform support or permissions; the interface identifies those states rather than treating them as zero or an empty inventory.
+Microgravity collects process and system measurements on your Mac and keeps aggregate history locally for up to 30 days. Nothing is sent anywhere except update checks. Settings can pause sampling and reset history.
 
-Microgravity 0.1.0 has not been released. Validation, sync checks, Node tests (32 passed), and Debug and universal Release smoke builds passed. The signed composite gate passed (243 tests, 0 failed, 0 skipped), but it ran from a dirty worktree and creates no release proof. The visual matrix captured 8 pages in System, Light, and Dark appearances at 1280 × 820 and 960 × 600 (48 captures), plus 2 App History gap captures; all were reviewed by the manager. Manual drag-resize, VoiceOver, live process actions, hosted CI (not run: GitHub Actions minutes are exhausted), notarization, and update delivery remain unverified. See [implementation status](docs/IMPLEMENTATION_STATUS.md) for exact results and gaps.
+The optional privileged helper, login item and updates report their state in Settings and may ask for macOS approval. The helper can quit processes owned by other standard users; it never quits root-owned processes or processes in protected system locations. Some metrics and inventory locations depend on platform support or permissions, and the interface marks those states instead of showing zero or an empty list.
 
-## Screenshots
+# Verify releases
 
-Processes and Performance are cropped app-window captures with deterministic UI-test fixture data. They were captured on macOS 27.2 in a restored 1040 × 820 window during an earlier signed test run. The Settings images are full default-size window captures (1280 × 820 points, 2560 × 1640 pixels) from the final visual matrix run on 2026-11-07 (macOS 27.2, Xcode 27.2), downscaled to 2080 pixels wide. All four show fixture states and are examples, not a complete visual acceptance pass.
+> [!IMPORTANT]
+> Releases are signed with my Apple Developer ID and notarized by Apple.
+> Each release also ships `SHA256SUMS` and detached GPG signatures (`.asc`) made with the Microgravity release key,
+> fingerprint `F01DAAD63F4688AB0BBEC7085E7752731C2EC359`.
+> In-app updates are delivered by [Sparkle](https://sparkle-project.org) and verified with an EdDSA signature before they install.
 
-| Processes | Performance |
-| --- | --- |
-| ![Processes with expanded fixture group](docs/screenshots/processes-dark.png) | ![Performance with unsupported energy shown](docs/screenshots/performance-dark.png) |
+# Build from source
 
-| Settings, Light | Settings, Dark |
-| --- | --- |
-| ![Settings in Light appearance](docs/screenshots/settings-light.png) | ![Settings in Dark appearance](docs/screenshots/settings-dark.png) |
+1. Install Xcode 26 or later and Node.js 24.13 or later.
+2. `npm ci`
+3. `npm run build:debug`
+
+The unsigned development app is written to `DerivedData/Build/Build/Products/Debug/Microgravity.app`.
+
+`npm run test:all` runs the Core and UI XCTest suites and is a release gate. The UI tests need a signed build, a logged-in desktop session and UI automation permission. The non-UI checks, signing, and the release process are in [docs/RELEASING.md](docs/RELEASING.md).
+
+# License
+
+Microgravity is licensed under `GPL-3.0-only`; see [LICENSE](LICENSE), [NOTICE.md](NOTICE.md) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Copyright © 2026 BurntToasters and Microgravity contributors.
+
+### ℹ️ Enjoying Microgravity? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
+
+# Need help with something?
+
+If there is an issue with the app, feel free to create a **GitHub Issue**!
+For other issues or general contact, go to [https://help.rosie.run/contact](https://help.rosie.run/contact).

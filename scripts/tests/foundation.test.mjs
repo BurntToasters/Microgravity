@@ -127,7 +127,12 @@ test("version synchronization updates both lockfile identity fields and refuses 
   assert.equal(updated.version, "0.1.0");
   assert.equal(updated.packages[""].version, "0.1.0");
   assert.equal(updated.packages.nested.version, "8.0.0");
-  assert.match(expectedChangelog("# Microgravity changelog\n\n", "0.1.0"), /^# Microgravity changelog\n\n## 0\.1\.0/m);
+  const fresh = expectedChangelog("# Microgravity changelog\n\n", "0.1.0");
+  assert.match(fresh, /^# Microgravity changelog\n\n<!-- downloads:start[^\n]*-->\n# ⬇️ Downloads\n[\s\S]*\/download\/v0\.1\.0\/Microgravity-0\.1\.0\.zip[\s\S]*<!-- downloads:end -->\n\n## 0\.1\.0\n\nRelease notes pending\.\n/);
+  assert.equal(expectedChangelog(fresh, "0.1.0"), fresh);
+  const bumped = expectedChangelog(fresh, "0.2.0-beta.1");
+  assert.match(bumped, /This is a Beta build[\s\S]*\/download\/v0\.2\.0-beta\.1\/Microgravity-0\.2\.0-beta\.1\.zip[\s\S]*<!-- downloads:end -->\n\n## 0\.2\.0-beta\.1\n\nRelease notes pending\.\n\n## 0\.1\.0\n/);
+  assert.doesNotMatch(bumped, /\/download\/v0\.1\.0\//);
   assert.throws(() => expectedChangelog("Wrong title\n", "0.1.0"), /must start/);
   assert.deepEqual(versionInfo(), { version: "0.1.0", buildNumber: 1, channel: "stable", tag: "v0.1.0" });
 });

@@ -213,6 +213,8 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         outlineView.autosaveName = outlineAutosaveName
         outlineView.autosaveTableColumns = outlineAutosaveName != nil
         outlineView.headerView?.setAccessibilityIdentifier("process.table.header")
+        // Autosave restores the saved sort with the columns. Adopt it so the rows match the header arrow.
+        sort = Self.restoredSort(from: outlineView.sortDescriptors)
         outlineView.sortDescriptors = [NSSortDescriptor(key: sort.column.rawValue, ascending: sort.ascending)]
         applyColumnVisibility()
 
@@ -221,6 +223,15 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         outlineView.menu = rowMenu
         columnMenu.delegate = self
         outlineView.headerView?.menu = columnMenu
+    }
+
+    /// The first descriptor that names a process column, or CPU descending when none does.
+    static func restoredSort(from descriptors: [NSSortDescriptor]) -> ProcessSortState {
+        guard let descriptor = descriptors.first, let key = descriptor.key,
+              let column = ProcessColumn(rawValue: key) else {
+            return ProcessSortState(column: .cpu, ascending: false)
+        }
+        return ProcessSortState(column: column, ascending: descriptor.ascending)
     }
 
     private static func defaultWidth(for column: ProcessColumn) -> CGFloat {

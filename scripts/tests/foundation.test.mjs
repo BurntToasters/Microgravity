@@ -165,7 +165,18 @@ test("appcast selects the correct channel feed and binds the version, build, siz
   assert.match(xml, /sparkle:version="1"/);
   assert.match(xml, /length="123"/);
   assert.match(xml, /sparkle:edSignature="signature-value"/);
-  assert.match(xml, /one release note/);
+  assert.match(xml, /<description sparkle:format="markdown"><!\[CDATA\[one release note\]\]><\/description>/);
+  assert.doesNotMatch(xml, /releaseNotesLink/, "a release notes link makes Sparkle show the whole GitHub page");
+});
+
+test("appcast embeds Markdown notes safely and requires them", () => {
+  const render = (notes) => renderAppcast({ version: "0.1.1", buildNumber: 2, tag: "v0.1.1" }, {
+    signature: "s", length: 1, notes, publishedAt: new Date("2026-11-08T00:00:00.000Z"),
+  });
+  assert.match(render("## 0.1.1\n\n- a <b>]]> c"),
+    /<description sparkle:format="markdown"><!\[CDATA\[## 0\.1\.1\n\n- a <b>\]\]\]\]><!\[CDATA\[> c\]\]><\/description>/);
+  assert.throws(() => render("  "), /notes/);
+  assert.throws(() => render(undefined), /notes/);
 });
 
 test("release sessions expire and bind all current build identity fields", () => {

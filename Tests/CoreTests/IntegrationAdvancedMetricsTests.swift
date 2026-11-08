@@ -199,6 +199,37 @@ final class IntegrationAdvancedMetricsTests: XCTestCase {
         XCTAssertEqual(refreshCount, 2)
     }
 
+    func testRetryHelperSoonStartsRefreshInsideBackoffOnlyWhileHelperIsUnavailable() async throws {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let clock = TestClock(start)
+        let gpuOutput = try PropertyListSerialization.data(fromPropertyList: ["gpu": ["idle_ratio": 0.5]], format: .xml, options: 0)
+        let client = ToggleHelperClient(clock: clock, gpuOutput: gpuOutput)
+        let collector = NativeAdvancedMetricsCollector(client: client, now: { clock.now() }, processIdentities: { [:] })
+
+        _ = await collector.collectAdvancedMetrics(at: start)
+        try await waitUntil("the first refresh completes") { await collector.refreshCompletionCountForTesting() == 1 }
+
+        clock.set(start.addingTimeInterval(5))
+        _ = await collector.collectAdvancedMetrics(at: clock.now())
+        var refreshCount = await collector.refreshRequestCountForTesting()
+        XCTAssertEqual(refreshCount, 1, "without a retry request, the 60 s backoff still holds at 5 s")
+
+        // The user approves the helper in System Settings and the app becomes active.
+        await client.setInstalled(true)
+        await collector.retryHelperSoon()
+        _ = await collector.collectAdvancedMetrics(at: clock.now())
+        refreshCount = await collector.refreshRequestCountForTesting()
+        XCTAssertEqual(refreshCount, 2, "a retry request starts a refresh at once, inside the backoff window")
+        _ = try await waitForGPUAvailability(true, collector: collector, clock: clock)
+
+        // A healthy helper is not affected by retry requests: the normal 5 s cadence still applies.
+        clock.set(start.addingTimeInterval(6))
+        await collector.retryHelperSoon()
+        _ = await collector.collectAdvancedMetrics(at: clock.now())
+        refreshCount = await collector.refreshRequestCountForTesting()
+        XCTAssertEqual(refreshCount, 2, "retry requests are ignored once the last result was not helper-unavailable")
+    }
+
     func testNetworkRatesRequireStableIdentityAndRejectReset() {
         let old = ProcessIdentity(pid: 42, startTime: .init(secondsSinceEpoch: 100, microseconds: 0))
         let replacement = ProcessIdentity(pid: 42, startTime: .init(secondsSinceEpoch: 200, microseconds: 0))
@@ -249,7 +280,7 @@ final class IntegrationAdvancedMetricsTests: XCTestCase {
 
     func testIdentityEnumerationCapIsNamedInNetworkCapabilityDetail() async throws {
         let clock = TestClock(Date(timeIntervalSince1970: 1_000))
-        let cap = "Process list is 5242881 bytes, above the 4 MiB identity cap"
+        let cap = SystemMonitorCollector.processEnumerationCapDetail
         let client = FixedAdvancedSamplingClient([
             .nettop: response(.nettop, at: clock.now(),
                               output: Data("time,interface,bytes_in,bytes_out\n0,en0.42,100,200\n".utf8)),

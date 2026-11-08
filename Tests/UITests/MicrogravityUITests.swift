@@ -270,7 +270,7 @@ final class MicrogravityUITests: XCTestCase {
         let gap = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier BEGINSWITH %@", "history.gap.")
         ).firstMatch
-        XCTAssertTrue(gap.exists)
+        XCTAssertTrue(gap.waitForExistence(timeout: 3))
         XCTAssertTrue(element("history.total.fixture-editor.application", in: app).exists)
         let editorCPU = app.staticTexts["history.total.fixture-editor.cpu"].label
         let indexerCPU = app.staticTexts["history.total.fixture-indexer.cpu"].label
@@ -405,7 +405,8 @@ final class MicrogravityUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["details.process.410.memory"].exists)
         // The Network column is hidden while its capability is unavailable; the banner keeps the explicit reason.
         XCTAssertFalse(app.staticTexts["details.process.410.network"].exists)
-        XCTAssertTrue(app.staticTexts["details.capability-state"].label.contains("Unsupported"))
+        // An unsupported per-process network provider points at the optional helper instead of a bare reason.
+        XCTAssertTrue(app.staticTexts["details.capability-state"].label.contains("needs the optional helper"))
         XCTAssertFalse(element("details.group.fixture-editor", in: app).exists)
         attachScreenshot(app, named: "Details")
     }

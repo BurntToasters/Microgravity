@@ -66,6 +66,26 @@ final class UIStateTests: XCTestCase {
         XCTAssertEqual(textField(withIdentifier: "process.selection.identity", in: controller.view)?.stringValue, "No process selected")
     }
 
+    /// AppKit restores the saved sort with the autosaved columns; the Processes model must adopt it, not reset to CPU.
+    func testRestoredProcessSortAdoptsAnyProcessColumnAndDefaultsToCPUDescending() {
+        let cpuDefault = ProcessSortState(column: .cpu, ascending: false)
+        XCTAssertEqual(ProcessesViewController.restoredSort(from: []), cpuDefault)
+        XCTAssertEqual(ProcessesViewController.restoredSort(from: [NSSortDescriptor(key: nil, ascending: true)]), cpuDefault)
+        XCTAssertEqual(ProcessesViewController.restoredSort(from: [NSSortDescriptor(key: "not-a-column", ascending: true)]),
+                       cpuDefault)
+        XCTAssertEqual(ProcessesViewController.restoredSort(from: [NSSortDescriptor(key: ProcessColumn.name.rawValue, ascending: true)]),
+                       ProcessSortState(column: .name, ascending: true))
+        XCTAssertEqual(ProcessesViewController.restoredSort(from: [NSSortDescriptor(key: ProcessColumn.memory.rawValue, ascending: false)]),
+                       ProcessSortState(column: .memory, ascending: false))
+
+        let (dependencies, _, _) = makeDependencies()
+        let controller = ProcessesViewController(dependencies: dependencies, defaults: isolatedProcessDefaults())
+        controller.loadViewIfNeeded()
+        let table = try! XCTUnwrap(view(withIdentifier: "process.table", in: controller.view) as NSOutlineView?)
+        XCTAssertEqual(table.sortDescriptors.first?.key, ProcessColumn.cpu.rawValue)
+        XCTAssertEqual(table.sortDescriptors.first?.ascending, false)
+    }
+
     func testProcessGroupExpansionRestoresAcrossControllerAndDropsReusedPID() throws {
         let suite = "ProcessExpansionUIState-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

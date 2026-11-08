@@ -244,7 +244,7 @@ enum AppHistoryBuilder {
             return AppHistoryCellText(display: String(localized: "Unavailable"),
                                       detail: gapCount > 0 ? String(localized: "No measured value; \(gapCount) gap(s)") : nil)
         }
-        let formatted = UIFormat.metric(MetricReading(value: present.reduce(0, +), unit: unit, timestamp: .distantPast))
+        let formatted = formattedValue(present.reduce(0, +), unit: unit)
         let missingDays = values.filter { $0 == nil }.count
         guard missingDays > 0 || gapCount > 0 else {
             return AppHistoryCellText(display: formatted, detail: nil)
@@ -258,13 +258,19 @@ enum AppHistoryBuilder {
         )
     }
 
+    /// CPU time uses long-span duration text ("1h 23m"); other units keep the generic metric text.
+    private static func formattedValue(_ value: Double, unit: MetricUnit) -> String {
+        if unit == .seconds { return UIFormat.duration(value) }
+        return UIFormat.metric(MetricReading(value: value, unit: unit, timestamp: .distantPast))
+    }
+
     /// One day of an application. Gaps on the day make the value a partial lower bound, shown with "≥".
     static func dailyText(_ value: Double?, unit: MetricUnit, gaps: Int) -> AppHistoryCellText {
         guard let value, value.isFinite else {
             return AppHistoryCellText(display: gaps > 0 ? String(localized: "Missing") : String(localized: "Unavailable"),
                                       detail: gaps > 0 ? String(localized: "No measured value; \(gaps) gap(s)") : nil)
         }
-        let formatted = UIFormat.metric(MetricReading(value: value, unit: unit, timestamp: .distantPast))
+        let formatted = formattedValue(value, unit: unit)
         guard gaps > 0 else { return AppHistoryCellText(display: formatted, detail: nil) }
         return AppHistoryCellText(
             display: "≥ \(formatted)",

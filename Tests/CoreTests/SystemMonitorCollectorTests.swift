@@ -74,6 +74,22 @@ final class SystemMonitorCollectorTests: XCTestCase {
         XCTAssertEqual(SystemMonitorCollector.processName(executablePath: "", kernelName: "launchd"), "launchd")
     }
 
+    /// Advanced network attribution keys on this table. proc_pidinfo, the previous source, fails with EPERM for
+    /// other users' processes, so the live table must still name root-owned launchd and the current process.
+    func testProcessIdentityLookupCoversOtherUsersProcesses() {
+        let lookup = SystemMonitorCollector.processIdentityLookup()
+        XCTAssertNil(lookup.failureDetail, lookup.failureDetail ?? "the identity table should be complete")
+        XCTAssertEqual(lookup.identities[1]?.pid, 1, "launchd (pid 1, owned by root) must have an identity")
+        XCTAssertEqual(lookup.identities[getpid()]?.pid, getpid())
+        XCTAssertTrue(lookup.identities.keys.allSatisfy { $0 > 0 }, "pid 0 and negative pids must be skipped")
+        if getuid() != 0 {
+            var info = proc_bsdinfo()
+            let size = proc_pidinfo(1, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size))
+            XCTAssertNotEqual(size, Int32(MemoryLayout<proc_bsdinfo>.size),
+                              "precondition: proc_pidinfo cannot read another user's process, which is why the table is used")
+        }
+    }
+
     /// One sample on a normal Mac must list every process, including other users' processes, and report
     /// the process and user-session capabilities as available.
     func testLiveSnapshotListsOtherUsersProcessesAndReportsProcessesAvailable() async throws {

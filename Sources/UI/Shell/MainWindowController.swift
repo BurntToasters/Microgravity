@@ -91,6 +91,26 @@ final class MainWindowController: NSWindowController {
         return size
     }
 
+    /// Process menu actions implemented by the Processes page. Explicit so unrelated actions are never forwarded.
+    private static let processPageActions: [Selector] = [
+        #selector(ProcessesViewController.focusProcessSearch(_:)),
+        #selector(ProcessesViewController.quitSelectedProcess(_:)),
+        #selector(ProcessesViewController.forceQuitSelectedProcess(_:)),
+        #selector(ProcessesViewController.showSelectedProcessInDetails(_:)),
+        #selector(ProcessesViewController.revealSelectedProcess(_:)),
+        #selector(ProcessesViewController.copySelectedPath(_:))
+    ]
+
+    /// The Processes page is in the responder chain only while focus is inside it. The window controller is
+    /// always in the chain, so it routes these actions to the page on screen. Menu items then validate through it.
+    override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
+        guard Self.processPageActions.contains(action),
+              let processes = root.currentPageController as? ProcessesViewController else {
+            return super.supplementalTarget(forAction: action, sender: sender)
+        }
+        return processes
+    }
+
     // MARK: Menu and responder actions
 
     @objc func showPage(_ sender: NSMenuItem) {

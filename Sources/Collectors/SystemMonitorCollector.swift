@@ -194,7 +194,7 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                                                    reason: .unsupported)
         }
         if advancedReadings[.energy] == nil {
-            advancedReadings[.energy] = MetricReading(unavailable: .joules, timestamp: timestamp,
+            advancedReadings[.energy] = MetricReading(unavailable: .watts, timestamp: timestamp,
                                                      reason: .unsupported)
         }
 
@@ -226,7 +226,6 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             .processes: MetricAvailability(available: processResult.complete,
                                           reason: processResult.complete ? nil : .collectionFailed,
                                           detail: processIncompleteDetail),
-            .processIO: Self.availability(for: processes.first?.diskReadBytesPerSecond),
             .startupItems: Self.availability(for: inventory.startupCoverage),
             .services: Self.availability(for: inventory.serviceCoverage),
             .userSessions: Self.availability(for: sessions.coverage),
@@ -632,6 +631,26 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         ProcessIdentity(pid: entry.kp_proc.p_pid,
                         startTime: ProcessStartTime(secondsSinceEpoch: Int64(entry.kp_proc.p_un.__p_starttime.tv_sec),
                                                     microseconds: Int32(entry.kp_proc.p_un.__p_starttime.tv_usec)))
+    }
+
+    /// Identities for every live process in the same KERN_PROC_ALL table that collectProcesses reads, so
+    /// processes owned by other users (including root's) are covered. Zombies and pid <= 0 are skipped.
+    /// A failed or unstable read returns no identities with a detail; a table cut at the cap keeps its identities.
+    nonisolated static func processIdentityLookup() -> ProcessIdentityLookup {
+        switch readProcessTable() {
+        case let .failure(failure):
+            return ProcessIdentityLookup(identities: [:], failureDetail: failure.detail)
+        case let .success(table):
+            var identities: [Int32: ProcessIdentity] = [:]
+            identities.reserveCapacity(table.entries.count)
+            for entry in table.entries {
+                let pid = entry.kp_proc.p_pid
+                guard pid > 0, Int32(entry.kp_proc.p_stat) != SZOMB else { continue }
+                identities[pid] = identity(of: entry)
+            }
+            return ProcessIdentityLookup(identities: identities,
+                                         failureDetail: table.truncatedAtCap ? processEnumerationCapDetail : nil)
+        }
     }
 
     /// Re-reads one PID through KERN_PROC_PID, which also succeeds for other users' processes.

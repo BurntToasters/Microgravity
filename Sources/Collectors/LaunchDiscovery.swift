@@ -11,6 +11,12 @@ struct LaunchDiscoveryResult {
 
 enum LaunchDiscovery {
     static let maximumPlistBytes = 1_048_576
+    static let launchdStateNote = "Launchd loaded/idle state is not exposed by this read-only plist scan."
+    static let startupNotes = [
+        launchdStateNote,
+        "Background Task Management login items are not available through a public inventory API.",
+    ]
+    static let serviceNotes = [launchdStateNote]
 
     private enum BoundedReadFailure: LocalizedError {
         case open(Int32)
@@ -59,21 +65,16 @@ enum LaunchDiscovery {
         let runningPaths = Set(processes.compactMap(\.executablePath))
         var startup: [DiscoveredEntrySnapshot] = []
         var services: [DiscoveredEntrySnapshot] = []
-        var startupReasons = ["Launchd loaded/idle state is not exposed by this read-only plist scan.",
-                              "Background Task Management login items are not available through a public inventory API."]
-        var serviceReasons = ["Launchd loaded/idle state is not exposed by this read-only plist scan."]
+        var startupFailures: [String] = []
+        var serviceFailures: [String] = []
         var programPaths: [String: String] = [:]
         var scannedAnyDirectory = false
-        var startupHadFailure = false
-        var serviceHadFailure = false
 
         func recordFailure(_ issue: String, isService: Bool) {
             if isService {
-                serviceHadFailure = true
-                serviceReasons.append(issue)
+                serviceFailures.append(issue)
             } else {
-                startupHadFailure = true
-                startupReasons.append(issue)
+                startupFailures.append(issue)
             }
         }
 
@@ -133,15 +134,19 @@ enum LaunchDiscovery {
             }
         }
 
-        if !scannedAnyDirectory {
-            startupReasons.append("No startup-item directories were found.")
-            serviceReasons.append("No service directories were found.")
-        }
+        let startupMissing = scannedAnyDirectory ? nil : "No startup-item directories were found."
+        let serviceMissing = scannedAnyDirectory ? nil : "No service directories were found."
         return LaunchDiscoveryResult(
             startupItems: startup.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
             services: services.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
-            startupCoverage: coverage(hadFailure: startupHadFailure, reasons: startupReasons),
-            serviceCoverage: coverage(hadFailure: serviceHadFailure, reasons: serviceReasons),
+            startupCoverage: coverage(
+                hadFailure: !startupFailures.isEmpty,
+                reasons: coverageReasons(failures: startupFailures, missingDirectoryReason: startupMissing,
+                                         notes: startupNotes)),
+            serviceCoverage: coverage(
+                hadFailure: !serviceFailures.isEmpty,
+                reasons: coverageReasons(failures: serviceFailures, missingDirectoryReason: serviceMissing,
+                                         notes: serviceNotes)),
             programPaths: programPaths)
     }
 
@@ -181,6 +186,12 @@ enum LaunchDiscovery {
 
     static func coverage(hadFailure: Bool, reasons: [String]) -> DiscoveryCoverage {
         DiscoveryCoverage(complete: !hadFailure, reasons: reasons)
+    }
+
+    /// Real failures come first, then the missing-directory reason, then the permanent notes.
+    /// The Startup/Services banner shows the first reason when coverage is incomplete, so a failure must lead.
+    static func coverageReasons(failures: [String], missingDirectoryReason: String?, notes: [String]) -> [String] {
+        failures + (missingDirectoryReason.map { [$0] } ?? []) + notes
     }
 
     private static func programPath(from dictionary: [String: Any]) -> String? {

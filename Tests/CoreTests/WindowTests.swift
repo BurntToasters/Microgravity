@@ -169,6 +169,63 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(listed, DashboardPage.allCases.map { "navigation.item.\($0.rawValue)" })
     }
 
+    /// Process menu actions must reach the Processes page while focus is in the sidebar, not only inside its table.
+    func testProcessActionsReachTheProcessesPageFromTheSidebarAndNotFromOtherPages() {
+        let controller = MainWindowController(dependencies: makeDependencies(), frameAutosaveName: nil)
+        let window = try! XCTUnwrap(controller.window)
+        defer { window.close() }
+        controller.showWindow(nil)
+        controller.root.select(.processes)
+        settle(window)
+        let processes = try! XCTUnwrap(controller.root.currentPageController as? ProcessesViewController)
+
+        let sidebarOutline = try! XCTUnwrap(firstOutlineView(in: controller.root.sidebar.view))
+        XCTAssertTrue(window.makeFirstResponder(sidebarOutline))
+        XCTAssertTrue(window.firstResponder === sidebarOutline)
+
+        let processActions: [Selector] = [
+            #selector(ProcessesViewController.focusProcessSearch(_:)),
+            #selector(ProcessesViewController.quitSelectedProcess(_:)),
+            #selector(ProcessesViewController.forceQuitSelectedProcess(_:)),
+            #selector(ProcessesViewController.showSelectedProcessInDetails(_:)),
+            #selector(ProcessesViewController.revealSelectedProcess(_:)),
+            #selector(ProcessesViewController.copySelectedPath(_:))
+        ]
+        for action in processActions {
+            XCTAssertTrue(actionTarget(action, from: window) === processes, "\(action) should reach Processes from the sidebar")
+        }
+        XCTAssertNil(controller.supplementalTarget(forAction: NSSelectorFromString("copy:"), sender: nil),
+                     "Unrelated actions must not be forwarded to the Processes page")
+
+        controller.root.select(.settings)
+        settle(window)
+        XCTAssertNil(actionTarget(#selector(ProcessesViewController.quitSelectedProcess(_:)), from: window),
+                     "Quit Process must not be forwarded while another page is shown")
+    }
+
+    /// Mirrors AppKit's lookup for a nil-target action: each responder answers if it implements the action,
+    /// otherwise it may supply a target through `supplementalTarget(forAction:sender:)`.
+    private func actionTarget(_ action: Selector, from window: NSWindow) -> AnyObject? {
+        var responder: NSResponder? = window.firstResponder
+        while let current = responder {
+            if current.responds(to: action) { return current }
+            if let supplied = current.supplementalTarget(forAction: action, sender: nil) as AnyObject? {
+                return supplied
+            }
+            responder = current.nextResponder
+        }
+        return nil
+    }
+
+    private func firstOutlineView(in view: NSView?) -> NSOutlineView? {
+        guard let view else { return nil }
+        if let outline = view as? NSOutlineView { return outline }
+        for subview in view.subviews {
+            if let found = firstOutlineView(in: subview) { return found }
+        }
+        return nil
+    }
+
     private func collectNavigationCells(in view: NSView?, into cells: inout [NSTableCellView]) {
         guard let view else { return }
         if let cell = view as? NSTableCellView, cell.identifier?.rawValue.hasPrefix("navigation.item.") == true {

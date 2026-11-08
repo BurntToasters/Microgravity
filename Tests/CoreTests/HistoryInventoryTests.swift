@@ -199,19 +199,17 @@ final class HistoryInventoryTests: XCTestCase {
 
     func testPartialTotalKeepsTheNumberVisibleAndExplainsItInTooltipAndAccessibility() {
         let text = AppHistoryBuilder.totalText([108], unit: .seconds, gapCount: 1)
-        let number = UIFormat.metric(MetricReading(value: 108, unit: .seconds, timestamp: .distantPast))
-        XCTAssertEqual(number, "108.0 s")
-        XCTAssertEqual(text.display, "≥ 108.0 s")
+        XCTAssertEqual(text.display, "≥ 1m 48s")
 
         let detail = try! XCTUnwrap(text.detail)
-        XCTAssertEqual(detail, "Measured 108.0 s; partial — 1 gap(s); actual total may be higher")
+        XCTAssertEqual(detail, "Measured 1m 48s; partial — 1 gap(s); actual total may be higher")
         XCTAssertFalse(text.display.contains("Measured"))
         XCTAssertFalse(text.display.contains("·"))
 
         // Partial day rows follow the same rule.
         let day = AppHistoryBuilder.dailyText(108, unit: .seconds, gaps: 1)
-        XCTAssertEqual(day.display, "≥ 108.0 s")
-        XCTAssertEqual(day.detail, "Measured 108.0 s; partial — 1 gap(s) on this day; actual value may be higher")
+        XCTAssertEqual(day.display, "≥ 1m 48s")
+        XCTAssertEqual(day.detail, "Measured 1m 48s; partial — 1 gap(s) on this day; actual value may be higher")
 
         // Row wiring: the detail is exposed per column and the visible text stays the compact form.
         let appRow = AppHistoryRow(
@@ -234,8 +232,26 @@ final class HistoryInventoryTests: XCTestCase {
             XCTAssertLessThanOrEqual(width, available, "\"\(text)\" needs \(width)pt, column allows \(available)pt")
         }
         let worst = AppHistoryBuilder.totalText([9_999.9], unit: .seconds, gapCount: 1).display
-        let worstNumber = UIFormat.metric(MetricReading(value: 9_999.9, unit: .seconds, timestamp: .distantPast))
-        XCTAssertEqual(worst, "≥ \(worstNumber)")
+        XCTAssertEqual(worst, "≥ 2h 47m")
+    }
+
+    /// Under a minute CPU time keeps "12.3 s"; longer totals and days read as hours and minutes.
+    func testCpuTimeDurationsStayReadableAboveAMinute() {
+        XCTAssertEqual(UIFormat.duration(12.3), "12.3 s")
+        XCTAssertEqual(UIFormat.duration(5_000), "1h 23m")
+        XCTAssertEqual(UIFormat.duration(86_400), "24h")
+        XCTAssertEqual(UIFormat.duration(90), "1m 30s")
+
+        XCTAssertEqual(AppHistoryBuilder.totalText([86_400], unit: .seconds, gapCount: 0),
+                       AppHistoryCellText(display: "24h", detail: nil))
+        XCTAssertEqual(AppHistoryBuilder.dailyText(90, unit: .seconds, gaps: 0),
+                       AppHistoryCellText(display: "1m 30s", detail: nil))
+        XCTAssertEqual(AppHistoryBuilder.dailyText(12.3, unit: .seconds, gaps: 0),
+                       AppHistoryCellText(display: "12.3 s", detail: nil))
+        XCTAssertEqual(AppHistoryBuilder.dailyText(86_400, unit: .seconds, gaps: 2).display, "≥ 24h")
+        // Byte totals are not durations and keep their own formatting.
+        XCTAssertEqual(AppHistoryBuilder.totalText([1_024], unit: .bytes, gapCount: 0).display,
+                       UIFormat.metric(MetricReading(value: 1_024, unit: .bytes, timestamp: .distantPast)))
     }
 
     func testNumericHistoryCellsMeetTheTrailingInsetUnderTheirRightAlignedHeader() throws {

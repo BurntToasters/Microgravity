@@ -536,7 +536,7 @@ enum PerformancePresenter {
     }
 
     private static func defaultUnit(_ kind: MetricKind) -> MetricUnit {
-        kind == .energy ? .joules : .percent
+        kind == .energy ? .watts : .percent
     }
 
     private static func unitName(_ unit: MetricUnit) -> String {

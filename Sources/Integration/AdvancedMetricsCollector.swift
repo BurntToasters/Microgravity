@@ -83,6 +83,8 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
             + [(MetricKind.processGPUTime, NativeAdvancedMetricsCollector.processGPUTimeAvailability)]))
     private var lastCompleted: Date?
     private var lastResultWasHelperUnavailable = false
+    /// Set by retryHelperSoon(); honored only while the last result was helper-unavailable.
+    private var helperRetryRequested = false
     private var inFlight = false
     private var refreshRequestCount = 0
     private var refreshCompletionCount = 0
@@ -99,19 +101,28 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
         } else if let processIdentities {
             lookup = { ProcessIdentityLookup(identities: processIdentities()) }
         } else {
-            lookup = { Self.identityLookup() }
+            lookup = { SystemMonitorCollector.processIdentityLookup() }
         }
         self.processIdentities = lookup
+    }
+
+    /// Asks for a refresh on the next collect, skipping the helper-unavailable backoff. Used when the app becomes
+    /// active, since the user may have just approved the helper in System Settings. No effect on a healthy helper.
+    func retryHelperSoon() {
+        guard lastResultWasHelperUnavailable else { return }
+        helperRetryRequested = true
     }
 
     func collectAdvancedMetrics(at timestamp: Date) async -> AdvancedMetricsSnapshot {
         let currentTime = now()
         let interval = lastResultWasHelperUnavailable ? Self.helperUnavailableRetryInterval : Self.refreshInterval
-        let refreshDue = lastCompleted.map {
+        let retryNow = helperRetryRequested && lastResultWasHelperUnavailable
+        let refreshDue = retryNow || (lastCompleted.map {
             currentTime.timeIntervalSince($0) >= interval || currentTime < $0
-        } ?? true
+        } ?? true)
         if !inFlight && refreshDue {
             inFlight = true
+            helperRetryRequested = false
             refreshRequestCount += 1
             Task { await self.refresh() }
         }
@@ -216,6 +227,7 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
             || power.error == HelperSamplingClient.unavailableError
         cache = AdvancedMetricsSnapshot(system: system, perProcess: perProcess, capabilities: capabilities)
         lastCompleted = now()
+        if !lastResultWasHelperUnavailable { helperRetryRequested = false }
     }
 
     /// A missing helper is an optional feature that is not set up, not a failed collection.
@@ -253,32 +265,5 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
         cache = AdvancedMetricsSnapshot(capabilities: capabilities)
         lastResultWasHelperUnavailable = true
         lastCompleted = now()
-    }
-
-    /// proc_listpids sizes above this are not enumerated; identities for advanced metrics are then unverified.
-    static let maximumIdentityListBytes = 4 * 1024 * 1024
-
-    private static func identityLookup() -> ProcessIdentityLookup {
-        let size = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
-        guard size > 0 else {
-            return ProcessIdentityLookup(identities: [:], failureDetail: "proc_listpids could not size the process list")
-        }
-        guard size <= maximumIdentityListBytes else {
-            return ProcessIdentityLookup(identities: [:], failureDetail: "Process list is \(size) bytes, above the \(maximumIdentityListBytes / (1024 * 1024)) MiB identity cap; process identities were not verified")
-        }
-        var pids = [pid_t](repeating: 0, count: Int(size) / MemoryLayout<pid_t>.size + 256)
-        let byteCount = pids.withUnsafeMutableBytes { bytes in
-            proc_listpids(UInt32(PROC_ALL_PIDS), 0, bytes.baseAddress, Int32(bytes.count))
-        }
-        guard byteCount > 0, Int(byteCount) < pids.count * MemoryLayout<pid_t>.size else {
-            return ProcessIdentityLookup(identities: [:], failureDetail: "The process list changed during identity enumeration")
-        }
-        var result: [Int32: ProcessIdentity] = [:]
-        for pid in pids.prefix(Int(byteCount) / MemoryLayout<pid_t>.size) where pid > 0 {
-            var info = proc_bsdinfo()
-            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size)) == MemoryLayout<proc_bsdinfo>.size else { continue }
-            result[pid] = ProcessIdentity(pid: pid, startTime: ProcessStartTime(secondsSinceEpoch: Int64(info.pbi_start_tvsec), microseconds: Int32(info.pbi_start_tvusec)))
-        }
-        return ProcessIdentityLookup(identities: result)
     }
 }

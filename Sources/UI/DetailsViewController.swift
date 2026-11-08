@@ -162,12 +162,12 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
                 ]
             )
         }
-        processIdentityByRowID = Dictionary(uniqueKeysWithValues: sorted.map {
+        processIdentityByRowID = Dictionary(sorted.map {
             ("details.process.\($0.id.pid)", $0.id)
-        })
-        rowIDByProcessIdentity = Dictionary(uniqueKeysWithValues: sorted.map {
+        }, uniquingKeysWith: { first, _ in first })
+        rowIDByProcessIdentity = Dictionary(sorted.map {
             ($0.id, "details.process.\($0.id.pid)")
-        })
+        }, uniquingKeysWith: { first, _ in first })
         allRows = rows
         applyColumnVisibility(networkUnavailable: isUnavailable(networkCapability),
                               gpuUnavailable: isUnavailable(gpuCapability))

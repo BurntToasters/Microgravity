@@ -247,6 +247,21 @@ final class PerformanceViewControllerTests: XCTestCase {
                       "unavailable readings are plotted as no data, never as zero")
     }
 
+    /// Energy is reported in watts by default; with no reading yet, its detail must not claim joules.
+    func testEnergyDetailWithoutReadingsDefaultsToWatts() {
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let base = CoreTestFixtures.snapshot(timestamp: timestamp)
+        let snapshot = MonitoringSnapshot(
+            timestamp: timestamp, system: base.system, processes: [], processGroups: [], startupItems: [],
+            services: [], users: [], discoveryCoverage: [:], capabilities: [:], advancedMetrics: [:])
+        let samples = [MonitoringGraphSample(snapshot: snapshot)]
+
+        let detail = PerformancePresenter.detail(metric: .energy, snapshot: snapshot, samples: samples,
+                                                 window: .oneMinute, cpuMode: .overall)
+        XCTAssertTrue(detail.subtitle.hasPrefix("Power in watts"), detail.subtitle)
+        XCTAssertEqual(detail.stats.first { $0.label == "Unit" }?.value, "Watts")
+    }
+
     func testWindowKeepsSamplesInsideTheWindowAndNamesTheRealSpan() {
         let end = Date(timeIntervalSince1970: 1_800_000_000)
         let samples = (0...120).map { offset in

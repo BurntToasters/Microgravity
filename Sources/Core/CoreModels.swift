@@ -93,7 +93,6 @@ public enum MetricKind: String, Codable, Hashable, Sendable, CaseIterable {
     case diskThroughput
     case networkThroughput
     case processes
-    case processIO
     case gpu
     case energy
     case processGPUTime

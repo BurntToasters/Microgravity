@@ -154,6 +154,59 @@ final class Release011FixesTests: XCTestCase {
         }
     }
 
+    func testProcessDefaultColumnsFitTheMinimumWindowWithoutGPU() throws {
+        let configuration = FixtureConfiguration(arguments: [])
+        let controller = ProcessesViewController(dependencies: PageDependencies(
+            monitoringStore: FixtureMonitoringStore(configuration: configuration),
+            processActions: FixtureProcessActioner(configuration: configuration),
+            integrations: UnavailableSystemIntegrationAPI(), fixtureMode: true))
+        controller.loadViewIfNeeded()
+        let outline = try XCTUnwrap(findOutline(in: controller.view))
+        for column in outline.tableColumns {
+            XCTAssertLessThanOrEqual(column.minWidth, column.width, column.identifier.rawValue)
+        }
+        // 960 pt window minimum: name plus the metric columns must fit without GPU (about 700 pt of table).
+        let withoutGPU = outline.tableColumns.filter { !$0.isHidden && $0.identifier.rawValue != ProcessColumn.gpu.rawValue }
+        XCTAssertLessThanOrEqual(withoutGPU.reduce(0) { $0 + $1.width }, 700)
+
+        // The worst-case pair must fit the Disk column at 12 pt, with the cell's 8 pt insets and the label's own padding.
+        let disk = try XCTUnwrap(outline.tableColumns.first { $0.identifier.rawValue == ProcessColumn.disk.rawValue })
+        let sample = "R 326 KB/s · W 65 KB/s"
+        let textWidth = (sample as NSString).size(withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)]).width
+        XCTAssertLessThanOrEqual(textWidth + 2 * PaddedTableHeaderCell.horizontalInset + 4, disk.width,
+                                 "\(sample) needs \(textWidth) pt")
+    }
+
+    func testEveryTableHeaderIsPaddedLikeItsCells() throws {
+        let details = DetailsViewController(autosaveName: nil)
+        _ = details.view
+        details.view.frame = NSRect(x: 0, y: 0, width: 1200, height: 700)
+        details.view.layoutSubtreeIfNeeded()
+        let detailsTable = try XCTUnwrap(findTable(id: "details.table", in: details.view))
+
+        let users = UsersViewController()
+        _ = users.view
+        users.view.frame = NSRect(x: 0, y: 0, width: 1000, height: 600)
+        users.view.layoutSubtreeIfNeeded()
+        let usersTable = try XCTUnwrap(findTable(id: "users.table", in: users.view))
+
+        let history = AppHistoryOutlineController(autosaveName: nil)
+        let historyTable = try XCTUnwrap(history.scrollView.documentView as? NSTableView)
+
+        let inventory = InventoryTableController(identifier: "inventory.test", autosaveName: nil,
+                                                 accessibilityLabel: "Inventory")
+        let inventoryTable = try XCTUnwrap(inventory.scrollView.documentView as? NSTableView)
+
+        for table in [detailsTable, usersTable, historyTable, inventoryTable] {
+            XCTAssertFalse(table.tableColumns.isEmpty)
+            for column in table.tableColumns {
+                XCTAssertTrue(column.headerCell is PaddedTableHeaderCell,
+                              "\(table.accessibilityIdentifier()): \(column.identifier.rawValue)")
+                XCTAssertEqual(column.headerCell.accessibilityIdentifier(), column.identifier.rawValue)
+            }
+        }
+    }
+
     func testSettingsLabelsLineUpAcrossCardsAndStayPutWhenAppearanceChanges() throws {
         let settings = SettingsViewController(dependencies: PageDependencies(
             monitoringStore: FixtureMonitoringStore(configuration: FixtureConfiguration(arguments: [])),
@@ -190,6 +243,14 @@ final class Release011FixesTests: XCTestCase {
             window.contentView?.layoutSubtreeIfNeeded()
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         }
+    }
+
+    private func findTable(id: String, in view: NSView) -> NSTableView? {
+        if let table = view as? NSTableView, table.accessibilityIdentifier() == id { return table }
+        for subview in view.subviews {
+            if let found = findTable(id: id, in: subview) { return found }
+        }
+        return nil
     }
 
     private func findOutline(in view: NSView) -> NSOutlineView? {

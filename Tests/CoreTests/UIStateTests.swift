@@ -63,7 +63,7 @@ final class UIStateTests: XCTestCase {
 
         toggleProcessGroup("Fixture Editor", controller: controller, table: table)
         XCTAssertEqual(table.selectedRow, -1)
-        XCTAssertEqual(textField(withIdentifier: "process.selection.identity", in: controller.view)?.stringValue, "No process selected")
+        assertProcessSelectionEmpty(controller: controller)
     }
 
     /// AppKit restores the saved sort with the autosaved columns; the Processes model must adopt it, not reset to CPU.
@@ -200,7 +200,7 @@ final class UIStateTests: XCTestCase {
 
         controller.update(snapshot: replacementSnapshot)
         XCTAssertEqual(table.selectedRow, -1)
-        XCTAssertEqual(textField(withIdentifier: "process.selection.identity", in: controller.view)?.stringValue, "No process selected")
+        assertProcessSelectionEmpty(controller: controller)
     }
 
     func testProcessGroupAdvancedRowsKeepPartialValuesDetailsAndSortByNumericLowerBound() {
@@ -729,6 +729,15 @@ final class UIStateTests: XCTestCase {
 
     private func textField(withIdentifier identifier: String, in root: NSView) -> NSTextField? {
         view(withIdentifier: identifier, in: root) as? NSTextField
+    }
+
+    /// The selection bar shows one empty-state message: the summary. The identity field stays blank.
+    private func assertProcessSelectionEmpty(controller: ProcessesViewController,
+                                             file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(textField(withIdentifier: "process.selection.summary", in: controller.view)?.stringValue,
+                       ProcessSelectionBar.emptyMessage, file: file, line: line)
+        XCTAssertEqual(textField(withIdentifier: "process.selection.identity", in: controller.view)?.stringValue, "",
+                       file: file, line: line)
     }
 
     private func view<T: NSView>(withIdentifier identifier: String, in root: NSView) -> T? {

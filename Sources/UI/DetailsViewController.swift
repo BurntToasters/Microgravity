@@ -49,7 +49,8 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
         table.setAccessibilityLabel(String(localized: "Process details"))
         scrollView = tableParts.1
         // Executable path is the last column so it alone absorbs spare width (lastColumnOnly autoresizing).
-        // Fixed columns sum to 820 pt; with the 180 pt path column all ten fit in about 1000 pt.
+        // Fixed columns sum to 862 pt; with the 180 pt path column all ten fit in about 1040 pt. Narrower
+        // tables scroll horizontally rather than squeezing the numeric columns below their values.
         model = AccessibleTableModel(table: table, columns: [
             TableColumnSpec("name", String(localized: "Process"), width: 170),
             TableColumnSpec("pid", String(localized: "PID"), width: 56, alignment: .right),
@@ -57,7 +58,7 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
             TableColumnSpec("parent", String(localized: "Parent PID"), width: 70, alignment: .right),
             TableColumnSpec("cpu", String(localized: "CPU"), width: 60, alignment: .right),
             TableColumnSpec("memory", String(localized: "Memory"), width: 80, alignment: .right),
-            TableColumnSpec("disk", String(localized: "Disk R / W"), width: 128, alignment: .right),
+            TableColumnSpec("disk", String(localized: "Disk R / W"), width: 170, alignment: .right),
             TableColumnSpec("network", String(localized: "Network"), width: 92, alignment: .right),
             TableColumnSpec("gpu", String(localized: "GPU"), width: 80, alignment: .right),
             TableColumnSpec("path", String(localized: "Executable path"), width: 180)

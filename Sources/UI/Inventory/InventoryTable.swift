@@ -35,6 +35,7 @@ final class InventoryTableController: NSObject, NSTableViewDataSource, NSTableVi
         table.headerView?.setAccessibilityIdentifier(identifier + ".header")
         for column in InventoryColumn.allCases {
             let tableColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(column.rawValue))
+            tableColumn.headerCell = PaddedTableHeaderCell(textCell: column.title)
             tableColumn.title = column.title
             tableColumn.width = column.width
             tableColumn.minWidth = 72

@@ -354,6 +354,29 @@ final class UsersDetailsSettingsTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(bannerView(identifier: "users.discovery-state", in: controller.view)).style, .warning)
     }
 
+    func testUsersBannerPluralizesRecordCount() throws {
+        let available: [MetricKind: MetricAvailability] = [
+            .processes: MetricAvailability(available: true),
+            .userSessions: MetricAvailability(available: true)
+        ]
+        let alice = UserSessionSnapshot(uid: 501, shortName: "alice", isCurrentUser: false, loginSessions: [])
+        let bob = UserSessionSnapshot(uid: 502, shortName: "bob", isCurrentUser: false, loginSessions: [])
+        let controller = UsersViewController()
+        _ = try makeUsersTable(controller)
+
+        func bannerText() throws -> String {
+            let field = try XCTUnwrap(allDescendants(of: controller.view).compactMap { $0 as? NSTextField }
+                .first { $0.accessibilityIdentifier() == "users.discovery-state" })
+            return field.stringValue
+        }
+        controller.update(snapshot: makeDetailsSnapshot(processes: [], users: [alice], capabilities: available))
+        let singular = try bannerText()
+        XCTAssertTrue(singular.hasPrefix("1 user record · updated"), singular)
+        controller.update(snapshot: makeDetailsSnapshot(processes: [], users: [alice, bob], capabilities: available))
+        let plural = try bannerText()
+        XCTAssertTrue(plural.hasPrefix("2 user records · updated"), plural)
+    }
+
     private func makeDetailsProcess(pid: Int32, name: String, cpu: Double) -> ProcessSnapshot {
         let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
         let identity = ProcessIdentity(pid: pid,

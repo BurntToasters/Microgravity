@@ -362,7 +362,8 @@ enum AppHistoryStatus {
             }
             return Banner(text: String(localized: "No application history recorded yet."), style: .info)
         }
-        var text = String(localized: "\(applicationCount) applications")
+        let applicationNoun = applicationCount == 1 ? String(localized: "application") : String(localized: "applications")
+        var text = String(localized: "\(applicationCount) \(applicationNoun)")
         if hiddenBackgroundCount > 0 {
             text += String(localized: " · \(hiddenBackgroundCount) background \(hiddenBackgroundCount == 1 ? String(localized: "process") : String(localized: "processes")) hidden")
         }

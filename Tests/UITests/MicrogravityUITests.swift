@@ -174,7 +174,7 @@ final class MicrogravityUITests: XCTestCase {
         let staleText = app.staticTexts["The selected process changed or exited. No process was terminated."]
         XCTAssertTrue(staleText.waitForExistence(timeout: 3))
         app.sheets.firstMatch.buttons["OK"].click()
-        XCTAssertEqual(app.staticTexts["process.selection.identity"].label, "No process selected")
+        assertProcessSelectionEmpty(app)
         attachScreenshot(app, named: "Stale process action")
     }
 
@@ -222,7 +222,7 @@ final class MicrogravityUITests: XCTestCase {
 
         XCTAssertFalse(row("process.row.411", in: "process.table", app: app).waitForExistence(timeout: 3))
         XCTAssertTrue(row("process.row.410", in: "process.table", app: app).exists)
-        XCTAssertEqual(app.staticTexts["process.selection.identity"].label, "No process selected")
+        assertProcessSelectionEmpty(app)
         XCTAssertFalse(app.sheets.firstMatch.exists)
     }
 
@@ -593,6 +593,13 @@ final class MicrogravityUITests: XCTestCase {
         }
         XCTAssertTrue(element("navigation.item.processes", in: app).waitForExistence(timeout: 5))
         return app
+    }
+
+    /// Empty selection bar: one message in the summary, and the identity field left blank.
+    private func assertProcessSelectionEmpty(_ app: XCUIApplication) {
+        XCTAssertEqual(app.staticTexts["process.selection.summary"].label, "Select a process to inspect its identity.")
+        let identity = app.staticTexts["process.selection.identity"]
+        XCTAssertTrue(!identity.exists || identity.label.isEmpty, "Identity should be blank when nothing is selected")
     }
 
     private func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement {

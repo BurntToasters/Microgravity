@@ -151,6 +151,8 @@ final class AccessibleTableModel: NSObject, NSTableViewDataSource, NSTableViewDe
         table.gridColor = .separatorColor
         for spec in columns {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(spec.key))
+            // Padded so a right-aligned title does not touch the next column's left-aligned title.
+            column.headerCell = PaddedTableHeaderCell(textCell: spec.title)
             column.title = spec.title
             column.width = spec.width
             column.minWidth = min(spec.width, 72)
@@ -441,6 +443,8 @@ private final class AccessibleTableCellView: NSTableCellView {
         label.font = isNumeric
             ? .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
             : .systemFont(ofSize: 12)
+        // Numbers truncate at the tail so "R … · W …" pairs keep their labels; text keeps the middle (paths, names).
+        label.lineBreakMode = isNumeric ? .byTruncatingTail : .byTruncatingMiddle
         label.setAccessibilityIdentifier(accessibilityID)
         label.setAccessibilityLabel(detail?.accessibilityDescription ?? value)
         label.toolTip = detail?.toolTip

@@ -354,6 +354,13 @@ final class HistoryInventoryTests: XCTestCase {
         let withHidden = AppHistoryStatus.banner(availability: nil, applicationCount: 3, hiddenBackgroundCount: 1,
                                                  gaps: 0, counterResets: 0, timestamp: date("2026-05-01T12:00:00Z"))
         XCTAssertTrue(withHidden.text.hasPrefix("3 applications · 1 background process hidden"), withHidden.text)
+
+        let single = AppHistoryStatus.banner(availability: nil, applicationCount: 1, gaps: 0, counterResets: 0,
+                                             timestamp: date("2026-05-01T12:00:00Z"))
+        XCTAssertTrue(single.text.hasPrefix("1 application · updated"), single.text)
+        let singleWithHidden = AppHistoryStatus.banner(availability: nil, applicationCount: 1, hiddenBackgroundCount: 1,
+                                                       gaps: 0, counterResets: 0, timestamp: date("2026-05-01T12:00:00Z"))
+        XCTAssertTrue(singleWithHidden.text.hasPrefix("1 application · 1 background process hidden"), singleWithHidden.text)
     }
 
     // MARK: Helpers

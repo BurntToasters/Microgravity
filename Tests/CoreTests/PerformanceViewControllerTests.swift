@@ -279,6 +279,29 @@ final class PerformanceViewControllerTests: XCTestCase {
         XCTAssertEqual(PerformancePresenter.spanText(1).long, "1 second")
     }
 
+    func testDetailSpanLabelDescribesThePlottedWindowNotTheDataPresent() {
+        let end = Date(timeIntervalSince1970: 1_800_000_000)
+        // 30 one-second samples: only 29 s of data exist, but the 60 s window is what the plot spans.
+        let samples = (0..<30).map { offset in
+            MonitoringGraphSample(snapshot: CoreTestFixtures.snapshot(timestamp: end.addingTimeInterval(Double(offset))))
+        }
+        let snapshot = CoreTestFixtures.snapshot(timestamp: end.addingTimeInterval(29))
+
+        let windowed = PerformancePresenter.detail(metric: .cpu, snapshot: snapshot, samples: samples,
+                                                   window: .oneMinute, cpuMode: .overall)
+        XCTAssertEqual(windowed.spanLabel, "60 s")
+        XCTAssertEqual(windowed.timeSpan, 60)
+        XCTAssertTrue(windowed.subtitle.hasSuffix("over 29 seconds"), windowed.subtitle)
+
+        let fiveMinutes = PerformancePresenter.detail(metric: .cpu, snapshot: snapshot, samples: samples,
+                                                      window: .fiveMinutes, cpuMode: .overall)
+        XCTAssertEqual(fiveMinutes.spanLabel, "5 min")
+
+        let all = PerformancePresenter.detail(metric: .cpu, snapshot: snapshot, samples: samples,
+                                              window: .all, cpuMode: .overall)
+        XCTAssertEqual(all.spanLabel, "29 s", "the all-data view labels the span of the data it plots")
+    }
+
     func testCoreGridUsesFourToSixColumnsByWidth() throws {
         let grid = CoreGridView()
         let cores = (0..<12).map { index in

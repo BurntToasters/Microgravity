@@ -217,7 +217,8 @@ enum PerformancePresenter {
         }
         model.subtitle = "\(model.subtitle) over \(span.long)"
         model.timeSpan = window.duration ?? max(duration, 1)
-        model.spanLabel = span.short
+        // The left edge of the plot is the window length, not the span of the data currently present.
+        model.spanLabel = window.duration.map { spanText($0).short } ?? span.short
         return model
     }
 

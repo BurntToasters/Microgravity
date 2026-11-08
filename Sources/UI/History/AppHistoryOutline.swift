@@ -2,7 +2,7 @@ import AppKit
 
 /// Owns the App History outline: applications at the top level, one child row per day.
 ///
-/// Groups stay expanded unless the user collapses them; collapsed state survives refreshes.
+/// Applications start collapsed and expand on request; expansion state survives refreshes.
 /// Header clicks sort the applications and, within each application, its days.
 @MainActor
 final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
@@ -50,6 +50,7 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
 
         for column in AppHistoryColumn.allCases {
             let tableColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(column.rawValue))
+            tableColumn.headerCell = PaddedTableHeaderCell(textCell: column.title)
             tableColumn.title = column.title
             tableColumn.width = column.width
             tableColumn.minWidth = column == .application ? 140 : 72

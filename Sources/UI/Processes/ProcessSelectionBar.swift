@@ -11,9 +11,10 @@ final class ProcessSelectionBar: NSView {
     private let iconView = NSImageView()
     private let titleField = NSTextField(labelWithString: "")
     private let summaryField = NSTextField(labelWithString: "")
-    private let identityField = NSTextField(labelWithString: ProcessSelectionBar.emptyIdentity)
+    private let identityField = NSTextField(labelWithString: "")
 
-    static let emptyIdentity = String(localized: "No process selected")
+    /// The single empty-state message. The identity field stays blank so the message is not repeated.
+    static let emptyMessage = String(localized: "Select a process to inspect its identity.")
 
     init() {
         super.init(frame: .zero)
@@ -68,9 +69,10 @@ final class ProcessSelectionBar: NSView {
         iconView.image = nil
         iconView.isHidden = true
         titleField.stringValue = ""
-        summaryField.stringValue = String(localized: "Select a process to inspect its identity.")
-        identityField.stringValue = Self.emptyIdentity
-        identityField.setAccessibilityLabel(Self.emptyIdentity)
+        summaryField.stringValue = Self.emptyMessage
+        summaryField.setAccessibilityLabel(Self.emptyMessage)
+        identityField.stringValue = ""
+        identityField.setAccessibilityLabel("")
     }
 
     func show(title: String, summary: String, identity: String, identityAccessibilityLabel: String? = nil, icon: NSImage) {
@@ -78,6 +80,7 @@ final class ProcessSelectionBar: NSView {
         iconView.image = icon
         titleField.stringValue = title
         summaryField.stringValue = summary
+        summaryField.setAccessibilityLabel(summary)
         identityField.stringValue = identity
         identityField.setAccessibilityLabel(identityAccessibilityLabel ?? identity)
     }

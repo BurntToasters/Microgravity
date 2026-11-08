@@ -236,13 +236,16 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
 
     private static func defaultWidth(for column: ProcessColumn) -> CGFloat {
         switch column {
-        case .name: return 200
-        case .pid: return 60
-        case .user: return 100
-        case .cpu: return 80
-        case .memory: return 100
-        case .disk: return 190
-        case .network: return 130
+        // Without GPU, the defaults sum to 700 pt: name plus the six metric columns fit the 960 pt minimum window
+        // once the inset outline's padding and disclosure indent are counted. Disk fits "R 326 KB/s · W 65 KB/s"
+        // at 12 pt (about 133 pt of text plus insets).
+        case .name: return 160
+        case .pid: return 52
+        case .user: return 76
+        case .cpu: return 72
+        case .memory: return 84
+        case .disk: return 160
+        case .network: return 96
         case .gpu: return 100
         }
     }
@@ -255,7 +258,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         case .cpu: return 64
         case .memory: return 84
         case .disk: return 140
-        case .network: return 104
+        case .network: return 96
         case .gpu: return 84
         }
     }

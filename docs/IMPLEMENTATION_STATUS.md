@@ -1,17 +1,29 @@
 # Implementation status
 
-Status for Microgravity 0.1.0, checked 2026-11-07 on macOS 27.2 build 26B123
-(arm64 virtual machine), Xcode 27.2 (27B52), Node.js 26.13.0. Results are for
-commit `ec836a6` plus the uncommitted `gate/0.1.0` changes. They were run from
-an isolated worktree outside `~/Documents` whose changed-file bytes matched the
-canonical tree. Re-run the full release gates from a clean canonical checkout
-before tagging.
+Latest status for Microgravity 0.1.2 on branch `next-0.1.2`, checked 2026-11-08
+(see Latest results below). The 0.1.0 gate record from 2026-11-07 is kept under
+Earlier record. It ran on macOS 27.2 build 26B123 (arm64 virtual machine), Xcode
+27.2 (27B52), Node.js 26.13.0, against commit `ec836a6` plus the uncommitted
+`gate/0.1.0` changes. It was run from an isolated worktree outside `~/Documents`
+whose changed-file bytes matched the canonical tree. Re-run the full release
+gates from a clean canonical checkout before tagging.
 
 Intended behavior is in [UI acceptance](UI_ACCEPTANCE.md). Collector, history,
 and process-action regressions are in [core failure cases](FAILURE_CASES_CORE.md).
 The release procedure and the 0.1.0 UI gate are in [RELEASING.md](RELEASING.md).
 
 ## Verification
+
+### Latest results (2026-11-08, branch `next-0.1.2`)
+
+| Gate | Command | Result |
+| --- | --- | --- |
+| Core XCTest | unsigned Core XCTest | 286 executed; 0 failed. Run on commit `f8b6a68` plus test fixes that were later committed. |
+| Signed UI XCTest | `-only-testing:MicrogravityUITests`, `CODE_SIGN_IDENTITY="Apple Development"`, `DEVELOPMENT_TEAM=FYJZP8B2KG`, from the `~/Documents` checkout | 23 executed: 21 passed, 2 failed. Both failures were stale assertions after 0.1.1 (`testHistoryShowsGapsAndRequiresConfirmationToReset`, `testDetailsIsFlatAndShowsUnavailableMetricsExplicitly`). Both were fixed and passed on rerun. The full UI suite was not rerun after the fixes. |
+| Runtime diagnostics | same signed UI run | 23 occurrences of "This method should not be called on the main thread as it may lead to UI unresponsiveness." Unresolved; not a zero-diagnostics pass. See Known gaps, item 4. |
+| Composite `npm run test:all` | not run | No release proof recorded for these results. |
+
+### Earlier record: 0.1.0 gates (2026-11-07)
 
 | Gate | Command | Result |
 | --- | --- | --- |
@@ -33,7 +45,7 @@ The release procedure and the 0.1.0 UI gate are in [RELEASING.md](RELEASING.md).
 | Manual UI checklist | [RELEASING.md](RELEASING.md) | pending: see Known gaps, item 2 |
 | Hosted CI | `.github/workflows/ci.yml` | not run. Blocked: the repository owner's GitHub Actions minutes are exhausted for this month. Not a failure. `macos-26` availability is confirmed by GitHub docs below. |
 
-Changes verified in this run. Each has Core regression tests:
+Changes verified in the 2026-11-07 run. Each has Core regression tests:
 
 - Settings helper caption ("Lets you quit processes owned by other standard
   users. System and root processes stay protected.") wraps instead of
@@ -82,7 +94,8 @@ Core:
 - Memory pressure starts from `kern.memorystatus_vm_pressure_level` and is then
   refined by the dispatch source.
 - Process identity is PID plus start time. Names and paths are cached per
-  identity. The 16,384-PID enumeration cap and identity omissions are reported
+  identity. The process table is read with one `KERN_PROC_ALL` sysctl, capped at
+  16,384 entries. The cap, sysctl failures, and identity omissions are reported
   with a named detail.
 - Sampling uses a deadline grid on `ContinuousClock`, so collection time does
   not stretch the interval. Snapshots are published before the SQLite history
@@ -98,7 +111,7 @@ Integration:
 - The privileged helper checks the client code signature, accepts fixed
   commands only, bounds its output, and uses single-use authorization.
 - The three XPC single-reply wrappers share `XPCSingleReply`.
-- Advanced metrics run through the helper (see [ADVANCED_METRICS.md](ADVANCED_METRICS.md)).
+- Advanced metrics run through the helper (see [ADVANCED_METRICS.md](ADVANCED_METRICS.md)). Process identities for helper network samples come from the `KERN_PROC_ALL` table, which includes other users' processes. Refreshes retry immediately when the app becomes active.
 - Sparkle automatic checks stay off unless a public key is configured.
 
 UI (AppKit):
@@ -132,13 +145,16 @@ UI (AppKit):
 
 ## Known gaps
 
-1. **Release proof.** The signed composite gate exited 0 (243 tests, 0 failed,
-   0 skipped), but `test:all` reported a dirty worktree. No reusable release
-   proof exists. `release:prepare` records one from a clean canonical checkout;
-   it runs `test:all -- --skip-ui` unless `MICROGRAVITY_RELEASE_UI_TESTS=1`
-   (see [RELEASING.md](RELEASING.md#ui-tests-and-the-release-gate)). A
-   `--skip-ui` run on 2026-11-08 (220 Core tests, 0 failed) completed from the
-   `~/Documents` checkout. The full UI suite can hang before connecting from a
+1. **Release proof.** The 2026-11-07 signed composite gate exited 0 (243 tests,
+   0 failed, 0 skipped), but `test:all` reported a dirty worktree. No reusable
+   release proof exists for that run, or for the 2026-11-08 results, which were
+   not run through `test:all`. `release:prepare` records one from a clean
+   canonical checkout; it runs `test:all -- --skip-ui` unless
+   `MICROGRAVITY_RELEASE_UI_TESTS=1` (see
+   [RELEASING.md](RELEASING.md#ui-tests-and-the-release-gate)). An older
+   `--skip-ui` run recorded on 2026-11-08 (220 Core tests, 0 failed) completed
+   from the `~/Documents` checkout; the 286-test Core result above supersedes its
+   count. The full UI suite can hang before connecting from a
    checkout there, because the unsigned test host triggers a macOS Documents
    privacy prompt while loading Sparkle.framework; run it from a checkout
    outside `~/Documents`.

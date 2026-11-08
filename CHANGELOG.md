@@ -5,8 +5,8 @@
 
 | <img height="20" src="https://github.com/user-attachments/assets/42d7e887-4616-4e8c-b1d3-e44e01340f8c" /> macOS |
 | :-- |
-| **ZIP: [universal](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.1/Microgravity-0.1.1.zip)** |
-| **Checksums: [SHA256SUMS](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.1/SHA256SUMS) / [GPG signature](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.1/SHA256SUMS.asc)** |
+| **ZIP: [universal](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.2/Microgravity-0.1.2.zip)** |
+| **Checksums: [SHA256SUMS](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.2/SHA256SUMS) / [GPG signature](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.2/SHA256SUMS.asc)** |
 
 > Requires macOS 14 or later. The universal build runs natively on Apple silicon and Intel Macs.
 
@@ -18,6 +18,18 @@
 
 ### ℹ️ Enjoying Microgravity? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 <!-- downloads:end -->
+
+## 0.1.2
+
+- **Processes:** Per-process network rates now cover system and other users' processes, such as software update and other background daemons, when the optional helper is installed. Previously only your own processes showed network activity.
+- **Processes:** Find Process (⌘F), Quit Process (⌥⌘Q), Force Quit and Show in Details (⌘I) work whenever the Processes page is showing, including right after launch or after clicking the sidebar. Before, they only worked once you had clicked in the process list.
+- **Processes:** The column you sort by is remembered between launches.
+- **App History:** Longer CPU times read as hours and minutes, for example "1h 23m", instead of a large number of seconds.
+- **Startup and Services:** When some locations can't be read, the banner names the actual problem instead of a general note.
+- **Helper:** After you approve the optional helper in System Settings, its metrics appear as soon as you return to Microgravity instead of up to a minute later.
+- **Energy:** Without the helper, the Energy page reports its unit as watts, matching the readings the helper provides.
+- **Details:** Fixed a rare crash when the process list reported the same process ID twice.
+- **Updater:** The update window shows the release notes themselves instead of loading the whole GitHub release page.
 
 ## 0.1.1
 

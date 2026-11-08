@@ -43,6 +43,37 @@ final class LaunchDiscoveryTests: XCTestCase {
                        ["Launchd loaded/idle state is not exposed by this read-only plist scan."])
     }
 
+    func testCoverageReasonsPutRealFailuresBeforePermanentNotes() {
+        let failure = "Could not read /Library/LaunchAgents/broken.plist: The data couldn't be read."
+        let reasons = LaunchDiscovery.coverageReasons(
+            failures: [failure], missingDirectoryReason: nil, notes: LaunchDiscovery.startupNotes)
+
+        XCTAssertEqual(reasons.first, failure)
+        XCTAssertEqual(reasons, [failure,
+                                 "Launchd loaded/idle state is not exposed by this read-only plist scan.",
+                                 "Background Task Management login items are not available through a public inventory API."])
+    }
+
+    func testCoverageReasonsWithoutFailuresAreOnlyTheNotes() {
+        XCTAssertEqual(LaunchDiscovery.coverageReasons(failures: [], missingDirectoryReason: nil,
+                                                       notes: LaunchDiscovery.serviceNotes),
+                       LaunchDiscovery.serviceNotes)
+        XCTAssertEqual(LaunchDiscovery.coverageReasons(failures: [], missingDirectoryReason: nil,
+                                                       notes: LaunchDiscovery.startupNotes),
+                       LaunchDiscovery.startupNotes)
+    }
+
+    func testMissingDirectoryReasonSitsBetweenFailuresAndNotes() {
+        let reasons = LaunchDiscovery.coverageReasons(
+            failures: ["Could not enumerate /Library/LaunchDaemons: Permission denied"],
+            missingDirectoryReason: "No service directories were found.",
+            notes: LaunchDiscovery.serviceNotes)
+
+        XCTAssertEqual(reasons, ["Could not enumerate /Library/LaunchDaemons: Permission denied",
+                                 "No service directories were found.",
+                                 "Launchd loaded/idle state is not exposed by this read-only plist scan."])
+    }
+
     func testCoverageIsIncompleteWhenEnumerationOrParsingFailed() {
         let coverage = LaunchDiscovery.coverage(
             hadFailure: true,

@@ -213,6 +213,8 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         outlineView.autosaveName = outlineAutosaveName
         outlineView.autosaveTableColumns = outlineAutosaveName != nil
         outlineView.headerView?.setAccessibilityIdentifier("process.table.header")
+        // Autosave restores the saved sort with the columns. Adopt it so the rows match the header arrow.
+        sort = Self.restoredSort(from: outlineView.sortDescriptors)
         outlineView.sortDescriptors = [NSSortDescriptor(key: sort.column.rawValue, ascending: sort.ascending)]
         applyColumnVisibility()
 
@@ -223,15 +225,27 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         outlineView.headerView?.menu = columnMenu
     }
 
+    /// The first descriptor that names a process column, or CPU descending when none does.
+    static func restoredSort(from descriptors: [NSSortDescriptor]) -> ProcessSortState {
+        guard let descriptor = descriptors.first, let key = descriptor.key,
+              let column = ProcessColumn(rawValue: key) else {
+            return ProcessSortState(column: .cpu, ascending: false)
+        }
+        return ProcessSortState(column: column, ascending: descriptor.ascending)
+    }
+
     private static func defaultWidth(for column: ProcessColumn) -> CGFloat {
         switch column {
-        case .name: return 200
-        case .pid: return 60
-        case .user: return 100
-        case .cpu: return 80
-        case .memory: return 100
-        case .disk: return 190
-        case .network: return 130
+        // Without GPU, the defaults sum to 700 pt: name plus the six metric columns fit the 960 pt minimum window
+        // once the inset outline's padding and disclosure indent are counted. Disk fits "R 326 KB/s · W 65 KB/s"
+        // at 12 pt (about 133 pt of text plus insets).
+        case .name: return 160
+        case .pid: return 52
+        case .user: return 76
+        case .cpu: return 72
+        case .memory: return 84
+        case .disk: return 160
+        case .network: return 96
         case .gpu: return 100
         }
     }
@@ -244,7 +258,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         case .cpu: return 64
         case .memory: return 84
         case .disk: return 140
-        case .network: return 104
+        case .network: return 96
         case .gpu: return 84
         }
     }

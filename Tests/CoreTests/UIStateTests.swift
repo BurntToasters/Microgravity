@@ -63,7 +63,27 @@ final class UIStateTests: XCTestCase {
 
         toggleProcessGroup("Fixture Editor", controller: controller, table: table)
         XCTAssertEqual(table.selectedRow, -1)
-        XCTAssertEqual(textField(withIdentifier: "process.selection.identity", in: controller.view)?.stringValue, "No process selected")
+        assertProcessSelectionEmpty(controller: controller)
+    }
+
+    /// AppKit restores the saved sort with the autosaved columns; the Processes model must adopt it, not reset to CPU.
+    func testRestoredProcessSortAdoptsAnyProcessColumnAndDefaultsToCPUDescending() {
+        let cpuDefault = ProcessSortState(column: .cpu, ascending: false)
+        XCTAssertEqual(ProcessesViewController.restoredSort(from: []), cpuDefault)
+        XCTAssertEqual(ProcessesViewController.restoredSort(from: [NSSortDescriptor(key: nil, ascending: true)]), cpuDefault)
+        XCTAssertEqual(ProcessesViewController.restoredSort(from: [NSSortDescriptor(key: "not-a-column", ascending: true)]),
+                       cpuDefault)
+        XCTAssertEqual(ProcessesViewController.restoredSort(from: [NSSortDescriptor(key: ProcessColumn.name.rawValue, ascending: true)]),
+                       ProcessSortState(column: .name, ascending: true))
+        XCTAssertEqual(ProcessesViewController.restoredSort(from: [NSSortDescriptor(key: ProcessColumn.memory.rawValue, ascending: false)]),
+                       ProcessSortState(column: .memory, ascending: false))
+
+        let (dependencies, _, _) = makeDependencies()
+        let controller = ProcessesViewController(dependencies: dependencies, defaults: isolatedProcessDefaults())
+        controller.loadViewIfNeeded()
+        let table = try! XCTUnwrap(view(withIdentifier: "process.table", in: controller.view) as NSOutlineView?)
+        XCTAssertEqual(table.sortDescriptors.first?.key, ProcessColumn.cpu.rawValue)
+        XCTAssertEqual(table.sortDescriptors.first?.ascending, false)
     }
 
     func testProcessGroupExpansionRestoresAcrossControllerAndDropsReusedPID() throws {
@@ -180,7 +200,7 @@ final class UIStateTests: XCTestCase {
 
         controller.update(snapshot: replacementSnapshot)
         XCTAssertEqual(table.selectedRow, -1)
-        XCTAssertEqual(textField(withIdentifier: "process.selection.identity", in: controller.view)?.stringValue, "No process selected")
+        assertProcessSelectionEmpty(controller: controller)
     }
 
     func testProcessGroupAdvancedRowsKeepPartialValuesDetailsAndSortByNumericLowerBound() {
@@ -709,6 +729,15 @@ final class UIStateTests: XCTestCase {
 
     private func textField(withIdentifier identifier: String, in root: NSView) -> NSTextField? {
         view(withIdentifier: identifier, in: root) as? NSTextField
+    }
+
+    /// The selection bar shows one empty-state message: the summary. The identity field stays blank.
+    private func assertProcessSelectionEmpty(controller: ProcessesViewController,
+                                             file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(textField(withIdentifier: "process.selection.summary", in: controller.view)?.stringValue,
+                       ProcessSelectionBar.emptyMessage, file: file, line: line)
+        XCTAssertEqual(textField(withIdentifier: "process.selection.identity", in: controller.view)?.stringValue, "",
+                       file: file, line: line)
     }
 
     private func view<T: NSView>(withIdentifier identifier: String, in root: NSView) -> T? {

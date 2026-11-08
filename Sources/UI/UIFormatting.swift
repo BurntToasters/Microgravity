@@ -40,6 +40,23 @@ enum UIFormat {
         }
     }
 
+    /// CPU time for long spans. Under a minute it stays "12.3 s"; longer spans read as "1h 23m" or "2m 5s".
+    static func duration(_ seconds: Double) -> String {
+        guard seconds.isFinite else { return String(localized: "Unavailable") }
+        let short = String(format: "%.1f s", locale: .current, seconds)
+        guard seconds >= 60 else { return short }
+        return durationFormatter.string(from: seconds) ?? short
+    }
+
+    private static let durationFormatter: DateComponentsFormatter = {
+        let formatter = DateComponentsFormatter()
+        formatter.unitsStyle = .abbreviated
+        formatter.allowedUnits = [.hour, .minute, .second]
+        formatter.maximumUnitCount = 2
+        formatter.zeroFormattingBehavior = .dropAll
+        return formatter
+    }()
+
     /// Byte formatters that write "0 KB" rather than ByteCountFormatter's default "Zero KB".
     private static let memoryFormatter = byteFormatter(.memory)
     private static let throughputFormatter = byteFormatter(.decimal)

@@ -136,7 +136,8 @@ final class UsersViewController: NSViewController, SnapshotUpdating {
         } else if let capability = snapshot.capabilities[.processes], !capability.available {
             state.setMessage(String(localized: "Process data unavailable · ") + UIFormat.availability(capability), style: .warning)
         } else {
-            state.setMessage("\(sorted.count) user records · updated \(UIFormat.time(snapshot.timestamp))", style: .info)
+            let noun = sorted.count == 1 ? String(localized: "user record") : String(localized: "user records")
+            state.setMessage("\(sorted.count) \(noun) · updated \(UIFormat.time(snapshot.timestamp))", style: .info)
         }
     }
 

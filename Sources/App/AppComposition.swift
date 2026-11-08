@@ -43,19 +43,31 @@ enum AppComposition {
         }
         #endif
 
+        let advancedCollector = NativeAdvancedMetricsCollector()
         let store = DefaultMonitoringStore(
-            collector: SystemMonitorCollector(advancedCollector: NativeAdvancedMetricsCollector()),
+            collector: SystemMonitorCollector(advancedCollector: advancedCollector),
             historyStore: SQLiteMonitoringHistoryStore()
         )
         let storedInterval = UserDefaults.standard.double(forKey: SamplingControls.refreshIntervalDefaultsKey)
         let interval = MonitoringInterval(rawValue: storedInterval) ?? .oneSecond
         store.start(interval: interval)
+        observeAppActivation(advancedCollector)
         return AppDependencies(
             monitoringStore: store,
             processActions: PrivilegedProcessActionController(),
             integrations: NativeSystemIntegrationAPI(),
             fixtureMode: false
         )
+    }
+
+    /// The helper is approved in System Settings, outside the app, so activation is when a retry is most likely to succeed.
+    /// The observer lives for the whole process, so its token is intentionally not kept.
+    private static func observeAppActivation(_ collector: NativeAdvancedMetricsCollector) {
+        _ = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                                   object: nil, queue: .main) { [weak collector] _ in
+            guard let collector else { return }
+            Task { await collector.retryHelperSoon() }
+        }
     }
 
     static var fixtureDefaultsSuiteForCleanup: String? {

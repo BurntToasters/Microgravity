@@ -63,6 +63,8 @@ final class RootViewController: NSViewController {
 
     var splitView: NSSplitView { splitController.splitView }
     var currentPageToolbarProvider: PageToolbarProviding? { pageHost.currentController as? PageToolbarProviding }
+    /// The detail page on screen, for window-level routing of page actions.
+    var currentPageController: NSViewController? { pageHost.currentController }
 
     init(dependencies: AppDependencies) {
         self.dependencies = dependencies

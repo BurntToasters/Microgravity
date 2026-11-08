@@ -21,7 +21,15 @@
 
 ## 0.1.2
 
-Release notes pending.
+- **Processes:** Per-process network rates now cover system and other users' processes, such as software update and other background daemons, when the optional helper is installed. Previously only your own processes showed network activity.
+- **Processes:** Find Process (⌘F), Quit Process (⌥⌘Q), Force Quit and Show in Details (⌘I) work whenever the Processes page is showing, including right after launch or after clicking the sidebar. Before, they only worked once you had clicked in the process list.
+- **Processes:** The column you sort by is remembered between launches.
+- **App History:** Longer CPU times read as hours and minutes, for example "1h 23m", instead of a large number of seconds.
+- **Startup and Services:** When some locations can't be read, the banner names the actual problem instead of a general note.
+- **Helper:** After you approve the optional helper in System Settings, its metrics appear as soon as you return to Microgravity instead of up to a minute later.
+- **Energy:** Without the helper, the Energy page reports its unit as watts, matching the readings the helper provides.
+- **Details:** Fixed a rare crash when the process list reported the same process ID twice.
+- **Updater:** The update window shows the release notes themselves instead of loading the whole GitHub release page.
 
 ## 0.1.1
 

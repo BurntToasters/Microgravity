@@ -15,6 +15,7 @@ export function changelogSection(version, contents) {
 const repositoryUrl = "https://github.com/BurntToasters/Microgravity";
 const macIcon = "https://github.com/user-attachments/assets/42d7e887-4616-4e8c-b1d3-e44e01340f8c";
 export const gpgFingerprint = "F01DAAD63F4688AB0BBEC7085E7752731C2EC359";
+export const gpgPublicKeyUrl = "https://tuxedo.rosie.run/GPG/Microgravity_1C2EC359.asc";
 
 // The download and verification header placed above the changelog section in each GitHub release.
 export function releaseHeader(info) {
@@ -33,8 +34,8 @@ export function releaseHeader(info) {
     "",
     "> [!IMPORTANT]",
     "> Microgravity is signed with my Apple Developer ID and notarized by Apple.",
-    "> The `.asc` files are detached GPG signatures. Verify them with the Microgravity release key,",
-    `> fingerprint \`${gpgFingerprint}\`.`,
+    `> The \`.asc\` files are detached GPG signatures. Verify them with the Microgravity GPG public key: ${gpgPublicKeyUrl}`,
+    `> (fingerprint \`${gpgFingerprint}\`).`,
     "> In-app updates are delivered by Sparkle and verified with an EdDSA signature before they install.",
     "",
     "### ℹ️ Enjoying Microgravity? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)",

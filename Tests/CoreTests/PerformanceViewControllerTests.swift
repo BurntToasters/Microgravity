@@ -40,11 +40,11 @@ final class PerformanceViewControllerTests: XCTestCase {
         XCTAssertEqual(first.secondValueText, "Write: \(UIFormat.metric(write))")
         XCTAssertEqual(first.firstAccessibilityLabel, "Current disk Read throughput")
         XCTAssertEqual(first.secondAccessibilityLabel, "Current disk Write throughput")
-        XCTAssertEqual(first.graphMaximum, 2_048)
-        XCTAssertEqual(afterHistoryGrowth.graphMaximum, 32_768,
+        XCTAssertEqual(first.graphMaximum, 5_000)
+        XCTAssertEqual(afterHistoryGrowth.graphMaximum, 50_000,
                        "the scale must follow the largest reading retained in graph history")
         XCTAssertEqual(afterHistoryGrowth.scaleText,
-                       "Scale maximum: \(UIFormat.bytesPerSecond(32_768))")
+                       "Scale maximum: \(UIFormat.bytesPerSecond(50_000))")
         XCTAssertEqual(afterHistoryGrowth.scaleAccessibilityLabel, "Disk throughput graph scale maximum")
         XCTAssertTrue(afterHistoryGrowth.accessibilitySummary.contains("Disk throughput graph"))
         XCTAssertTrue(afterHistoryGrowth.accessibilitySummary.contains("Current Read:"))
@@ -64,11 +64,29 @@ final class PerformanceViewControllerTests: XCTestCase {
         XCTAssertEqual(presentation.secondValueText, "Send: \(UIFormat.metric(send))")
         XCTAssertEqual(presentation.firstAccessibilityLabel, "Current network Receive throughput")
         XCTAssertEqual(presentation.secondAccessibilityLabel, "Current network Send throughput")
-        XCTAssertEqual(presentation.graphMaximum, 8_192)
+        XCTAssertEqual(presentation.graphMaximum, 10_000)
         XCTAssertEqual(presentation.scaleAccessibilityLabel, "Network throughput graph scale maximum")
         XCTAssertTrue(presentation.accessibilitySummary.contains("Network throughput graph"))
         XCTAssertTrue(presentation.accessibilitySummary.contains("Current Receive:"))
         XCTAssertTrue(presentation.accessibilitySummary.contains("current Send:"))
+    }
+
+    func testScaleMaximumRoundsUpToOneTwoFiveSteps() {
+        let expectations: [(value: Double, nice: Double)] = [
+            (0.0001, 0.0001), (1, 1), (1.5, 2), (2, 2), (3, 5), (999, 1_000), (1_000, 1_000),
+            (1_001, 2_000), (4_096, 5_000), (64_000, 100_000), (512_000, 1_000_000)
+        ]
+        for (value, nice) in expectations {
+            XCTAssertEqual(ThroughputGraphPresentation.niceMaximum(value), nice, accuracy: nice * 1e-12,
+                           "scale for \(value)")
+        }
+        // Samples that wobble around one peak keep one scale label, so it does not jitter.
+        let labels = [60_000, 75_000, 99_999].map { UIFormat.bytesPerSecond(ThroughputGraphPresentation.niceMaximum($0)) }
+        XCTAssertEqual(Set(labels), [UIFormat.bytesPerSecond(100_000)])
+    }
+
+    func testSleepGapTooltipDoesNotClaimThatSamplingWasPaused() {
+        XCTAssertEqual(MetricGraphView.sampleGapToolTip, "Sample gap")
     }
 
     func testUnavailableThroughputHasClearValuesAndNoDataScale() {
@@ -126,11 +144,11 @@ final class PerformanceViewControllerTests: XCTestCase {
         XCTAssertEqual(diskWrite.stringValue, UIFormat.metric(current.system.diskWriteBytesPerSecond))
         XCTAssertEqual(diskRead.accessibilityLabel(), "Current disk Read throughput")
         XCTAssertEqual(diskWrite.accessibilityLabel(), "Current disk Write throughput")
-        XCTAssertEqual(diskScale.stringValue, "Scale maximum: \(UIFormat.bytesPerSecond(64_000))")
+        XCTAssertEqual(diskScale.stringValue, "Scale maximum: \(UIFormat.bytesPerSecond(100_000))")
         XCTAssertEqual(diskScale.accessibilityLabel(), "Disk throughput graph scale maximum")
         XCTAssertTrue(diskGraph.accessibilityLabel()?.contains("Disk throughput graph") == true)
         XCTAssertTrue(diskGraph.accessibilityLabel()?.contains("Current Read:") == true)
-        XCTAssertTrue(diskGraph.accessibilityLabel()?.contains("Scale maximum: \(UIFormat.bytesPerSecond(64_000))") == true)
+        XCTAssertTrue(diskGraph.accessibilityLabel()?.contains("Scale maximum: \(UIFormat.bytesPerSecond(100_000))") == true)
 
         controller.selectMetric(.network)
         controller.view.layoutSubtreeIfNeeded()
@@ -143,10 +161,10 @@ final class PerformanceViewControllerTests: XCTestCase {
         XCTAssertEqual(networkSend.stringValue, UIFormat.metric(current.system.networkTransmitBytesPerSecond))
         XCTAssertEqual(networkReceive.accessibilityLabel(), "Current network Receive throughput")
         XCTAssertEqual(networkSend.accessibilityLabel(), "Current network Send throughput")
-        XCTAssertEqual(networkScale.stringValue, "Scale maximum: \(UIFormat.bytesPerSecond(128_000))")
+        XCTAssertEqual(networkScale.stringValue, "Scale maximum: \(UIFormat.bytesPerSecond(200_000))")
         XCTAssertEqual(networkScale.accessibilityLabel(), "Network throughput graph scale maximum")
         XCTAssertTrue(networkGraph.accessibilityLabel()?.contains("Current Receive:") == true)
-        XCTAssertTrue(networkGraph.accessibilityLabel()?.contains("Scale maximum: \(UIFormat.bytesPerSecond(128_000))") == true)
+        XCTAssertTrue(networkGraph.accessibilityLabel()?.contains("Scale maximum: \(UIFormat.bytesPerSecond(200_000))") == true)
 
         let expandedTimestamp = timestamp.addingTimeInterval(1)
         let expandedCurrent = throughputSnapshot(
@@ -156,7 +174,7 @@ final class PerformanceViewControllerTests: XCTestCase {
         store.replace(snapshot: expandedCurrent,
                       samples: [earlier, latestHistory, current, expandedCurrent].map { MonitoringGraphSample(snapshot: $0) })
         controller.update(snapshot: expandedCurrent)
-        XCTAssertEqual(networkScale.stringValue, "Scale maximum: \(UIFormat.bytesPerSecond(512_000))",
+        XCTAssertEqual(networkScale.stringValue, "Scale maximum: \(UIFormat.bytesPerSecond(1_000_000))",
                        "the controller must refresh the scale as graph history changes")
 
         let detail = String(repeating: "Permission detail that should truncate safely. ", count: 12)
@@ -172,7 +190,7 @@ final class PerformanceViewControllerTests: XCTestCase {
 
         XCTAssertTrue(networkReceive.stringValue.contains("Permission denied · \(detail)"))
         XCTAssertTrue(networkSend.stringValue.contains("Permission denied · \(detail)"))
-        XCTAssertEqual(networkScale.stringValue, "Scale maximum: \(UIFormat.bytesPerSecond(512_000))",
+        XCTAssertEqual(networkScale.stringValue, "Scale maximum: \(UIFormat.bytesPerSecond(1_000_000))",
                        "unavailable current data must not erase the historical graph scale")
         XCTAssertTrue(networkGraph.accessibilityLabel()?.contains("Current Receive: Permission denied · \(detail)") == true)
         XCTAssertTrue(networkGraph.accessibilityLabel()?.contains("current Send: Permission denied · \(detail)") == true)

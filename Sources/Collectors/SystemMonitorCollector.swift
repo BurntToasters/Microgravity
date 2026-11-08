@@ -6,31 +6,39 @@ import IOKit.storage
 import MachO
 import SystemConfiguration
 
+/// Tracks whether every listed process was either included or legitimately left during the sample.
+/// A PID that exited, or was reused by another process, between the listing and the revalidation read is
+/// an expected race: it is skipped and counted as departed, and does not make the process list incomplete.
+/// Only a revalidation read that fails for any other reason leaves a process unverified.
 struct ProcessIdentityCoverage {
+    /// Result of re-reading the start time of a listed PID after its task and resource reads.
+    enum Revalidation: Equatable {
+        case identity(ProcessIdentity)
+        case gone
+        case unreadable
+    }
+
     enum Omission: Equatable {
-        case initialIdentityUnavailable
         case revalidationUnavailable
-        case identityChanged
     }
 
     private(set) var omissions: [Omission] = []
+    private(set) var departedCount = 0
 
     var complete: Bool { omissions.isEmpty }
 
-    mutating func include(initial: ProcessIdentity?, revalidated: ProcessIdentity?) -> Bool {
-        guard let initial else {
-            omissions.append(.initialIdentityUnavailable)
+    /// Returns true when the listed process is confirmed and should be included in the snapshot.
+    mutating func include(listed: ProcessIdentity, revalidation: Revalidation) -> Bool {
+        switch revalidation {
+        case let .identity(current) where current == listed:
+            return true
+        case .identity, .gone:
+            departedCount += 1
             return false
-        }
-        guard let revalidated else {
+        case .unreadable:
             omissions.append(.revalidationUnavailable)
             return false
         }
-        guard initial == revalidated else {
-            omissions.append(.identityChanged)
-            return false
-        }
-        return true
     }
 }
 
@@ -77,16 +85,18 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         let title: String
     }
 
-    /// Name and executable path are immutable for a ProcessIdentity, so they are read once per identity.
+    /// Name and executable path are read once per ProcessIdentity and evicted with the identity.
     private struct CachedProcessText {
         let name: String
         let path: String?
     }
 
-    /// proc_listpids returns at most this many PIDs per sample; beyond it the snapshot is incomplete.
+    /// The process table is read up to this many entries per sample; beyond it the snapshot is incomplete.
     static let maximumPIDCount = 16_384
-    static let processEnumerationCapDetail = "Process enumeration stopped at the \(maximumPIDCount)-PID cap of proc_listpids; processes beyond the cap were not read."
-    static let processIdentityOmissionDetail = "Process enumeration omitted processes with unreadable, exited, or changed identities."
+    static let processEnumerationCapDetail = "Process enumeration stopped at the \(maximumPIDCount)-process cap of KERN_PROC_ALL; processes beyond the cap were not read."
+    static let processIdentityOmissionDetail = "Process enumeration omitted processes whose identity could not be revalidated."
+    private static let processTableAttempts = 4
+    private static let applicationBundlePathCacheLimit = 4_096
 
     /// Mach absolute-time to nanosecond factor (125/3 on Apple Silicon, 1/1 on Intel). Read once.
     private static let machTimebase: (numer: UInt64, denom: UInt64)? = {
@@ -111,6 +121,8 @@ public actor SystemMonitorCollector: MonitoringCollecting {
     private var systemCounters = CounterDeltaTracker<CounterKey>()
     private var processCounters = CounterDeltaTracker<ProcessCounterKey>()
     private var processTextCache: [ProcessIdentity: CachedProcessText] = [:]
+    /// Keyed by standardized executable path; nil records a path with no enclosing .app bundle.
+    private var applicationBundlePathCache: [String: String?] = [:]
     private var networkCounterTracker = NetworkInterfaceCounterTracker()
     private var memoryPressureSource: DispatchSourceMemoryPressure?
     private var pressureLevel: MemoryPressureLevel?
@@ -215,12 +227,9 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                                           reason: processResult.complete ? nil : .collectionFailed,
                                           detail: processIncompleteDetail),
             .processIO: Self.availability(for: processes.first?.diskReadBytesPerSecond),
-            .startupItems: MetricAvailability(available: inventory.startupCoverage.complete,
-                                              reason: inventory.startupCoverage.complete ? nil : .collectionFailed),
-            .services: MetricAvailability(available: inventory.serviceCoverage.complete,
-                                          reason: inventory.serviceCoverage.complete ? nil : .collectionFailed),
-            .userSessions: MetricAvailability(available: sessions.coverage.complete,
-                                              reason: sessions.coverage.complete ? nil : .collectionFailed),
+            .startupItems: Self.availability(for: inventory.startupCoverage),
+            .services: Self.availability(for: inventory.serviceCoverage),
+            .userSessions: Self.availability(for: sessions.coverage),
             .history: MetricAvailability(available: false, reason: .notCollected),
             .gpu: advanced.capabilities[.gpu] ?? Self.availability(for: advancedReadings[.gpu]),
             .energy: advanced.capabilities[.energy] ?? Self.availability(for: advancedReadings[.energy]),
@@ -451,30 +460,29 @@ public actor SystemMonitorCollector: MonitoringCollecting {
 
     private func collectProcesses(at timestamp: Date, capacityCores: Int)
         -> (processes: [RawProcess], complete: Bool, incompleteDetail: String?) {
-        let pidBytes = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
-        guard pidBytes > 0 else { return ([], false, "proc_listpids could not size the process list.") }
-        let estimatedCount = Int(pidBytes) / MemoryLayout<pid_t>.stride
-        let requestedCount = min(Self.maximumPIDCount, estimatedCount + 64)
-        var pids = [pid_t](repeating: 0, count: requestedCount)
-        let returnedBytes = pids.withUnsafeMutableBufferPointer { buffer in
-            proc_listpids(UInt32(PROC_ALL_PIDS), 0, buffer.baseAddress,
-                          Int32(buffer.count * MemoryLayout<pid_t>.stride))
+        let table: ProcessTable
+        switch Self.readProcessTable() {
+        case let .success(value):
+            table = value
+        case let .failure(failure):
+            return ([], false, failure.detail)
         }
-        guard returnedBytes > 0 else { return ([], false, "proc_listpids failed to list processes.") }
-        let count = min(pids.count, Int(returnedBytes) / MemoryLayout<pid_t>.stride)
+
         var records: [RawProcess] = []
-        records.reserveCapacity(count)
+        records.reserveCapacity(table.entries.count)
         var identities = Set<ProcessIdentity>()
         var identityCoverage = ProcessIdentityCoverage()
 
-        for rawPID in pids.prefix(count) where rawPID > 0 {
-            guard let bsd = processBSDInfo(rawPID) else {
-                _ = identityCoverage.include(initial: nil, revalidated: nil)
-                continue
-            }
-            let identity = ProcessIdentity(pid: Int32(rawPID),
-                                           startTime: ProcessStartTime(secondsSinceEpoch: Int64(bsd.pbi_start_tvsec),
-                                                                       microseconds: Int32(bsd.pbi_start_tvusec)))
+        for entry in table.entries {
+            let rawPID = entry.kp_proc.p_pid
+            // Zombies have exited and hold no task or resources; their reads fail, which would surface
+            // as collection failures and history gaps for a process that is already gone.
+            guard rawPID > 0, Int32(entry.kp_proc.p_stat) != SZOMB else { continue }
+            let identity = Self.identity(of: entry)
+            let parentPID = entry.kp_eproc.e_ppid
+            let ownerUID = UInt32(entry.kp_eproc.e_ucred.cr_uid)
+            let kernelName = Self.fixedCString(entry.kp_proc.p_comm)
+
             var task = proc_taskinfo()
             let taskSize = proc_pidinfo(rawPID, PROC_PIDTASKINFO, 0, &task,
                                         Int32(MemoryLayout<proc_taskinfo>.size))
@@ -528,22 +536,18 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                 diskWriteRate = MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp, reason: reason)
             }
 
-            // Revalidation is required: it is the only check that detects PID reuse during this sample.
-            let confirmedIdentity = processBSDInfo(rawPID).map { confirmed in
-                ProcessIdentity(pid: Int32(rawPID),
-                                startTime: ProcessStartTime(secondsSinceEpoch: Int64(confirmed.pbi_start_tvsec),
-                                                            microseconds: Int32(confirmed.pbi_start_tvusec)))
-            }
-            guard identityCoverage.include(initial: identity, revalidated: confirmedIdentity) else {
+            // Revalidation detects PID reuse during this sample. If the PID is gone or now belongs to another
+            // start time, the task and resource reads above may describe a different process, so they are dropped.
+            guard identityCoverage.include(listed: identity, revalidation: Self.revalidateIdentity(of: rawPID)) else {
                 processCounters.remove(.cpu(identity))
                 processCounters.remove(.diskRead(identity))
                 processCounters.remove(.diskWrite(identity))
                 continue
             }
-            let text = processText(for: identity, pid: rawPID, bsd: bsd)
-            records.append(RawProcess(identity: identity, parentPID: Int32(bsd.pbi_ppid),
+            let text = processText(for: identity, pid: rawPID, kernelName: kernelName)
+            records.append(RawProcess(identity: identity, parentPID: parentPID,
                                       name: text.name,
-                                      path: text.path, ownerUID: UInt32(bsd.pbi_uid),
+                                      path: text.path, ownerUID: ownerUID,
                                       cpu: cpuReading, memory: memoryReading,
                                       diskReadRate: diskReadRate, diskWriteRate: diskWriteRate,
                                       diskReadTotal: diskReadTotal, diskWriteTotal: diskWriteTotal))
@@ -555,10 +559,8 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         processTextCache = processTextCache.filter { identities.contains($0.key) }
 
         let incompleteDetail: String?
-        if estimatedCount > Self.maximumPIDCount || count >= Self.maximumPIDCount {
+        if table.truncatedAtCap {
             incompleteDetail = Self.processEnumerationCapDetail
-        } else if count >= pids.count {
-            incompleteDetail = "Process enumeration filled its buffer before the process list ended."
         } else if !identityCoverage.complete {
             incompleteDetail = Self.processIdentityOmissionDetail
         } else {
@@ -567,13 +569,105 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         return (records, incompleteDetail == nil, incompleteDetail)
     }
 
+    private enum ProcessEnumerationFailure: Error {
+        case sysctl(Int32)
+        case unstable
+
+        var detail: String {
+            switch self {
+            case let .sysctl(code):
+                return "Process enumeration failed: sysctl KERN_PROC_ALL returned errno \(code)."
+            case .unstable:
+                return "Process enumeration could not read a stable process table."
+            }
+        }
+    }
+
+    private struct ProcessTable {
+        let entries: [kinfo_proc]
+        /// True when the table reached maximumPIDCount, so processes beyond the cap were not read.
+        let truncatedAtCap: Bool
+    }
+
+    /// Lists every process with one KERN_PROC_ALL sysctl. Unlike proc_pidinfo, this needs no per-process
+    /// privilege, so processes owned by other users are included.
+    private static func readProcessTable() -> Result<ProcessTable, ProcessEnumerationFailure> {
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
+        let entrySize = MemoryLayout<kinfo_proc>.stride
+        for attempt in 1...processTableAttempts {
+            var requiredBytes = 0
+            let sizeStatus = mib.withUnsafeMutableBufferPointer { name in
+                sysctl(name.baseAddress, u_int(name.count), nil, &requiredBytes, nil, 0)
+            }
+            guard sizeStatus == 0 else { return .failure(.sysctl(errno)) }
+
+            // Headroom absorbs processes started between the sizing call and the read.
+            let estimated = requiredBytes / entrySize
+            let capacity = min(maximumPIDCount, estimated + estimated / 8 + 64)
+            var table = [kinfo_proc](repeating: kinfo_proc(), count: capacity)
+            var bytes = capacity * entrySize
+            let readStatus = table.withUnsafeMutableBytes { buffer in
+                mib.withUnsafeMutableBufferPointer { name in
+                    sysctl(name.baseAddress, u_int(name.count), buffer.baseAddress, &bytes, nil, 0)
+                }
+            }
+            if readStatus != 0 {
+                let code = errno
+                if code == ENOMEM, attempt < processTableAttempts { continue }
+                return .failure(.sysctl(code))
+            }
+            let filled = min(bytes / entrySize, capacity)
+            if filled < capacity {
+                return .success(ProcessTable(entries: Array(table.prefix(filled)), truncatedAtCap: false))
+            }
+            if capacity == maximumPIDCount {
+                return .success(ProcessTable(entries: table, truncatedAtCap: true))
+            }
+            // The table may have grown past the buffer, so the next attempt sizes it again.
+        }
+        return .failure(.unstable)
+    }
+
+    private static func identity(of entry: kinfo_proc) -> ProcessIdentity {
+        ProcessIdentity(pid: entry.kp_proc.p_pid,
+                        startTime: ProcessStartTime(secondsSinceEpoch: Int64(entry.kp_proc.p_un.__p_starttime.tv_sec),
+                                                    microseconds: Int32(entry.kp_proc.p_un.__p_starttime.tv_usec)))
+    }
+
+    /// Re-reads one PID through KERN_PROC_PID, which also succeeds for other users' processes.
+    /// A missing PID returns success with no record, so that case is reported as gone, not as a failure.
+    private static func revalidateIdentity(of pid: pid_t) -> ProcessIdentityCoverage.Revalidation {
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        var entry = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.size
+        let status = mib.withUnsafeMutableBufferPointer { name in
+            sysctl(name.baseAddress, u_int(name.count), &entry, &size, nil, 0)
+        }
+        if status != 0 {
+            return errno == ESRCH || errno == ENOENT ? .gone : .unreadable
+        }
+        guard size == MemoryLayout<kinfo_proc>.size, entry.kp_proc.p_pid == pid else { return .gone }
+        return .identity(identity(of: entry))
+    }
+
     /// Name and path are read at most once per ProcessIdentity; evicted with the identity in collectProcesses.
-    private func processText(for identity: ProcessIdentity, pid: pid_t, bsd: proc_bsdinfo) -> CachedProcessText {
+    private func processText(for identity: ProcessIdentity, pid: pid_t, kernelName: String) -> CachedProcessText {
         if let cached = processTextCache[identity] { return cached }
-        let text = CachedProcessText(name: processName(pid) ?? Self.fixedCString(bsd.pbi_name),
-                                     path: processPath(pid))
+        let path = processPath(pid)
+        let text = CachedProcessText(name: Self.processName(executablePath: path, kernelName: kernelName),
+                                     path: path)
         processTextCache[identity] = text
         return text
+    }
+
+    /// The executable's last path component is the full name. The kernel's p_comm is truncated to MAXCOMLEN,
+    /// so it is only the fallback when no executable path is available.
+    static func processName(executablePath: String?, kernelName: String) -> String {
+        if let executablePath {
+            let lastComponent = (executablePath as NSString).lastPathComponent
+            if !lastComponent.isEmpty { return lastComponent }
+        }
+        return kernelName
     }
 
     /// Converts Mach absolute-time ticks to nanoseconds as ticks * numer / denom, split so the
@@ -588,19 +682,6 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         return totalOverflow ? UInt64.max : total
     }
 
-    private func processBSDInfo(_ pid: pid_t) -> proc_bsdinfo? {
-        var info = proc_bsdinfo()
-        let size = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size))
-        return size == MemoryLayout<proc_bsdinfo>.size ? info : nil
-    }
-
-    private func processName(_ pid: pid_t) -> String? {
-        var buffer = [CChar](repeating: 0, count: Int(MAXCOMLEN) + 1)
-        let size = proc_name(pid, &buffer, UInt32(buffer.count))
-        guard size > 0 else { return nil }
-        return String(cString: buffer)
-    }
-
     private func processPath(_ pid: pid_t) -> String? {
         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
         let size = proc_pidpath(pid, &buffer, UInt32(buffer.count))
@@ -609,8 +690,9 @@ public actor SystemMonitorCollector: MonitoringCollecting {
     }
 
     private func linkProcesses(_ raw: [RawProcess]) -> [ProcessSnapshot] {
-        let byPID = Dictionary(uniqueKeysWithValues: raw.map { ($0.identity.pid, $0.identity) })
-        let rawByPID = Dictionary(uniqueKeysWithValues: raw.map { ($0.identity.pid, $0) })
+        // PIDs are unique within one listing, but a trap here would abort the whole app, so keep the first on any clash.
+        let byPID = Dictionary(raw.map { ($0.identity.pid, $0.identity) }, uniquingKeysWith: { first, _ in first })
+        let rawByPID = Dictionary(raw.map { ($0.identity.pid, $0) }, uniquingKeysWith: { first, _ in first })
         let children = Dictionary(grouping: raw, by: \.parentPID)
         let currentUID = UInt32(getuid())
         return raw.map { process in
@@ -632,7 +714,7 @@ public actor SystemMonitorCollector: MonitoringCollecting {
     }
 
     private func buildProcessGroups(_ processes: [ProcessSnapshot], timestamp: Date) -> [ProcessGroupSnapshot] {
-        let byID = Dictionary(uniqueKeysWithValues: processes.map { ($0.id, $0) })
+        let byID = Dictionary(processes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var appGroups: [ProcessIdentity: (root: ProcessSnapshot, identity: ApplicationHistoryIdentity,
                                          members: [ProcessSnapshot])] = [:]
         var assigned = Set<ProcessIdentity>()
@@ -763,10 +845,20 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         return metadata
     }
 
+    /// Executable paths come from processPath, which already standardizes them, so they are only split here.
+    /// Results are memoized per path; the cache is cleared whole when it reaches its size cap.
     private func applicationBundlePath(_ executablePath: String) -> String? {
-        let components = URL(fileURLWithPath: executablePath).standardizedFileURL.pathComponents
-        guard let index = components.firstIndex(where: { $0.lowercased().hasSuffix(".app") }) else { return nil }
-        return NSString.path(withComponents: Array(components.prefix(index + 1)))
+        if let cached = applicationBundlePathCache[executablePath] { return cached }
+        let components = (executablePath as NSString).pathComponents
+        var bundlePath: String?
+        if let index = components.firstIndex(where: { $0.lowercased().hasSuffix(".app") }) {
+            bundlePath = NSString.path(withComponents: Array(components.prefix(index + 1)))
+        }
+        if applicationBundlePathCache.count >= Self.applicationBundlePathCacheLimit {
+            applicationBundlePathCache.removeAll(keepingCapacity: true)
+        }
+        applicationBundlePathCache[executablePath] = .some(bundlePath)
+        return bundlePath
     }
 
     private func historyIdentity(for process: ProcessSnapshot,
@@ -917,6 +1009,16 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         let (rawUsedBytes, overflow) = usedPages.multipliedReportingOverflow(by: pageBytes)
         let usedBytes = overflow ? physicalBytes : min(physicalBytes, rawUsedBytes)
         return (usedBytes, physicalBytes - usedBytes)
+    }
+
+    /// Capability for a discovery source. An incomplete source carries its reasons as the detail.
+    private static func availability(for coverage: DiscoveryCoverage) -> MetricAvailability {
+        guard !coverage.complete else { return MetricAvailability(available: true) }
+        let joined = coverage.reasons.joined(separator: "; ")
+        let detail = joined.isEmpty ? "Collection was incomplete." : joined
+        let limit = 600
+        let shortened = detail.count > limit ? String(detail.prefix(limit)) + "..." : detail
+        return MetricAvailability(available: false, reason: .collectionFailed, detail: shortened)
     }
 
     private static func availability(for reading: MetricReading?) -> MetricAvailability {

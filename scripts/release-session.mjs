@@ -55,10 +55,10 @@ export function clearProof() {
   fs.rmSync(artifactManifestPath, { force: true });
 }
 
-export function recordProof() {
+export function recordProof(gate = "npm run test:all") {
   if (output("git", ["status", "--porcelain"])) throw new Error("Quality proof requires a clean worktree.");
   ensureDirectory(releaseDirectory);
-  const record = { schema: 1, createdAt: new Date().toISOString(), identity: currentIdentity(), gate: "npm run test:all" };
+  const record = { schema: 1, createdAt: new Date().toISOString(), identity: currentIdentity(), gate };
   fs.writeFileSync(proofPath, `${JSON.stringify(record, null, 2)}\n`);
   return record;
 }

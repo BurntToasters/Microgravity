@@ -50,7 +50,7 @@ final class UIStateTests: XCTestCase {
 
         let rootRow = try! XCTUnwrap(processRow(named: "Fixture Editor Renderer", controller: controller, table: table))
         table.selectRowIndexes(IndexSet(integer: rootRow), byExtendingSelection: false)
-        XCTAssertTrue(textField(withIdentifier: "process.selection.identity", in: controller.view)?.stringValue.contains("pid=410") == true)
+        XCTAssertTrue(textField(withIdentifier: "process.selection.identity", in: controller.view)?.accessibilityLabel()?.contains("PID 410,") == true)
 
         for offset in 1...4 {
             controller.update(snapshot: copy(snapshot, timestamp: snapshot.timestamp.addingTimeInterval(Double(offset))))
@@ -329,7 +329,8 @@ final class UIStateTests: XCTestCase {
         let intervalPopUp = try! XCTUnwrap(popUpButton(containing: "settings.refresh.2", in: controller.view))
         choose(item: "settings.refresh.2", in: intervalPopUp)
         XCTAssertEqual(store.interval, .twoSeconds)
-        XCTAssertTrue(textField(withIdentifier: "settings.sampling.state", in: controller.view)?.stringValue.contains("2.0 seconds") == true)
+        XCTAssertEqual(textField(withIdentifier: "settings.sampling.state", in: controller.view)?.stringValue,
+                       "Sampling every 2 seconds.")
 
         store.setInterval(.fiveSeconds)
         store.pause()
@@ -359,25 +360,113 @@ final class UIStateTests: XCTestCase {
         XCTAssertEqual(integrations.launchItemChanges, [])
     }
 
-    func testHistoryWindowUsesInclusiveUTCStartDayAtLocalNoonAndMidnight() {
+    func testSettingsStatusSaysFailedHasTooltipsAndOffersApprovalSettings() async throws {
+        let (dependencies, _, integrations) = makeDependencies()
+        let controller = SettingsViewController(dependencies: dependencies)
+        controller.loadViewIfNeeded()
+        let helperState = try XCTUnwrap(textField(withIdentifier: "settings.helper.state", in: controller.view))
+        let updatesState = try XCTUnwrap(textField(withIdentifier: "settings.updates.state", in: controller.view))
+        let approval = try XCTUnwrap(view(withIdentifier: "settings.helper.open-settings", in: controller.view) as NSButton?)
+        let setUp = try XCTUnwrap(view(withIdentifier: "settings.helper.configure", in: controller.view) as NSButton?)
+
+        integrations.status = SystemIntegrationStatus(helper: .failed("Handshake failed"), loginItem: .disabled,
+                                                      updates: .failed("Feed unreachable"))
+        integrations.onStatusChange?()
+        XCTAssertEqual(helperState.stringValue, "Failed · Handshake failed")
+        XCTAssertEqual(helperState.toolTip, "Failed · Handshake failed")
+        XCTAssertEqual(updatesState.stringValue, "Failed · Feed unreachable")
+        XCTAssertEqual(updatesState.toolTip, "Failed · Feed unreachable")
+        XCTAssertTrue(approval.isHidden, "approval link only appears when the helper needs approval")
+
+        integrations.status = SystemIntegrationStatus(helper: .requiresApproval, loginItem: .disabled, updates: .idle)
+        integrations.onStatusChange?()
+        XCTAssertFalse(approval.isHidden)
+        XCTAssertEqual(approval.attributedTitle.string, "Open System Settings…")
+        XCTAssertTrue(setUp.isEnabled)
+        approval.performClick(nil)
+        await waitUntil { integrations.openSettingsCount == 1 }
+
+        integrations.status = SystemIntegrationStatus(helper: .available, loginItem: .disabled, updates: .idle)
+        integrations.onStatusChange?()
+        XCTAssertTrue(approval.isHidden)
+        XCTAssertFalse(setUp.isEnabled, "a helper that is already available must not be registered again")
+    }
+
+    func testHistoryWindowUsesInclusiveLocalDaysAndIgnoresTheTimeOfDay() {
         let (dependencies, store, _) = makeDependencies()
-        let controller = HistoryViewController(dependencies: dependencies)
+        let controller = HistoryViewController(dependencies: dependencies, defaults: isolatedHistoryDefaults())
         controller.loadViewIfNeeded()
         let outline = try! XCTUnwrap(allViews(in: controller.view).compactMap { $0 as? NSOutlineView }.first)
         let base = try! XCTUnwrap(store.latestSnapshot)
 
-        for timestamp in [date("2026-05-01T19:00:00Z"), date("2026-05-01T07:00:00Z")] {
+        // Late evening and early morning on the same local day give the same window.
+        for timestamp in [localDate("2026-05-01", hour: 23), localDate("2026-05-01", hour: 0)] {
             let history = [
                 historyRow("2026-04-01", name: "Before cutoff"),
                 historyRow("2026-04-02", name: "Oldest retained day"),
-                historyRow("2026-05-01", name: "Current UTC day"),
-                historyRow("2026-05-02", name: "Next UTC day")
+                historyRow("2026-05-01", name: "Current local day"),
+                historyRow("2026-05-02", name: "Next local day")
             ]
             controller.update(snapshot: copy(base, timestamp: timestamp, applicationHistory: history))
+            // Applications start collapsed; expand them to count their day rows.
+            for row in (0..<outline.numberOfRows).reversed() where outline.level(forRow: row) == 0 {
+                outline.expandItem(outline.item(atRow: row))
+            }
             // Day rows are the children of the application rows (level 1 in the outline).
             let dayRows = (0..<outline.numberOfRows).filter { outline.level(forRow: $0) == 1 }
             XCTAssertEqual(dayRows.count, 2)
         }
+    }
+
+    func testHistoryApplicationsStartCollapsedAndKeepAUserExpansionAcrossRefreshes() throws {
+        let (dependencies, store, _) = makeDependencies()
+        let controller = HistoryViewController(dependencies: dependencies, defaults: isolatedHistoryDefaults())
+        controller.loadViewIfNeeded()
+        let outline = try XCTUnwrap(allViews(in: controller.view).compactMap { $0 as? NSOutlineView }.first)
+        let base = try XCTUnwrap(store.latestSnapshot)
+        let timestamp = localDate("2026-05-01", hour: 12)
+        func update(cpu: Double) {
+            let history = [historyRow("2026-05-01", name: "Editor", cpuSeconds: cpu),
+                           historyRow("2026-04-30", name: "Editor", cpuSeconds: cpu)]
+            controller.update(snapshot: copy(base, timestamp: timestamp, applicationHistory: history))
+        }
+        update(cpu: 1)
+        XCTAssertEqual((0..<outline.numberOfRows).filter { outline.level(forRow: $0) == 1 }.count, 0,
+                       "applications start collapsed")
+        outline.expandItem(outline.item(atRow: 0))
+        update(cpu: 2)
+        XCTAssertEqual((0..<outline.numberOfRows).filter { outline.level(forRow: $0) == 1 }.count, 2,
+                       "a user expansion survives a data refresh")
+    }
+
+    func testHistoryHidesBackgroundProcessesByDefaultAndRemembersTheToggle() throws {
+        let (dependencies, store, _) = makeDependencies()
+        let defaults = isolatedHistoryDefaults()
+        let controller = HistoryViewController(dependencies: dependencies, defaults: defaults)
+        controller.loadViewIfNeeded()
+        let outline = try XCTUnwrap(allViews(in: controller.view).compactMap { $0 as? NSOutlineView }.first)
+        let base = try XCTUnwrap(store.latestSnapshot)
+        let history = [
+            historyRow("2026-05-01", name: "Editor", association: .applicationBundle),
+            historyRow("2026-05-01", name: "Background Daemon", association: .standalone)
+        ]
+        let snapshot = copy(base, timestamp: localDate("2026-05-01", hour: 12), applicationHistory: history)
+
+        XCTAssertFalse(controller.showsBackgroundProcesses)
+        controller.update(snapshot: snapshot)
+        XCTAssertEqual(applicationTitles(in: outline), ["Editor"])
+
+        let toggle = try XCTUnwrap(toolbarCheckbox(in: controller))
+        XCTAssertEqual(toggle.accessibilityIdentifier(), "history.action.show-background")
+        toggle.state = .on
+        _ = toggle.sendAction(toggle.action, to: toggle.target)
+        XCTAssertTrue(controller.showsBackgroundProcesses)
+        XCTAssertEqual(applicationTitles(in: outline), ["Background Daemon", "Editor"])
+        XCTAssertTrue(defaults.bool(forKey: HistoryViewController.showsBackgroundProcessesDefaultsKey))
+
+        // A new controller reads the saved choice.
+        let restored = HistoryViewController(dependencies: dependencies, defaults: defaults)
+        XCTAssertTrue(restored.showsBackgroundProcesses)
     }
 
     func testFixtureModeSkipsAutosaveForDetailsAndInventoryTables() throws {
@@ -563,12 +652,42 @@ final class UIStateTests: XCTestCase {
                            history: source.history, applicationHistory: applicationHistory ?? source.applicationHistory)
     }
 
-    private func historyRow(_ day: String, name: String) -> ApplicationDailyHistorySummary {
-        let application = ApplicationHistoryIdentity(id: name, name: name, executablePath: nil, association: .standalone)
-        return ApplicationDailyHistorySummary(dayStart: date("\(day)T00:00:00Z"), application: application,
-                                              cpuSeconds: 1, diskReadBytes: nil, diskWriteBytes: nil,
+    private func historyRow(_ day: String, name: String,
+                            association: ProcessGroupAssociation = .applicationBundle,
+                            cpuSeconds: Double = 1) -> ApplicationDailyHistorySummary {
+        let application = ApplicationHistoryIdentity(id: name, name: name, executablePath: nil, association: association)
+        return ApplicationDailyHistorySummary(dayStart: localDate(day), application: application,
+                                              cpuSeconds: cpuSeconds, diskReadBytes: nil, diskWriteBytes: nil,
                                               networkReceiveBytes: nil, networkTransmitBytes: nil,
                                               sampleCount: 1, gaps: 0, counterResets: 0)
+    }
+
+    /// Local midnight (or `hour` o'clock) of a `yyyy-MM-dd` day, as the history store keys its days.
+    private func localDate(_ day: String, hour: Int = 0) -> Date {
+        let parts = day.split(separator: "-").compactMap { Int($0) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2], hour: hour))!
+    }
+
+    private func isolatedHistoryDefaults() -> UserDefaults {
+        let suite = "UIStateHistoryDefaults-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        return defaults
+    }
+
+    /// Application names in the outline's top-level rows, in display order.
+    private func applicationTitles(in outline: NSOutlineView) -> [String] {
+        (0..<outline.numberOfRows).compactMap { row -> String? in
+            guard outline.level(forRow: row) == 0,
+                  let cell = outline.view(atColumn: 0, row: row, makeIfNecessary: true) else { return nil }
+            return textFields(in: cell).first?.stringValue
+        }
+    }
+
+    private func toolbarCheckbox(in controller: HistoryViewController) -> NSButton? {
+        controller.toolbarItem(for: NSToolbarItem.Identifier("history.toolbar.background"))?.view as? NSButton
     }
 
     /// The pop-up whose menu contains an item with `itemIdentifier` (menu items are not in the view hierarchy).

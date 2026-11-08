@@ -24,6 +24,16 @@ final class ProcessRowModelTests: XCTestCase {
         XCTAssertEqual(ProcessRowModel.operations(from: [1, 2, 3], to: [1, 2, 3]), [])
     }
 
+    func testBoundedOperationsMatchTheUnboundedDiffWithinTheLimitAndGiveUpBeyondIt() {
+        let old = Array(0..<30)
+        let reordered = Array(old.reversed())
+        let full = ProcessRowModel.operations(from: old, to: reordered)
+        XCTAssertGreaterThan(full.count, 5)
+        XCTAssertEqual(ProcessRowModel.boundedOperations(from: old, to: reordered, limit: full.count), full)
+        XCTAssertNil(ProcessRowModel.boundedOperations(from: old, to: reordered, limit: full.count - 1))
+        XCTAssertEqual(ProcessRowModel.boundedOperations(from: old, to: old, limit: 0), [])
+    }
+
     func testInsertRemoveAndMoveKeepRowIdentities() {
         let operations = ProcessRowModel.operations(from: ["a", "b", "c", "d"], to: ["c", "a", "e", "d"])
         XCTAssertEqual(ProcessRowModel.apply(operations, to: ["a", "b", "c", "d"]), ["c", "a", "e", "d"])

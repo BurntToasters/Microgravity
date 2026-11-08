@@ -21,7 +21,7 @@ final class CoreGridView: NSView {
         // Grouped so the grid and its identifier are reachable as one element; the tiles carry their own identifiers.
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
-        setAccessibilityLabel("CPU utilization by logical processor")
+        setAccessibilityLabel(String(localized: "CPU utilization by logical processor"))
     }
 
     required init?(coder: NSCoder) { nil }
@@ -125,10 +125,10 @@ private final class CoreTile: NSView {
     required init?(coder: NSCoder) { nil }
 
     func configure(_ core: CoreTileModel, mapping: MetricGraphView.XMapping) {
-        titleLabel.stringValue = "CPU \(core.index)"
+        titleLabel.stringValue = String(localized: "CPU \(core.index)")
         valueLabel.stringValue = core.valueText
         graph.setAccessibilityIdentifier("performance.cpu-core.\(core.index)")
-        graph.setAccessibilityLabel("CPU \(core.index), \(core.valueText)")
+        graph.setAccessibilityLabel(String(localized: "CPU \(core.index), \(core.valueText)"))
         graph.update(series: [core.series], maximum: 100, mapping: mapping)
     }
 }

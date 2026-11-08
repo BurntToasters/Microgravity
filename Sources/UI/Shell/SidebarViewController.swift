@@ -26,17 +26,23 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     private static let roots: [Node] = [
-        Node(group: "Monitor", pages: [.processes, .performance, .history]),
-        Node(group: "Inventory", pages: [.startup, .users, .details, .services]),
+        Node(group: String(localized: "Monitor"), pages: [.processes, .details, .performance, .history, .users]),
+        Node(group: String(localized: "Inventory"), pages: [.startup, .services]),
         Node(page: .settings)
     ]
+
+    static let supportURL = URL(string: "https://rosie.run/support")!
 
     private let monitoringStore: any MonitoringStore
     private let outlineView = NSOutlineView()
     private let footer: SidebarStatusFooter
+    private let openURL: (URL) -> Void
+    let supportButton = NSButton(title: String(localized: "Support Microgravity"), target: nil, action: nil)
 
-    init(monitoringStore: any MonitoringStore) {
+    /// `openURL` opens a link in the user's default browser; tests replace it.
+    init(monitoringStore: any MonitoringStore, openURL: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }) {
         self.monitoringStore = monitoringStore
+        self.openURL = openURL
         footer = SidebarStatusFooter(monitoringStore: monitoringStore)
         super.init(nibName: nil, bundle: nil)
     }
@@ -62,7 +68,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.dataSource = self
         outlineView.delegate = self
         outlineView.setAccessibilityIdentifier("navigation.sidebar")
-        outlineView.setAccessibilityLabel("Sections")
+        outlineView.setAccessibilityLabel(String(localized: "Sections"))
         outlineView.reloadData()
         for root in Self.roots where root.isGroup {
             outlineView.expandItem(root)
@@ -77,14 +83,31 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         scroll.automaticallyAdjustsContentInsets = true
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
+        supportButton.target = self
+        supportButton.action = #selector(openSupportPage)
+        supportButton.bezelStyle = .push
+        supportButton.controlSize = .small
+        supportButton.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
+        supportButton.image = NSImage(systemSymbolName: "heart", accessibilityDescription: nil)
+        supportButton.imagePosition = .imageLeading
+        supportButton.toolTip = String(localized: "Open \(Self.supportURL.absoluteString) in your browser")
+        supportButton.setAccessibilityIdentifier("sidebar.support")
+        supportButton.setAccessibilityLabel(String(localized: "Support Microgravity"))
+        supportButton.setAccessibilityHelp(String(localized: "Opens the support page in your default browser."))
+        supportButton.translatesAutoresizingMaskIntoConstraints = false
+
         footer.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(scroll)
+        view.addSubview(supportButton)
         view.addSubview(footer)
         NSLayoutConstraint.activate([
             scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -8),
+            scroll.bottomAnchor.constraint(equalTo: supportButton.topAnchor, constant: -8),
+            supportButton.leadingAnchor.constraint(equalTo: footer.leadingAnchor),
+            supportButton.trailingAnchor.constraint(lessThanOrEqualTo: footer.trailingAnchor),
+            supportButton.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -8),
             footer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             footer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
             footer.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12)
@@ -102,6 +125,15 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     func refreshStatus(snapshot: MonitoringSnapshot? = nil) {
         footer.refresh(snapshot: snapshot)
+    }
+
+    /// Pauses the footer's 1 s timer while the window is hidden, minimized or fully covered.
+    func setWindowVisible(_ visible: Bool) {
+        footer.setWindowVisible(visible)
+    }
+
+    @objc func openSupportPage() {
+        openURL(Self.supportURL)
     }
 
     private static let allPageNodes: [Node] = roots.flatMap { $0.isGroup ? $0.children : [$0] }
@@ -196,8 +228,10 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 final class SidebarStatusFooter: NSView {
     private let monitoringStore: any MonitoringStore
     private let samplingLine = NSTextField(labelWithString: "")
-    private let freshnessLine = NSTextField(labelWithString: "Waiting for the first sample")
+    private let freshnessLine = NSTextField(labelWithString: String(localized: "Waiting for the first sample"))
     private var refreshTimer: Timer?
+    /// False while the window is hidden, minimized or fully covered. The timer does not run then.
+    private var isWindowVisible = true
 
     init(monitoringStore: any MonitoringStore) {
         self.monitoringStore = monitoringStore
@@ -231,26 +265,49 @@ final class SidebarStatusFooter: NSView {
             self, selector: #selector(samplingStateChanged),
             name: .samplingStateDidChange, object: nil
         )
-        // Pause or interval changes made on other pages do not publish a snapshot, so poll the store cheaply.
-        let timer = Timer(timeInterval: 1, target: self, selector: #selector(timerFired), userInfo: nil, repeats: true)
-        RunLoop.main.add(timer, forMode: .common)
-        refreshTimer = timer
         refresh()
     }
 
     required init?(coder: NSCoder) { nil }
 
+    /// The 1 s timer runs only while the footer is in a window that is visible. Pause or interval changes made
+    /// on other pages do not publish a snapshot, so the timer polls the store cheaply.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateTimer()
+    }
+
+    func setWindowVisible(_ visible: Bool) {
+        isWindowVisible = visible
+        updateTimer()
+    }
+
+    /// Starts the timer when the footer is shown and visible; invalidates it when the footer leaves its window.
+    private func updateTimer() {
+        guard window != nil, isWindowVisible else {
+            refreshTimer?.invalidate()
+            refreshTimer = nil
+            return
+        }
+        guard refreshTimer == nil else { return }
+        let timer = Timer(timeInterval: 1, target: self, selector: #selector(timerFired), userInfo: nil, repeats: true)
+        RunLoop.main.add(timer, forMode: .common)
+        refreshTimer = timer
+        // Catch up on anything missed while the timer was paused.
+        refresh()
+    }
+
     func refresh(snapshot: MonitoringSnapshot? = nil) {
         let paused = monitoringStore.isPaused
         samplingLine.stringValue = paused
-            ? "Paused"
-            : "Sampling every \(SamplingControls.seconds(monitoringStore.interval)) s"
+            ? String(localized: "Paused")
+            : String(localized: "Sampling every \(SamplingControls.longTitle(monitoringStore.interval))")
         samplingLine.setAccessibilityLabel(samplingLine.stringValue)
         if let snapshot = snapshot ?? monitoringStore.latestSnapshot {
             let time = UIFormat.time(snapshot.timestamp)
-            freshnessLine.stringValue = paused ? "Last sample \(time)" : "Updated \(time)"
+            freshnessLine.stringValue = paused ? String(localized: "Last sample \(time)") : String(localized: "Updated \(time)")
         } else {
-            freshnessLine.stringValue = "Waiting for the first sample"
+            freshnessLine.stringValue = String(localized: "Waiting for the first sample")
         }
         freshnessLine.setAccessibilityLabel(freshnessLine.stringValue)
     }

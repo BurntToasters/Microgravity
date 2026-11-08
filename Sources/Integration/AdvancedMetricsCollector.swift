@@ -36,8 +36,15 @@ struct AdvancedNetworkAccumulator {
 }
 
 protocol AdvancedSamplingClient: Sendable {
+    /// Runs once per refresh, before any sample. Returning false ends the refresh without sampling.
+    func prepareRefresh() async -> Bool
     func sample(_ kind: HelperSampleKind) async -> HelperSampleResponse
 }
+
+extension AdvancedSamplingClient {
+    func prepareRefresh() async -> Bool { true }
+}
+
 extension HelperSamplingClient: AdvancedSamplingClient {}
 
 /// Process identities for the current process list, or the reason they could not be enumerated.
@@ -51,23 +58,34 @@ struct ProcessIdentityLookup: Sendable {
     }
 }
 
-/// A single in-flight helper sample is refreshed at most every five seconds.
-/// Callers receive a cached snapshot immediately; readings retain capture timestamps.
+/// A single in-flight helper refresh runs at most every five seconds, or every sixty seconds while
+/// the helper is unavailable. Callers receive a cached snapshot immediately; readings retain capture timestamps.
 actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
     /// Maximum age of a helper reading, measured from its capture time to read time.
     static let maximumSampleAge: TimeInterval = 30
+    /// Minimum spacing between refreshes while the helper responds.
+    static let refreshInterval: TimeInterval = 5
+    /// Minimum spacing between refreshes after a refresh found the helper unavailable.
+    static let helperUnavailableRetryInterval: TimeInterval = 60
     private static let maximumClockSkew: TimeInterval = 1
+    private static let networkKinds: [MetricKind] = [.processNetwork, .processNetworkReceive, .processNetworkTransmit]
+    private static let sampledKinds: [MetricKind] = networkKinds + [.gpu, .energy]
+    /// No verified powermetrics output provides per-process GPU time, so it is never collected.
+    static let processGPUTimeAvailability = MetricAvailability(available: false, reason: .unsupported,
+                                                               detail: "Per-process GPU time is not collected.")
 
     private let client: any AdvancedSamplingClient
     private let now: @Sendable () -> Date
     private let processIdentities: @Sendable () -> ProcessIdentityLookup
     private var network = AdvancedNetworkAccumulator()
     private var cache = AdvancedMetricsSnapshot(capabilities: Dictionary(uniqueKeysWithValues:
-        [MetricKind.processNetwork, .processNetworkReceive, .processNetworkTransmit, .processGPUTime, .gpu, .energy]
-            .map { ($0, MetricAvailability(available: false, reason: .warmingUp)) }))
+        NativeAdvancedMetricsCollector.sampledKinds.map { ($0, MetricAvailability(available: false, reason: .warmingUp)) }
+            + [(MetricKind.processGPUTime, NativeAdvancedMetricsCollector.processGPUTimeAvailability)]))
     private var lastCompleted: Date?
+    private var lastResultWasHelperUnavailable = false
     private var inFlight = false
     private var refreshRequestCount = 0
+    private var refreshCompletionCount = 0
 
     init(client: any AdvancedSamplingClient = HelperSamplingClient(),
          now: @escaping @Sendable () -> Date = { Date() },
@@ -88,18 +106,22 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
 
     func collectAdvancedMetrics(at timestamp: Date) async -> AdvancedMetricsSnapshot {
         let currentTime = now()
+        let interval = lastResultWasHelperUnavailable ? Self.helperUnavailableRetryInterval : Self.refreshInterval
         let refreshDue = lastCompleted.map {
-            currentTime.timeIntervalSince($0) >= 5 || currentTime < $0
+            currentTime.timeIntervalSince($0) >= interval || currentTime < $0
         } ?? true
         if !inFlight && refreshDue {
             inFlight = true
             refreshRequestCount += 1
             Task { await self.refresh() }
         }
-        if let completed = lastCompleted, currentTime.timeIntervalSince(completed) > Self.maximumSampleAge {
+        // An unavailable-helper cache holds no readings to age out, and its cached reason stays accurate.
+        if !lastResultWasHelperUnavailable, let completed = lastCompleted,
+           currentTime.timeIntervalSince(completed) > Self.maximumSampleAge {
             let unavailable = MetricAvailability(available: false, reason: .collectionFailed, detail: "Advanced sample is stale")
-            return AdvancedMetricsSnapshot(capabilities: Dictionary(uniqueKeysWithValues:
-                [MetricKind.processNetwork, .processNetworkReceive, .processNetworkTransmit, .processGPUTime, .gpu, .energy].map { ($0, unavailable) }))
+            var capabilities = Dictionary(uniqueKeysWithValues: Self.sampledKinds.map { ($0, unavailable) })
+            capabilities[.processGPUTime] = Self.processGPUTimeAvailability
+            return AdvancedMetricsSnapshot(capabilities: capabilities)
         }
         return freshReadings(in: cache, at: currentTime)
     }
@@ -133,10 +155,15 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
     }
 
     func refreshRequestCountForTesting() -> Int { refreshRequestCount }
+    func refreshCompletionCountForTesting() -> Int { refreshCompletionCount }
 
     private func refresh() async {
         // Cleared on every exit path, including cancellation, so a stuck flag cannot stop future refreshes.
-        defer { inFlight = false }
+        defer { inFlight = false; refreshCompletionCount += 1 }
+        guard await client.prepareRefresh() else {
+            recordHelperUnavailable()
+            return
+        }
         let beforeLookup = processIdentities()
         let before = beforeLookup.identities
         async let networkResponse = client.sample(.nettop)
@@ -145,24 +172,24 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
         let afterLookup = processIdentities()
         let after = afterLookup.identities
         let power = await powerResponse
-        let afterPower = processIdentities().identities
         let identityFailure = beforeLookup.failureDetail ?? afterLookup.failureDetail
         let responseTime = now()
         var perProcess: [ProcessIdentity: [MetricKind: MetricReading]] = [:]
         var capabilities: [MetricKind: MetricAvailability] = [:]
-        let networkKinds: [MetricKind] = [.processNetwork, .processNetworkReceive, .processNetworkTransmit]
         if net.error == nil, let data = net.output, data.count <= AdvancedMetricsParser.maximumBytes,
            abs(responseTime.timeIntervalSince(net.capturedAt)) <= Self.maximumSampleAge,
            let text = String(data: data, encoding: .utf8), AdvancedMetricsParser.hasNettopHeader(text) {
             perProcess = network.update(AdvancedMetricsParser.nettop(text), before: before, after: after, at: net.capturedAt)
-            for kind in networkKinds {
+            for kind in Self.networkKinds {
                 capabilities[kind] = perProcess.isEmpty
                     ? MetricAvailability(available: false, reason: .notCollected,
                                          detail: identityFailure ?? "No process identities could be verified")
                     : MetricAvailability(available: true)
             }
         } else {
-            for kind in networkKinds { capabilities[kind] = MetricAvailability(available: false, reason: .collectionFailed, detail: net.error ?? "Network sample unavailable or invalid") }
+            for kind in Self.networkKinds {
+                capabilities[kind] = Self.failureAvailability(net.error, fallback: "Network sample unavailable or invalid")
+            }
         }
         var system: [MetricKind: MetricReading] = [:]
         if power.error == nil, let data = power.output, abs(responseTime.timeIntervalSince(power.capturedAt)) <= Self.maximumSampleAge {
@@ -177,23 +204,54 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
                 system[.energy] = MetricReading(value: watts, unit: .watts, timestamp: power.capturedAt)
                 capabilities[.energy] = MetricAvailability(available: true)
             } else {
-                capabilities[.energy] = MetricAvailability(available: false, reason: .unsupported, detail: "Explicit component power units unavailable")
+                capabilities[.energy] = MetricAvailability(available: false, reason: .unsupported, detail: "Combined or component power (mW) unavailable")
             }
-            var gpuCount = 0
-            for (pid, seconds) in parsed.processGPUSeconds {
-                guard let identity = before[pid], afterPower[pid] == identity else { continue }
-                perProcess[identity, default: [:]][.processGPUTime] = MetricReading(value: seconds, unit: .seconds, timestamp: power.capturedAt)
-                gpuCount += 1
-            }
-            capabilities[.processGPUTime] = gpuCount > 0
-                ? MetricAvailability(available: true)
-                : MetricAvailability(available: false, reason: .unsupported, detail: "Explicit per-process GPU time units unavailable")
         } else {
-            for kind in [MetricKind.gpu, .energy, .processGPUTime] {
-                capabilities[kind] = MetricAvailability(available: false, reason: .collectionFailed, detail: power.error ?? "Power sample unavailable or stale")
+            for kind in [MetricKind.gpu, .energy] {
+                capabilities[kind] = Self.failureAvailability(power.error, fallback: "Power sample unavailable or stale")
             }
         }
+        capabilities[.processGPUTime] = Self.processGPUTimeAvailability
+        lastResultWasHelperUnavailable = net.error == HelperSamplingClient.unavailableError
+            || power.error == HelperSamplingClient.unavailableError
         cache = AdvancedMetricsSnapshot(system: system, perProcess: perProcess, capabilities: capabilities)
+        lastCompleted = now()
+    }
+
+    /// A missing helper is an optional feature that is not set up, not a failed collection.
+    private static func failureAvailability(_ code: String?, fallback: String) -> MetricAvailability {
+        MetricAvailability(available: false,
+                           reason: code == HelperSamplingClient.unavailableError ? .notCollected : .collectionFailed,
+                           detail: describe(helperError: code) ?? fallback)
+    }
+
+    /// Shown when a metric needs the optional helper and the helper is not installed, approved or signed.
+    static let helperRequiredDetail = "Requires the optional privileged helper (Settings › Optional integrations)."
+
+    /// Turns a helper or XPC failure code into text a person can act on. Unknown codes pass through.
+    static func describe(helperError code: String?) -> String? {
+        guard let code else { return nil }
+        switch code {
+        case HelperSamplingClient.unavailableError: return helperRequiredDetail
+        case "rateLimited", "busy": return "The helper is busy; the next sample will retry."
+        case "timedOut": return "The helper did not respond in time."
+        case "disconnected", "connectionInterrupted", "connectionInvalidated", "connectionFailed":
+            return "Microgravity could not reach the helper."
+        case "incompatibleVersion", "incompatibleResponse", "protocolUnavailable":
+            return "The helper is out of date. Remove it and set it up again in Settings."
+        case "launchFailed", "commandFailed", "noData", "outputLimit", "readFailed":
+            return "The helper's measurement command failed."
+        default: return code
+        }
+    }
+
+    private func recordHelperUnavailable() {
+        let unavailable = MetricAvailability(available: false, reason: .notCollected,
+                                             detail: Self.helperRequiredDetail)
+        var capabilities = Dictionary(uniqueKeysWithValues: Self.sampledKinds.map { ($0, unavailable) })
+        capabilities[.processGPUTime] = Self.processGPUTimeAvailability
+        cache = AdvancedMetricsSnapshot(capabilities: capabilities)
+        lastResultWasHelperUnavailable = true
         lastCompleted = now()
     }
 

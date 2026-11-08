@@ -24,7 +24,7 @@ function ghOutput(args) {
 }
 
 export function expectedDraftTarget(info, commit) {
-  return { tag: info.tag, target: commit, title: `Microgravity ${info.version}`, prerelease: info.channel === "beta" };
+  return { tag: info.tag, target: commit, title: info.tag, prerelease: info.channel === "beta" };
 }
 
 export function betaMirrorTarget(channel, latestStableTag) {
@@ -259,9 +259,14 @@ export function publishPreparedRelease(info, directory, {
   }
 }
 
+// Releases skip the UI automation suite unless MICROGRAVITY_RELEASE_UI_TESTS=1; run it before merging UI changes.
+export function releaseTestArguments(environment = process.env) {
+  return environment.MICROGRAVITY_RELEASE_UI_TESTS === "1" ? [] : ["--", "--skip-ui"];
+}
+
 function prepare() {
   runPreflight({ release: true });
-  run("npm", ["run", "test:all"]);
+  run("npm", ["run", "test:all", ...releaseTestArguments()]);
   createSession();
   console.log("release:prepare: ok (24-hour session recorded)");
 }

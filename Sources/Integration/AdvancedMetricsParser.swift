@@ -17,7 +17,6 @@ enum AdvancedMetricsParser {
     struct Power {
         let watts: Double?
         let gpuPercent: Double?
-        let processGPUSeconds: [Int32: Double]
     }
     static func hasNettopHeader(_ input: String) -> Bool {
         guard input.utf8.count <= maximumBytes, let first = input.split(whereSeparator: \.isNewline).first else { return false }
@@ -92,8 +91,12 @@ enum AdvancedMetricsParser {
         fields.append(field)
         return fields
     }
+    /// Parses GPU activity and system power from one powermetrics plist record.
+    /// Power keys are milliwatts: `processor.combined_power` when present, otherwise all of
+    /// `processor.cpu_power`, `processor.gpu_power` and `processor.ane_power`. A present but
+    /// invalid `combined_power` yields nil rather than falling back to the components.
     static func power(_ data: Data) -> Power {
-        let empty = Power(watts: nil, gpuPercent: nil, processGPUSeconds: [:])
+        let empty = Power(watts: nil, gpuPercent: nil)
         guard data.count <= maximumBytes else { return empty }
         let records = data.split(separator: 0, omittingEmptySubsequences: true)
         guard let last = records.last,
@@ -109,24 +112,14 @@ enum AdvancedMetricsParser {
         let percent = ratio.flatMap { $0 <= 1 ? (1 - $0) * 100 : nil }
         let processor = root["processor"] as? [String: Any] ?? [:]
         var watts: Double?
-        if let cpu = number(processor["cpu_power_mw"]), let gpu = number(processor["gpu_power_mw"]),
-           let ane = number(processor["ane_power_mw"]), (cpu + gpu + ane).isFinite {
-            watts = (cpu + gpu + ane) / 1000
+        if processor["combined_power"] != nil {
+            watts = number(processor["combined_power"]).map { $0 / 1_000 }
+        } else if let cpuMilliwatts = number(processor["cpu_power"]),
+                  let gpuMilliwatts = number(processor["gpu_power"]),
+                  let aneMilliwatts = number(processor["ane_power"]),
+                  (cpuMilliwatts + gpuMilliwatts + aneMilliwatts).isFinite {
+            watts = (cpuMilliwatts + gpuMilliwatts + aneMilliwatts) / 1_000
         }
-        var tasks: [Int32: Double] = [:]
-        var seen = Set<Int32>()
-        var ambiguous = Set<Int32>()
-        for task in root["tasks"] as? [[String: Any]] ?? [] {
-            guard let rawPID = number(task["pid"]), rawPID.rounded() == rawPID,
-                  rawPID > 0, rawPID <= Double(Int32.max) else { continue }
-            let pid = Int32(rawPID)
-            guard seen.insert(pid).inserted else { tasks.removeValue(forKey: pid); ambiguous.insert(pid); continue }
-            guard !(task["gpu_time_ms"] != nil && task["gpu_time_ns"] != nil) else { continue }
-            let millis = number(task["gpu_time_ms"])
-            let nanos = number(task["gpu_time_ns"])
-            guard (millis == nil) != (nanos == nil), !ambiguous.contains(pid) else { continue }
-            tasks[pid] = millis.map { $0 / 1_000 } ?? nanos.map { $0 / 1_000_000_000 }
-        }
-        return Power(watts: watts, gpuPercent: percent, processGPUSeconds: tasks)
+        return Power(watts: watts, gpuPercent: percent)
     }
 }

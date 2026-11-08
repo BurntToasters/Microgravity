@@ -35,7 +35,7 @@ final class MicrogravityUITests: XCTestCase {
         child.click()
         XCTAssertTrue(app.staticTexts["process.selection.identity"].waitForExistence(timeout: 3))
         let selectedIdentity = app.staticTexts["process.selection.identity"].label
-        XCTAssertTrue(selectedIdentity.contains("pid=410"), "Unexpected selected identity: \(selectedIdentity)")
+        XCTAssertTrue(selectedIdentity.contains("PID 410,"), "Unexpected selected identity: \(selectedIdentity)")
 
         // The search field lives in the window toolbar, so match it by identifier rather than element type.
         let search = element("process.search", in: app)
@@ -139,7 +139,7 @@ final class MicrogravityUITests: XCTestCase {
         XCTAssertTrue(quit.waitForExistence(timeout: 3))
         XCTAssertTrue(quit.isEnabled)
         XCTAssertTrue(force.isEnabled)
-        XCTAssertTrue(app.staticTexts["process.selection.identity"].label.contains("pid=411"))
+        XCTAssertTrue(app.staticTexts["process.selection.identity"].label.contains("PID 411,"))
         app.typeKey(.escape, modifierFlags: [])
     }
 
@@ -185,7 +185,7 @@ final class MicrogravityUITests: XCTestCase {
         XCTAssertTrue(process.waitForExistence(timeout: 3))
         process.click()
         let selectedIdentity = app.staticTexts["process.selection.identity"].label
-        XCTAssertTrue(selectedIdentity.contains("pid=411"))
+        XCTAssertTrue(selectedIdentity.contains("PID 411,"))
 
         element("process.action.force-quit", in: app).click()
         let confirmation = app.sheets.firstMatch
@@ -205,7 +205,7 @@ final class MicrogravityUITests: XCTestCase {
         let process = row("process.row.411", in: "process.table", app: app)
         XCTAssertTrue(process.waitForExistence(timeout: 3))
         process.click()
-        XCTAssertTrue(app.staticTexts["process.selection.identity"].label.contains("pid=411"))
+        XCTAssertTrue(app.staticTexts["process.selection.identity"].label.contains("PID 411,"))
 
         element("process.action.force-quit", in: app).click()
         let confirmation = app.sheets.firstMatch
@@ -263,6 +263,10 @@ final class MicrogravityUITests: XCTestCase {
 
         element("navigation.item.history", in: app).click()
         XCTAssertTrue(element("history.range.30-days", in: app).waitForExistence(timeout: 3))
+        // Applications start collapsed; expand the editor to reach its day rows.
+        let editorRow = app.outlineRows.containing(.any, identifier: "history.total.fixture-editor.application").firstMatch
+        XCTAssertTrue(editorRow.waitForExistence(timeout: 3))
+        editorRow.disclosureTriangles.firstMatch.click()
         let gap = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier BEGINSWITH %@", "history.gap.")
         ).firstMatch
@@ -277,7 +281,7 @@ final class MicrogravityUITests: XCTestCase {
         XCTAssertTrue(selectedProcess.waitForExistence(timeout: 3))
         selectedProcess.click()
         let selectedIdentity = app.staticTexts["process.selection.identity"].label
-        XCTAssertTrue(selectedIdentity.contains("pid=411"))
+        XCTAssertTrue(selectedIdentity.contains("PID 411,"))
         element("navigation.item.history", in: app).click()
 
         element("history.action.reset", in: app).click()
@@ -305,7 +309,7 @@ final class MicrogravityUITests: XCTestCase {
         XCTAssertTrue(selectedProcess.waitForExistence(timeout: 3))
         selectedProcess.click()
         let selectedIdentity = app.staticTexts["process.selection.identity"].label
-        XCTAssertTrue(selectedIdentity.contains("pid=411"))
+        XCTAssertTrue(selectedIdentity.contains("PID 411,"))
 
         element("navigation.item.history", in: app).click()
         XCTAssertTrue(element("history.total.fixture-editor.application", in: app).waitForExistence(timeout: 3))
@@ -454,11 +458,11 @@ final class MicrogravityUITests: XCTestCase {
     func testVisualAcceptanceCapturesAllPagesAtBothSizesAndAppearances() {
         let pages: [(name: String, navigation: String, content: String)] = [
             ("Processes", "navigation.item.processes", "process.table"),
+            ("Details", "navigation.item.details", "details.table"),
             ("Performance", "navigation.item.performance", "performance.graph.cpu-total"),
             ("AppHistory", "navigation.item.history", "history.table"),
-            ("Startup", "navigation.item.startup", "startup.table"),
             ("Users", "navigation.item.users", "users.table"),
-            ("Details", "navigation.item.details", "details.table"),
+            ("Startup", "navigation.item.startup", "startup.table"),
             ("Services", "navigation.item.services", "services.table"),
             ("Settings", "navigation.item.settings", "settings.appearance")
         ]

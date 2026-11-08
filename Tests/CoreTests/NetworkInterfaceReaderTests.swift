@@ -115,6 +115,17 @@ final class NetworkInterfaceReaderTests: XCTestCase {
         XCTAssertEqual(result.interfaces.first { $0.name == "lo0" }?.receiveBytesPerSecond.value, 10_000)
     }
 
+    func testVPNTunnelInterfacesAreExcludedFromTotalsByNamePrefix() {
+        for name in ["ipsec0", "ipsec1", "ppp0", "utun4", "gif0", "stf0", "bridge100"] {
+            let counter = NetworkInterfaceCounter(name: name, isUp: true, isLoopback: false,
+                                                  interfaceType: 6, receiveBytes: 1, transmitBytes: 1)
+            XCTAssertFalse(counter.includedInTotals, "\(name) carries traffic also counted on a physical interface")
+        }
+        let physical = NetworkInterfaceCounter(name: "en0", isUp: true, isLoopback: false,
+                                               interfaceType: 6, receiveBytes: 1, transmitBytes: 1)
+        XCTAssertTrue(physical.includedInTotals)
+    }
+
     func testParserRejectsZeroLengthTruncatedAndShortInterfaceMessages() {
         let nameResolver: (UInt16) -> String? = { _ in "en0" }
         for data in [Data([0, 0, 0, 0]), Data([8, 0, 0]), Data([8, 0, 0, 0])] {

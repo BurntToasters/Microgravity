@@ -4,6 +4,26 @@ import Darwin
 @testable import Microgravity
 
 final class LaunchDiscoveryTests: XCTestCase {
+    func testUserLaunchAgentsAreLaunchAgentsNotLoginItems() {
+        let specs = LaunchDiscovery.directorySpecs(home: "/Users/example")
+
+        let userAgents = specs.first { $0.path == "/Users/example/Library/LaunchAgents" }
+        XCTAssertEqual(userAgents?.kind, .launchAgent)
+        XCTAssertEqual(userAgents?.isService, false)
+        XCTAssertEqual(specs.first { $0.path == "/Library/StartupItems" }?.kind, .loginItem)
+        XCTAssertEqual(specs.filter { $0.isService }.map(\.kind), [.launchDaemon, .launchDaemon])
+    }
+
+    func testUserDiscoveryIsCompleteOnNormalScanAndKeepsTheExplanatoryNote() {
+        let result = UserDiscovery.collect()
+
+        XCTAssertTrue(result.coverage.complete, "a scan within the record bound must not report incomplete")
+        XCTAssertTrue(result.coverage.reasons.contains { $0.contains("utmpx reports terminal login sessions") })
+        XCTAssertFalse(result.coverage.reasons.contains { $0.contains("record bound") })
+        XCTAssertTrue(result.users.contains { $0.isCurrentUser && $0.uid == getuid() },
+                      "the current user is always reported")
+    }
+
     func testPropertyListExtensionIsMatchedCaseInsensitively() {
         XCTAssertTrue(LaunchDiscovery.isPropertyListName("agent.plist"))
         XCTAssertTrue(LaunchDiscovery.isPropertyListName("agent.PLIST"))

@@ -5,10 +5,7 @@ enum DetailsPresentation {
     /// The outermost `.app` bundle on `executablePath`, used to pick the row icon. Nil for plain executables,
     /// which then share the generic executable icon.
     static func appBundlePath(forExecutable executablePath: String?) -> String? {
-        guard let executablePath, !executablePath.isEmpty else { return nil }
-        let components = URL(fileURLWithPath: executablePath).pathComponents
-        guard let index = components.firstIndex(where: { $0.hasSuffix(".app") }) else { return nil }
-        return NSString.path(withComponents: Array(components[...index]))
+        UIText.appBundlePath(forExecutable: executablePath)
     }
 }
 
@@ -33,11 +30,11 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
 
     private lazy var searchItem: NSSearchToolbarItem = {
         let item = NSSearchToolbarItem(itemIdentifier: DetailsViewController.searchIdentifier)
-        item.label = "Search"
-        item.paletteLabel = "Search processes"
-        item.toolTip = "Search processes"
+        item.label = String(localized: "Search")
+        item.paletteLabel = String(localized: "Search processes")
+        item.toolTip = String(localized: "Search processes")
         let field = item.searchField
-        field.placeholderString = "Search processes"
+        field.placeholderString = String(localized: "Search processes")
         field.setAccessibilityIdentifier("details.search")
         field.target = self
         field.action = #selector(filterRows)
@@ -49,21 +46,21 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
     init(autosaveName: String? = "Microgravity.details.columns.v2") {
         let tableParts = makeAccessibleTable(identifier: "details.table")
         table = tableParts.0
-        table.setAccessibilityLabel("Process details")
+        table.setAccessibilityLabel(String(localized: "Process details"))
         scrollView = tableParts.1
         // Executable path is the last column so it alone absorbs spare width (lastColumnOnly autoresizing).
         // Fixed columns sum to 820 pt; with the 180 pt path column all ten fit in about 1000 pt.
         model = AccessibleTableModel(table: table, columns: [
-            TableColumnSpec("name", "Process", width: 170),
-            TableColumnSpec("pid", "PID", width: 56, alignment: .right),
-            TableColumnSpec("owner", "Owner", width: 84),
-            TableColumnSpec("parent", "Parent PID", width: 70, alignment: .right),
-            TableColumnSpec("cpu", "CPU", width: 60, alignment: .right),
-            TableColumnSpec("memory", "Memory", width: 80, alignment: .right),
-            TableColumnSpec("disk", "Disk R / W", width: 128, alignment: .right),
-            TableColumnSpec("network", "Network", width: 92, alignment: .right),
-            TableColumnSpec("gpu", "GPU", width: 80, alignment: .right),
-            TableColumnSpec("path", "Executable path", width: 180)
+            TableColumnSpec("name", String(localized: "Process"), width: 170),
+            TableColumnSpec("pid", String(localized: "PID"), width: 56, alignment: .right),
+            TableColumnSpec("owner", String(localized: "Owner"), width: 84),
+            TableColumnSpec("parent", String(localized: "Parent PID"), width: 70, alignment: .right),
+            TableColumnSpec("cpu", String(localized: "CPU"), width: 60, alignment: .right),
+            TableColumnSpec("memory", String(localized: "Memory"), width: 80, alignment: .right),
+            TableColumnSpec("disk", String(localized: "Disk R / W"), width: 128, alignment: .right),
+            TableColumnSpec("network", String(localized: "Network"), width: 92, alignment: .right),
+            TableColumnSpec("gpu", String(localized: "GPU"), width: 80, alignment: .right),
+            TableColumnSpec("path", String(localized: "Executable path"), width: 180)
         ], autosaveName: autosaveName, showsIconsInFirstColumn: true)
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         table.tableColumns.first { $0.identifier.rawValue == "path" }?.minWidth = 120
@@ -80,11 +77,11 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
         view = DynamicWindowBackgroundView()
 
         let header = UIComponents.header(
-            title: "Details",
-            subtitle: "Flat process inventory with owner, parent, executable path, and available resource columns."
+            title: String(localized: "Details"),
+            subtitle: String(localized: "Flat process inventory with owner, parent, executable path, and available resource columns.")
         )
         capability.setTextAccessibilityIdentifier("details.capability-state")
-        capability.setMessage("Waiting for process data", style: .info)
+        capability.setMessage(String(localized: "Waiting for process data"), style: .info)
         let content = NSStackView(views: [header, capability, scrollView])
         content.orientation = .vertical
         content.alignment = .leading
@@ -118,6 +115,15 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
             )
             let diskValues = [process.diskReadBytesPerSecond.value, process.diskWriteBytesPerSecond.value].compactMap { $0 }
             let diskSortKey = ComparableSortKey.numeric(diskValues.isEmpty ? nil : diskValues.reduce(0, +))
+            // Cells show the number (or "—"); the reason for a partial or missing value goes to the tooltip.
+            let cpu = MetricCellPresentation(process.cpuPercent)
+            let memory = MetricCellPresentation(process.memoryBytes)
+            let disk = MetricCellPresentation.combined([
+                (label: String(localized: "R"), presentation: MetricCellPresentation(process.diskReadBytesPerSecond)),
+                (label: String(localized: "W"), presentation: MetricCellPresentation(process.diskWriteBytesPerSecond))
+            ])
+            let networkCell = MetricCellPresentation(network)
+            let gpuCell = MetricCellPresentation(gpu)
             return AccessibleTableRow(
                 id: "details.process.\(process.id.pid)",
                 values: [
@@ -125,12 +131,12 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
                     String(process.id.pid),
                     UIFormat.ownerName(process.ownerUID),
                     process.parentIdentity.map { String($0.pid) } ?? "—",
-                    UIFormat.metric(process.cpuPercent),
-                    UIFormat.metric(process.memoryBytes),
-                    "R \(UIFormat.metric(process.diskReadBytesPerSecond)) · W \(UIFormat.metric(process.diskWriteBytesPerSecond))",
-                    UIFormat.metric(network),
-                    UIFormat.metric(gpu),
-                    process.executablePath ?? "Unavailable"
+                    cpu.valueText,
+                    memory.valueText,
+                    disk.valueText,
+                    networkCell.valueText,
+                    gpuCell.valueText,
+                    process.executablePath ?? String(localized: "Unavailable")
                 ],
                 sortKeys: [
                     .text(process.name),
@@ -142,9 +148,18 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
                     diskSortKey,
                     .numeric(network.value),
                     .numeric(gpu.value),
-                    .text(process.executablePath ?? "Unavailable")
+                    .text(process.executablePath ?? String(localized: "Unavailable"))
                 ],
-                icon: AppIconProvider.icon(forBundlePath: DetailsPresentation.appBundlePath(forExecutable: process.executablePath))
+                icon: AppIconProvider.icon(forBundlePath: DetailsPresentation.appBundlePath(forExecutable: process.executablePath)),
+                cellDetails: [
+                    nil, nil, nil, nil,
+                    AccessibleTableCellDetail(cpu),
+                    AccessibleTableCellDetail(memory),
+                    AccessibleTableCellDetail(disk),
+                    AccessibleTableCellDetail(networkCell),
+                    AccessibleTableCellDetail(gpuCell),
+                    nil
+                ]
             )
         }
         processIdentityByRowID = Dictionary(uniqueKeysWithValues: sorted.map {
@@ -161,19 +176,41 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
         let time = UIFormat.time(snapshot.timestamp)
         if let processAvailability, !processAvailability.available {
             processesUnavailableText = UIFormat.availability(processAvailability)
+            capability.clearButton()
             capability.setMessage(processesUnavailableText, style: .warning)
         } else {
             processesUnavailableText = nil
-            var parts = ["\(sorted.count) processes · updated \(time)"]
+            // Per-process GPU is never collected, so it is not reported here; its column is simply hidden.
+            var text = "\(sorted.count) processes · updated \(time)"
+            var offersHelperSetup = false
             if isUnavailable(networkCapability) {
-                parts.append("Network: \(UIFormat.availability(networkCapability))")
+                if networkNeedsHelper(networkCapability) {
+                    text += " · Per-process network needs the optional helper."
+                    offersHelperSetup = true
+                } else {
+                    text += " · Network: \(UIFormat.availability(networkCapability))"
+                }
             }
-            if isUnavailable(gpuCapability) {
-                parts.append("GPU: \(UIFormat.availability(gpuCapability))")
+            // Missing optional features are information with a way forward, not a warning.
+            capability.setMessage(text, style: .info)
+            if offersHelperSetup {
+                capability.setButton(title: String(localized: "Set Up Helper…")) {
+                    NSApp.sendAction(#selector(MainWindowController.showSettings(_:)), to: nil, from: nil)
+                }
+            } else {
+                capability.clearButton()
             }
-            capability.setMessage(parts.joined(separator: " · "), style: parts.count > 1 ? .warning : .info)
         }
         filterRows()
+    }
+
+    /// True when the network capability is missing because the optional helper is not installed or not running.
+    private func networkNeedsHelper(_ availability: MetricAvailability?) -> Bool {
+        guard let availability, !availability.available else { return false }
+        return availability.reason == .unsupported
+            || availability.reason == .notCollected
+            || availability.detail == HelperSamplingClient.unavailableError
+            || availability.detail == NativeAdvancedMetricsCollector.helperRequiredDetail
     }
 
     /// Selects a requested process only when its PID and start time still match the current snapshot.
@@ -235,14 +272,14 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
     private func updateEmptyState(query: String, matchCount: Int) {
         guard matchCount == 0 else { return }
         if let processesUnavailableText {
-            model.configureEmptyState(symbolName: "exclamationmark.triangle", title: "Processes unavailable",
+            model.configureEmptyState(symbolName: "exclamationmark.triangle", title: String(localized: "Processes unavailable"),
                                       caption: processesUnavailableText)
         } else if !query.isEmpty {
-            model.configureEmptyState(symbolName: "magnifyingglass", title: "No processes match \"\(query)\"",
-                                      caption: "Try a different name, path, owner, or PID.")
+            model.configureEmptyState(symbolName: "magnifyingglass", title: String(localized: "No processes match \"\(query)\""),
+                                      caption: String(localized: "Try a different name, path, owner, or PID."))
         } else {
-            model.configureEmptyState(symbolName: "list.bullet.rectangle", title: "No processes",
-                                      caption: "Process discovery returned no rows.")
+            model.configureEmptyState(symbolName: "list.bullet.rectangle", title: String(localized: "No processes"),
+                                      caption: String(localized: "Process discovery returned no rows."))
         }
     }
 }

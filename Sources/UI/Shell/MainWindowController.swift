@@ -4,6 +4,8 @@ import AppKit
 final class MainWindowController: NSWindowController {
     static let defaultContentSize = NSSize(width: 1280, height: 820)
     static let minimumContentSize = NSSize(width: 960, height: 600)
+    static let helpURL = URL(string: "https://github.com/BurntToasters/Microgravity")!
+    static let issuesURL = URL(string: "https://github.com/BurntToasters/Microgravity/issues")!
     nonisolated static let frameAutosaveName = "Main"
     private static let fixtureVisualWindowIdentifier = NSUserInterfaceItemIdentifier("ui-test.visual-window")
     private static let fixtureContentSizeArgumentPrefix = "--ui-test-window-content-size="
@@ -105,6 +107,18 @@ final class MainWindowController: NSWindowController {
         root.toggleSidebar(sender)
     }
 
+    @objc func showHelp(_ sender: Any?) {
+        NSWorkspace.shared.open(Self.helpURL)
+    }
+
+    @objc func reportIssue(_ sender: Any?) {
+        NSWorkspace.shared.open(Self.issuesURL)
+    }
+
+    @objc func openSupportPage(_ sender: Any?) {
+        NSWorkspace.shared.open(SidebarViewController.supportURL)
+    }
+
     @objc func checkForUpdates(_ sender: Any?) {
         let integrations = dependencies.integrations
         Task { @MainActor [weak self] in
@@ -114,9 +128,9 @@ final class MainWindowController: NSWindowController {
             case .completed:
                 break
             case .unavailable(let message):
-                self.presentUpdateMessage(title: "Updates Unavailable", message: message)
+                self.presentUpdateMessage(title: String(localized: "Updates Unavailable"), message: message)
             case .failed(let message):
-                self.presentUpdateMessage(title: "Update Check Failed", message: message)
+                self.presentUpdateMessage(title: String(localized: "Update Check Failed"), message: message)
             }
         }
     }

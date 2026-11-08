@@ -7,8 +7,8 @@ enum InventoryKind {
 
     var title: String {
         switch self {
-        case .startup: return "Startup"
-        case .services: return "Services"
+        case .startup: return String(localized: "Startup")
+        case .services: return String(localized: "Services")
         }
     }
 
@@ -34,10 +34,10 @@ final class InventoryViewController: NSViewController, SnapshotUpdating, PageToo
     private let dependencies: PageDependencies
     private let table: InventoryTableController
     private let banner = StatusBannerView(style: .info)
-    private let pathLabel = NSTextField(labelWithString: "Select an item to inspect its path.")
-    private let revealButton = NSButton(title: "Reveal in Finder", target: nil, action: nil)
-    private let toolbarRevealButton = NSButton(title: "Reveal in Finder", target: nil, action: nil)
-    private let toolbarSettingsButton = NSButton(title: "Open Login Items Settings", target: nil, action: nil)
+    private let pathLabel = NSTextField(labelWithString: String(localized: "Select an item to inspect its path."))
+    private let revealButton = NSButton(title: String(localized: "Reveal in Finder"), target: nil, action: nil)
+    private let toolbarRevealButton = NSButton(title: String(localized: "Reveal in Finder"), target: nil, action: nil)
+    private let toolbarSettingsButton = NSButton(title: String(localized: "Open Login Items Settings"), target: nil, action: nil)
     private var toolbarItems: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
     private var rowsByID: [String: InventoryRow] = [:]
     private var selectedEntry: DiscoveredEntrySnapshot?
@@ -81,18 +81,18 @@ final class InventoryViewController: NSViewController, SnapshotUpdating, PageToo
         if let item = toolbarItems[identifier] { return item }
         let item: NSToolbarItem
         if identifier == revealIdentifier {
-            configureToolbarButton(toolbarRevealButton, title: "Reveal in Finder", symbol: "folder",
+            configureToolbarButton(toolbarRevealButton, title: String(localized: "Reveal in Finder"), symbol: "folder",
                                    identifier: "\(kind.pageIdentifier).toolbar.reveal",
                                    action: #selector(revealSelectedPath))
             toolbarRevealButton.isEnabled = false
-            item = makeToolbarItem(identifier, label: "Reveal in Finder", button: toolbarRevealButton,
-                                   menuTitle: "Reveal in Finder", action: #selector(revealSelectedPath))
+            item = makeToolbarItem(identifier, label: String(localized: "Reveal in Finder"), button: toolbarRevealButton,
+                                   menuTitle: String(localized: "Reveal in Finder"), action: #selector(revealSelectedPath))
         } else if identifier == loginItemsIdentifier {
-            configureToolbarButton(toolbarSettingsButton, title: "Open Login Items Settings", symbol: "gearshape",
+            configureToolbarButton(toolbarSettingsButton, title: String(localized: "Open Login Items Settings"), symbol: "gearshape",
                                    identifier: "\(kind.pageIdentifier).action.open-settings",
                                    action: #selector(openLoginItemsSettings))
-            item = makeToolbarItem(identifier, label: "Open Login Items Settings", button: toolbarSettingsButton,
-                                   menuTitle: "Open Login Items Settings", action: #selector(openLoginItemsSettings))
+            item = makeToolbarItem(identifier, label: String(localized: "Open Login Items Settings"), button: toolbarSettingsButton,
+                                   menuTitle: String(localized: "Open Login Items Settings"), action: #selector(openLoginItemsSettings))
         } else {
             return nil
         }
@@ -107,7 +107,7 @@ final class InventoryViewController: NSViewController, SnapshotUpdating, PageToo
 
         let header = UIComponents.header(
             title: kind.title,
-            subtitle: "Read-only. Discovery may be incomplete when locations are protected."
+            subtitle: String(localized: "Read-only. Discovery may be incomplete when locations are protected.")
         )
         banner.setTextAccessibilityIdentifier("\(kind.pageIdentifier).discovery-state")
 
@@ -172,33 +172,33 @@ final class InventoryViewController: NSViewController, SnapshotUpdating, PageToo
     private func updateBanner(coverage: DiscoveryCoverage?, count: Int) {
         coverageReasons = coverage?.reasons ?? []
         guard let coverage else {
-            banner.setMessage("Discovery status unavailable · completeness is unknown.", style: .warning)
+            banner.setMessage(String(localized: "Discovery status unavailable · completeness is unknown."), style: .warning)
             banner.clearButton()
             return
         }
         if coverage.complete {
-            banner.setMessage("Discovery complete · \(count == 1 ? "1 entry" : "\(count) entries") found", style: .info)
+            banner.setMessage(String(localized: "Discovery complete · \(count == 1 ? String(localized: "1 entry") : String(localized: "\(count) entries")) found"), style: .info)
             banner.clearButton()
             return
         }
-        banner.setMessage("Discovery incomplete · " + (coverage.reasons.first ?? "Some locations could not be inspected."),
+        banner.setMessage(String(localized: "Discovery incomplete · ") + (coverage.reasons.first ?? String(localized: "Some locations could not be inspected.")),
                           style: .warning)
         if coverage.reasons.isEmpty {
             banner.clearButton()
         } else {
-            banner.setButton(title: "Details…") { [weak self] in self?.showCoverageDetails() }
+            banner.setButton(title: String(localized: "Details…")) { [weak self] in self?.showCoverageDetails() }
         }
     }
 
     private func emptyStateText(coverage: DiscoveryCoverage?) -> (title: String, caption: String) {
-        let title = kind == .startup ? "No startup items found" : "No services found"
-        guard let coverage else { return (title, "Discovery status is unknown.") }
+        let title = kind == .startup ? String(localized: "No startup items found") : String(localized: "No services found")
+        guard let coverage else { return (title, String(localized: "Discovery status is unknown.")) }
         if !coverage.complete {
-            return (title, "Discovery is incomplete, so entries may be missing.")
+            return (title, String(localized: "Discovery is incomplete, so entries may be missing."))
         }
         return (title, kind == .startup
-            ? "Login items and launch agents appear here when they are registered."
-            : "Discovered system services appear here.")
+            ? String(localized: "Login items and launch agents appear here when they are registered.")
+            : String(localized: "Discovered system services appear here."))
     }
 
     private func updateSelectedItem() {
@@ -206,7 +206,7 @@ final class InventoryViewController: NSViewController, SnapshotUpdating, PageToo
             revealButton.setAccessibilityIdentifier("\(kind.pageIdentifier).action.reveal-path")
             revealButton.isEnabled = false
             toolbarRevealButton.isEnabled = false
-            pathLabel.stringValue = rowsByID.isEmpty ? "No entries to inspect." : "Select an item to inspect its path."
+            pathLabel.stringValue = rowsByID.isEmpty ? String(localized: "No entries to inspect.") : String(localized: "Select an item to inspect its path.")
             pathLabel.toolTip = nil
             return
         }
@@ -214,7 +214,7 @@ final class InventoryViewController: NSViewController, SnapshotUpdating, PageToo
         let hasPath = selectedEntry.path != nil
         revealButton.isEnabled = hasPath
         toolbarRevealButton.isEnabled = hasPath
-        pathLabel.stringValue = selectedEntry.path ?? "No executable path was reported for this item."
+        pathLabel.stringValue = selectedEntry.path ?? String(localized: "No executable path was reported for this item.")
         pathLabel.toolTip = selectedEntry.path
     }
 
@@ -249,7 +249,7 @@ final class InventoryViewController: NSViewController, SnapshotUpdating, PageToo
     }
 
     private func makeCoverageDetailsView(_ reasons: [String]) -> NSView {
-        let title = UIComponents.label("Discovery details", size: 13, weight: .semibold)
+        let title = UIComponents.label(String(localized: "Discovery details"), size: 13, weight: .semibold)
         let reasonLabels = reasons.map { reason -> NSTextField in
             let field = NSTextField(wrappingLabelWithString: reason)
             field.font = .systemFont(ofSize: 12)
@@ -280,7 +280,7 @@ final class InventoryViewController: NSViewController, SnapshotUpdating, PageToo
         button.title = title
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
         button.imagePosition = .imageLeading
-        button.bezelStyle = .texturedRounded
+        button.bezelStyle = .toolbar
         button.target = self
         button.action = action
         button.setAccessibilityIdentifier(identifier)
@@ -300,6 +300,6 @@ final class InventoryViewController: NSViewController, SnapshotUpdating, PageToo
     }
 
     private func slug(_ value: String) -> String {
-        InventoryRows.slug(value)
+        UIText.slug(value)
     }
 }

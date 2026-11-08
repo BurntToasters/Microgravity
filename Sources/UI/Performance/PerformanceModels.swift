@@ -11,12 +11,12 @@ enum PerformanceMetric: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .cpu: return "CPU"
-        case .memory: return "Memory"
-        case .disk: return "Disk"
-        case .network: return "Network"
-        case .gpu: return "GPU"
-        case .energy: return "Energy"
+        case .cpu: return String(localized: "CPU")
+        case .memory: return String(localized: "Memory")
+        case .disk: return String(localized: "Disk")
+        case .network: return String(localized: "Network")
+        case .gpu: return String(localized: "GPU")
+        case .energy: return String(localized: "Energy")
         }
     }
 
@@ -43,7 +43,7 @@ enum PerformanceWindow: CaseIterable {
         switch self {
         case .oneMinute: return "60 s"
         case .fiveMinutes: return "5 min"
-        case .all: return "All"
+        case .all: return String(localized: "All")
         }
     }
 
@@ -170,21 +170,21 @@ enum PerformancePresenter {
                 metric: .cpu,
                 valueText: shortValue(system.cpuPercent),
                 isValueUnavailable: system.cpuPercent.value == nil,
-                sparkline: sparkline([series("CPU", .cpu, recent.map(\.cpuPercent))]),
+                sparkline: sparkline([series(String(localized: "CPU"), .cpu, recent.map(\.cpuPercent))]),
                 sparklineMaximum: 100),
             MetricRailItem(
                 metric: .memory,
                 valueText: "\(shortValue(system.memoryUsedBytes)) / \(shortValue(system.memoryTotalBytes))",
                 isValueUnavailable: system.memoryUsedBytes.value == nil,
-                sparkline: sparkline([series("Used", .memory, recent.map(\.memoryUsedBytes))]),
+                sparkline: sparkline([series(String(localized: "Used"), .memory, recent.map(\.memoryUsedBytes))]),
                 sparklineMaximum: system.memoryTotalBytes.value),
             MetricRailItem(
                 metric: .disk,
-                valueText: throughputText(("R", system.diskReadBytesPerSecond), ("W", system.diskWriteBytesPerSecond)),
+                valueText: throughputText((String(localized: "R"), system.diskReadBytesPerSecond), (String(localized: "W"), system.diskWriteBytesPerSecond)),
                 isValueUnavailable: system.diskReadBytesPerSecond.value == nil && system.diskWriteBytesPerSecond.value == nil,
                 sparkline: sparkline([
-                    series("Read", .disk, recent.map(\.diskReadBytesPerSecond)),
-                    series("Write", .disk, recent.map(\.diskWriteBytesPerSecond), secondary: true)
+                    series(String(localized: "Read"), .disk, recent.map(\.diskReadBytesPerSecond)),
+                    series(String(localized: "Write"), .disk, recent.map(\.diskWriteBytesPerSecond), secondary: true)
                 ]),
                 sparklineMaximum: nil),
             MetricRailItem(
@@ -192,8 +192,8 @@ enum PerformancePresenter {
                 valueText: throughputText(("↓", system.networkReceiveBytesPerSecond), ("↑", system.networkTransmitBytesPerSecond)),
                 isValueUnavailable: system.networkReceiveBytesPerSecond.value == nil && system.networkTransmitBytesPerSecond.value == nil,
                 sparkline: sparkline([
-                    series("Receive", .network, recent.map(\.networkReceiveBytesPerSecond)),
-                    series("Send", .network, recent.map(\.networkTransmitBytesPerSecond), secondary: true)
+                    series(String(localized: "Receive"), .network, recent.map(\.networkReceiveBytesPerSecond)),
+                    series(String(localized: "Send"), .network, recent.map(\.networkTransmitBytesPerSecond), secondary: true)
                 ]),
                 sparklineMaximum: nil),
             advancedRailItem(.gpu, kind: .gpu, snapshot: snapshot, recent: recent, maximum: 100),
@@ -238,14 +238,14 @@ enum PerformancePresenter {
     static func spanText(_ seconds: TimeInterval) -> (short: String, long: String) {
         let whole = Int(seconds.rounded())
         if whole < 300 {
-            return ("\(whole) s", "\(whole) \(whole == 1 ? "second" : "seconds")")
+            return (String(localized: "\(whole) s"), String(localized: "\(whole) \(whole == 1 ? String(localized: "second") : String(localized: "seconds"))"))
         }
         if whole < 3600 {
             let minutes = Int((Double(whole) / 60).rounded())
-            return ("\(minutes) min", "\(minutes) \(minutes == 1 ? "minute" : "minutes")")
+            return (String(localized: "\(minutes) min"), String(localized: "\(minutes) \(minutes == 1 ? String(localized: "minute") : String(localized: "minutes"))"))
         }
         let hours = Int((Double(whole) / 3600).rounded())
-        return ("\(hours) h", "\(hours) \(hours == 1 ? "hour" : "hours")")
+        return (String(localized: "\(hours) h"), String(localized: "\(hours) \(hours == 1 ? String(localized: "hour") : String(localized: "hours"))"))
     }
 
     static func shortValue(_ reading: MetricReading) -> String {
@@ -254,9 +254,9 @@ enum PerformancePresenter {
 
     static func pressureText(_ pressure: MemoryPressureSnapshot) -> String {
         switch pressure.level {
-        case .normal: return "Normal"
-        case .warning: return "Warning"
-        case .critical: return "Critical"
+        case .normal: return String(localized: "Normal")
+        case .warning: return String(localized: "Warning")
+        case .critical: return String(localized: "Critical")
         case nil: return UIFormat.unavailable(pressure.unavailableReason)
         }
     }
@@ -272,7 +272,7 @@ enum PerformancePresenter {
     private static func advancedRailItem(_ metric: PerformanceMetric, kind: MetricKind, snapshot: MonitoringSnapshot,
                                          recent: [MonitoringGraphSample], maximum: Double?) -> MetricRailItem {
         guard !isUnavailable(kind, in: snapshot) else {
-            return MetricRailItem(metric: metric, valueText: "Unavailable", isValueUnavailable: true,
+            return MetricRailItem(metric: metric, valueText: String(localized: "Unavailable"), isValueUnavailable: true,
                                   sparkline: [], sparklineMaximum: nil)
         }
         let reading = snapshot.advancedMetrics[kind]
@@ -293,21 +293,21 @@ enum PerformancePresenter {
     private static func cpuDetail(_ snapshot: MonitoringSnapshot, _ visible: [MonitoringGraphSample],
                                   _ window: PerformanceWindow, _ cpuMode: CPUDetailMode) -> MetricDetailModel {
         let cpu = snapshot.system.cpuPercent
-        var model = MetricDetailModel(metric: .cpu, window: window, cpuMode: cpuMode, title: "CPU",
+        var model = MetricDetailModel(metric: .cpu, window: window, cpuMode: cpuMode, title: String(localized: "CPU"),
                                       subtitle: "% Utilization", bigValue: shortValue(cpu),
                                       graphIdentifier: "performance.graph.cpu-total",
-                                      graphAccessibilityLabel: "Total CPU usage percentage over time")
+                                      graphAccessibilityLabel: String(localized: "Total CPU usage percentage over time"))
         model.bigValueIdentifier = "performance.cpu-total.value"
         model.isBigValueUnavailable = cpu.value == nil
-        model.series = [series("CPU", .cpu, visible.map(\.cpuPercent))]
+        model.series = [series(String(localized: "CPU"), .cpu, visible.map(\.cpuPercent))]
         model.maximum = 100
         model.topLabel = "100%"
         let logical = snapshot.system.capacityCores
-        model.caption = "Percent of total capacity across \(logical) logical processors."
+        model.caption = String(localized: "Percent of total capacity across \(logical) logical processors.")
         model.stats = [
-            MetricStat(label: "Logical processors", value: "\(logical)"),
-            MetricStat(label: "Processes", value: "\(snapshot.processes.count)"),
-            MetricStat(label: "Uptime", value: uptimeText())
+            MetricStat(label: String(localized: "Logical processors"), value: "\(logical)"),
+            MetricStat(label: String(localized: "Processes"), value: "\(snapshot.processes.count)"),
+            MetricStat(label: String(localized: "Uptime"), value: uptimeText())
         ]
         let coreCount = max(snapshot.system.perCoreCPUPercent.count,
                             visible.reduce(0) { max($0, $1.perCoreCPUPercent.count) })
@@ -322,7 +322,7 @@ enum PerformancePresenter {
                 ? snapshot.system.perCoreCPUPercent[index]
                 : MetricReading(unavailable: .percent, timestamp: snapshot.timestamp, reason: .notCollected)
             return CoreTileModel(index: index, valueText: shortValue(current),
-                                 series: series("CPU \(index)", .cpu, readings))
+                                 series: series(String(localized: "CPU \(index)"), .cpu, readings))
         }
         return model
     }
@@ -332,20 +332,20 @@ enum PerformancePresenter {
         let system = snapshot.system
         let used = system.memoryUsedBytes
         let total = system.memoryTotalBytes
-        var model = MetricDetailModel(metric: .memory, window: window, cpuMode: cpuMode, title: "Memory",
-                                      subtitle: "Memory in use",
+        var model = MetricDetailModel(metric: .memory, window: window, cpuMode: cpuMode, title: String(localized: "Memory"),
+                                      subtitle: String(localized: "Memory in use"),
                                       bigValue: "\(shortValue(used)) / \(shortValue(total))",
                                       graphIdentifier: "performance.graph.memory",
-                                      graphAccessibilityLabel: "Memory in use over time")
+                                      graphAccessibilityLabel: String(localized: "Memory in use over time"))
         model.bigValueIdentifier = "performance.memory.value"
         model.isBigValueUnavailable = used.value == nil
-        model.series = [series("Used", .memory, visible.map(\.memoryUsedBytes))]
+        model.series = [series(String(localized: "Used"), .memory, visible.map(\.memoryUsedBytes))]
         model.maximum = total.value
         model.topLabel = total.value == nil ? nil : shortValue(total)
         model.stats = [
-            MetricStat(label: "Used", value: shortValue(used)),
-            MetricStat(label: "Available", value: shortValue(system.memoryAvailableBytes)),
-            MetricStat(label: "Total", value: shortValue(total))
+            MetricStat(label: String(localized: "Used"), value: shortValue(used)),
+            MetricStat(label: String(localized: "Available"), value: shortValue(system.memoryAvailableBytes)),
+            MetricStat(label: String(localized: "Total"), value: shortValue(total))
         ]
         var memory = MemoryDetailModel()
         memory.pressureLevel = system.memoryPressure.level
@@ -356,7 +356,7 @@ enum PerformancePresenter {
         }
         memory.swapValue = "\(shortValue(system.swapUsedBytes)) / \(shortValue(system.swapTotalBytes))"
         memory.swapFraction = fraction(system.swapUsedBytes, system.swapTotalBytes)
-        memory.swapSeries = series("Used", .memory, visible.map(\.swapUsedBytes))
+        memory.swapSeries = series(String(localized: "Used"), .memory, visible.map(\.swapUsedBytes))
         memory.swapMaximum = system.swapTotalBytes.value
         model.memory = memory
         return model
@@ -368,24 +368,24 @@ enum PerformancePresenter {
         let readHistory = visible.map(\.diskReadBytesPerSecond)
         let writeHistory = visible.map(\.diskWriteBytesPerSecond)
         let presentation = ThroughputGraphPresentation(
-            graphName: "Disk throughput", subjectName: "disk",
-            firstName: "Read", first: system.diskReadBytesPerSecond, firstHistory: readHistory,
-            secondName: "Write", second: system.diskWriteBytesPerSecond, secondHistory: writeHistory)
-        var model = MetricDetailModel(metric: .disk, window: window, cpuMode: cpuMode, title: "Disk",
-                                      subtitle: "Read and write · bytes per second",
-                                      bigValue: throughputText(("R", system.diskReadBytesPerSecond), ("W", system.diskWriteBytesPerSecond)),
+            graphName: String(localized: "Disk throughput"), subjectName: String(localized: "disk"),
+            firstName: String(localized: "Read"), first: system.diskReadBytesPerSecond, firstHistory: readHistory,
+            secondName: String(localized: "Write"), second: system.diskWriteBytesPerSecond, secondHistory: writeHistory)
+        var model = MetricDetailModel(metric: .disk, window: window, cpuMode: cpuMode, title: String(localized: "Disk"),
+                                      subtitle: String(localized: "Read and write · bytes per second"),
+                                      bigValue: throughputText((String(localized: "R"), system.diskReadBytesPerSecond), (String(localized: "W"), system.diskWriteBytesPerSecond)),
                                       graphIdentifier: "performance.graph.disk",
                                       graphAccessibilityLabel: presentation.accessibilitySummary)
         model.series = [
-            series("Read", .disk, readHistory),
-            series("Write", .disk, writeHistory, secondary: true)
+            series(String(localized: "Read"), .disk, readHistory),
+            series(String(localized: "Write"), .disk, writeHistory, secondary: true)
         ]
         applyThroughputScale(&model, presentation: presentation, readings: readHistory + writeHistory,
                              identifier: "performance.graph.disk.scale")
         model.stats = [
-            MetricStat(label: "Read", value: UIFormat.metric(system.diskReadBytesPerSecond),
+            MetricStat(label: String(localized: "Read"), value: UIFormat.metric(system.diskReadBytesPerSecond),
                        identifier: "performance.disk.read.value", accessibilityLabel: presentation.firstAccessibilityLabel),
-            MetricStat(label: "Write", value: UIFormat.metric(system.diskWriteBytesPerSecond),
+            MetricStat(label: String(localized: "Write"), value: UIFormat.metric(system.diskWriteBytesPerSecond),
                        identifier: "performance.disk.write.value", accessibilityLabel: presentation.secondAccessibilityLabel)
         ]
         return model
@@ -397,31 +397,31 @@ enum PerformancePresenter {
         let receiveHistory = visible.map(\.networkReceiveBytesPerSecond)
         let sendHistory = visible.map(\.networkTransmitBytesPerSecond)
         let presentation = ThroughputGraphPresentation(
-            graphName: "Network throughput", subjectName: "network",
-            firstName: "Receive", first: system.networkReceiveBytesPerSecond, firstHistory: receiveHistory,
-            secondName: "Send", second: system.networkTransmitBytesPerSecond, secondHistory: sendHistory)
-        var model = MetricDetailModel(metric: .network, window: window, cpuMode: cpuMode, title: "Network",
-                                      subtitle: "Received and sent · bytes per second",
+            graphName: String(localized: "Network throughput"), subjectName: String(localized: "network"),
+            firstName: String(localized: "Receive"), first: system.networkReceiveBytesPerSecond, firstHistory: receiveHistory,
+            secondName: String(localized: "Send"), second: system.networkTransmitBytesPerSecond, secondHistory: sendHistory)
+        var model = MetricDetailModel(metric: .network, window: window, cpuMode: cpuMode, title: String(localized: "Network"),
+                                      subtitle: String(localized: "Received and sent · bytes per second"),
                                       bigValue: throughputText(("↓", system.networkReceiveBytesPerSecond), ("↑", system.networkTransmitBytesPerSecond)),
                                       graphIdentifier: "performance.graph.network",
                                       graphAccessibilityLabel: presentation.accessibilitySummary)
         model.series = [
-            series("Receive", .network, receiveHistory),
-            series("Send", .network, sendHistory, secondary: true)
+            series(String(localized: "Receive"), .network, receiveHistory),
+            series(String(localized: "Send"), .network, sendHistory, secondary: true)
         ]
         applyThroughputScale(&model, presentation: presentation, readings: receiveHistory + sendHistory,
                              identifier: "performance.graph.network.scale")
         model.stats = [
-            MetricStat(label: "Receive", value: UIFormat.metric(system.networkReceiveBytesPerSecond),
+            MetricStat(label: String(localized: "Receive"), value: UIFormat.metric(system.networkReceiveBytesPerSecond),
                        identifier: "performance.network.receive.value", accessibilityLabel: presentation.firstAccessibilityLabel),
-            MetricStat(label: "Send", value: UIFormat.metric(system.networkTransmitBytesPerSecond),
+            MetricStat(label: String(localized: "Send"), value: UIFormat.metric(system.networkTransmitBytesPerSecond),
                        identifier: "performance.network.send.value", accessibilityLabel: presentation.secondAccessibilityLabel)
         ]
         model.interfaces = system.networkInterfaces.map { interface in
             NetworkInterfaceRow(
                 name: interface.name,
                 rates: "↓ \(shortValue(interface.receiveBytesPerSecond)) · ↑ \(shortValue(interface.transmitBytesPerSecond))",
-                totals: "Total ↓ \(shortValue(interface.receiveTotalBytes)) · ↑ \(shortValue(interface.transmitTotalBytes))",
+                totals: String(localized: "Total ↓ \(shortValue(interface.receiveTotalBytes)) · ↑ \(shortValue(interface.transmitTotalBytes))"),
                 membership: membership(interface))
         }
         return model
@@ -442,11 +442,11 @@ enum PerformancePresenter {
                                                           detail: availability?.detail)
         }
         let isComponentPower = kind == .energy && unit == .watts && current.value != nil
-        let title = isComponentPower ? "Estimated component power" : metric.title
+        let title = isComponentPower ? String(localized: "Estimated component power") : metric.title
         let subject = metric == .energy ? unitSubject(unit) : "% Utilization"
         var model = MetricDetailModel(metric: metric, window: window, cpuMode: cpuMode, title: title,
                                       subtitle: subject,
-                                      bigValue: unavailable ? "Unavailable" : shortValue(current),
+                                      bigValue: unavailable ? String(localized: "Unavailable") : shortValue(current),
                                       graphIdentifier: "performance.graph.\(metric.rawValue)",
                                       graphAccessibilityLabel: "\(metric.title) over time")
         model.isBigValueUnavailable = current.value == nil
@@ -465,11 +465,11 @@ enum PerformancePresenter {
         model.maximum = kind == .gpu ? 100 : nil
         model.topLabel = kind == .gpu ? "100%" : maximumLabel(readings, unit: unit, timestamp: snapshot.timestamp)
         if metric == .gpu {
-            model.caption = "GPU activity is shown only when a provider reports it."
+            model.caption = String(localized: "GPU activity is shown only when a provider reports it.")
         } else {
             model.caption = isComponentPower
-                ? "Estimated CPU + GPU + ANE component power; not total device power."
-                : "Energy or power is shown in the source unit supplied by its provider."
+                ? String(localized: "Estimated CPU + GPU + ANE component power; not total device power.")
+                : String(localized: "Energy or power is shown in the source unit supplied by its provider.")
         }
         let status: String
         if unavailable {
@@ -477,12 +477,12 @@ enum PerformancePresenter {
         } else if current.value == nil {
             status = UIFormat.unavailable(current.unavailableReason)
         } else {
-            status = "Reporting"
+            status = String(localized: "Reporting")
         }
         model.stats = [
-            MetricStat(label: "Unit", value: unitName(unit)),
-            MetricStat(label: "Status", value: status),
-            MetricStat(label: "Source", value: current.detail ?? availability?.detail ?? "Not reported")
+            MetricStat(label: String(localized: "Unit"), value: unitName(unit)),
+            MetricStat(label: String(localized: "Status"), value: status),
+            MetricStat(label: String(localized: "Source"), value: current.detail ?? availability?.detail ?? String(localized: "Not reported"))
         ]
         return model
     }
@@ -530,7 +530,7 @@ enum PerformancePresenter {
     }
 
     private static func membership(_ interface: NetworkInterfaceSnapshot) -> String {
-        var text = interface.includedInTotals ? "Included in system totals" : "Excluded from system totals"
+        var text = interface.includedInTotals ? String(localized: "Included in system totals") : String(localized: "Excluded from system totals")
         if !interface.isUp { text += " · Down" }
         return text
     }
@@ -541,29 +541,29 @@ enum PerformancePresenter {
 
     private static func unitName(_ unit: MetricUnit) -> String {
         switch unit {
-        case .percent: return "Percent"
-        case .bytes: return "Bytes"
-        case .bytesPerSecond: return "Bytes per second"
-        case .count: return "Count"
-        case .seconds: return "Seconds"
-        case .watts: return "Watts"
-        case .joules: return "Joules"
-        case .wattHours: return "Watt-hours"
+        case .percent: return String(localized: "Percent")
+        case .bytes: return String(localized: "Bytes")
+        case .bytesPerSecond: return String(localized: "Bytes per second")
+        case .count: return String(localized: "Count")
+        case .seconds: return String(localized: "Seconds")
+        case .watts: return String(localized: "Watts")
+        case .joules: return String(localized: "Joules")
+        case .wattHours: return String(localized: "Watt-hours")
         }
     }
 
     private static func unitSubject(_ unit: MetricUnit) -> String {
         switch unit {
-        case .watts: return "Power in watts"
-        case .joules: return "Energy in joules"
-        case .wattHours: return "Energy in watt-hours"
+        case .watts: return String(localized: "Power in watts")
+        case .joules: return String(localized: "Energy in joules")
+        case .wattHours: return String(localized: "Energy in watt-hours")
         case .percent: return "% Utilization"
-        default: return "Provider-reported unit"
+        default: return String(localized: "Provider-reported unit")
         }
     }
 
     private static func uptimeText() -> String {
-        uptimeFormatter.string(from: ProcessInfo.processInfo.systemUptime) ?? "Unavailable"
+        uptimeFormatter.string(from: ProcessInfo.processInfo.systemUptime) ?? String(localized: "Unavailable")
     }
 
     private static let uptimeFormatter: DateComponentsFormatter = {

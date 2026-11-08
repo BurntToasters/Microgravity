@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { changelogSection, gpgFingerprint, placeholderReleaseNotes, releaseHeader, releaseNotes, releaseNotesFailures } from "../lib/changelog.mjs";
+import { changelogSection, gpgFingerprint, gpgPublicKeyUrl, placeholderReleaseNotes, releaseHeader, releaseNotes, releaseNotesFailures } from "../lib/changelog.mjs";
 import { root } from "../lib/core.mjs";
 
 // The 0.1.0 section is the first public release; it must carry real notes, not the placeholder.
@@ -49,6 +49,7 @@ test("releaseHeader links only this tag's release assets", () => {
     "https://github.com/BurntToasters/Microgravity/releases/download/v2.1.0-beta.1/SHA256SUMS.asc",
   ]);
   assert.match(header, new RegExp(gpgFingerprint));
+  assert.ok(header.includes(gpgPublicKeyUrl));
 });
 
 test("changelogSection fails when the requested release is missing", () => {

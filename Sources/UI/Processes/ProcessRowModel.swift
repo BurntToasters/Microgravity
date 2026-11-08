@@ -80,14 +80,14 @@ enum ProcessColumn: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .name: return "Name"
-        case .pid: return "PID"
-        case .user: return "User"
-        case .cpu: return "CPU"
-        case .memory: return "Memory"
-        case .disk: return "Disk R / W"
-        case .network: return "Network"
-        case .gpu: return "GPU"
+        case .name: return String(localized: "Name")
+        case .pid: return String(localized: "PID")
+        case .user: return String(localized: "User")
+        case .cpu: return String(localized: "CPU")
+        case .memory: return String(localized: "Memory")
+        case .disk: return String(localized: "Disk R / W")
+        case .network: return String(localized: "Network")
+        case .gpu: return String(localized: "GPU")
         }
     }
 
@@ -231,11 +231,19 @@ enum ProcessRowModel {
 
     /// Operations that turn `old` into `new`. Both lists must hold unique IDs.
     static func operations<ID: Hashable>(from old: [ID], to new: [ID]) -> [ProcessRowDiffOperation<ID>] {
+        boundedOperations(from: old, to: new, limit: Int.max) ?? []
+    }
+
+    /// Like `operations(from:to:)`, but returns nil as soon as more than `limit` steps are needed. Callers that
+    /// would rather reload a level than apply a long diff stop paying for the diff at that point.
+    static func boundedOperations<ID: Hashable>(from old: [ID], to new: [ID],
+                                                limit: Int) -> [ProcessRowDiffOperation<ID>]? {
         var operations: [ProcessRowDiffOperation<ID>] = []
         var mirror = old
         let kept = Set(new)
         for index in old.indices.reversed() where !kept.contains(old[index]) {
             operations.append(.remove(index: index))
+            if operations.count > limit { return nil }
             mirror.remove(at: index)
         }
         for target in new.indices {
@@ -250,6 +258,7 @@ enum ProcessRowModel {
                 operations.append(.insert(id, index: target))
                 mirror.insert(id, at: target)
             }
+            if operations.count > limit { return nil }
         }
         return operations
     }
@@ -279,17 +288,12 @@ enum ProcessRowModel {
 
     /// The `.app` bundle containing an executable path, for example `/Applications/Notes.app`.
     static func appBundlePath(for path: String?) -> String? {
-        guard let path, !path.isEmpty else { return nil }
-        let parts = path.split(separator: "/", omittingEmptySubsequences: true)
-        guard let index = parts.firstIndex(where: { $0.hasSuffix(".app") }) else { return nil }
-        let joined = parts[...index].joined(separator: "/")
-        return path.hasPrefix("/") ? "/" + joined : joined
+        UIText.appBundlePath(forExecutable: path)
     }
 
     /// Lowercase, dash-separated slug used in accessibility identifiers.
     static func slug(_ value: String) -> String {
-        String(value.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" })
-            .split(separator: "-").joined(separator: "-")
+        UIText.slug(value)
     }
 
     /// Heat fraction for a value against a maximum: nil when either is missing, otherwise clamped to 0...1.
@@ -308,12 +312,12 @@ enum ProcessRowModel {
         } else {
             badge = .none
         }
-        let tips = [read.toolTip.map { "Read: \($0)" }, write.toolTip.map { "Write: \($0)" }].compactMap { $0 }
+        let tips = [read.toolTip.map { String(localized: "Read: \($0)") }, write.toolTip.map { String(localized: "Write: \($0)") }].compactMap { $0 }
         return MetricCellPresentation(
-            valueText: "R \(read.valueText) · W \(write.valueText)",
+            valueText: String(localized: "R \(read.valueText) · W \(write.valueText)"),
             badge: badge,
             toolTip: tips.isEmpty ? nil : tips.joined(separator: "\n"),
-            accessibilityDescription: "Read \(read.accessibilityDescription), write \(write.accessibilityDescription)"
+            accessibilityDescription: String(localized: "Read \(read.accessibilityDescription), write \(write.accessibilityDescription)")
         )
     }
 

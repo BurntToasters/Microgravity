@@ -5,19 +5,49 @@
 
 | <img height="20" src="https://github.com/user-attachments/assets/42d7e887-4616-4e8c-b1d3-e44e01340f8c" /> macOS |
 | :-- |
-| **ZIP: [universal](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.0/Microgravity-0.1.0.zip)** |
-| **Checksums: [SHA256SUMS](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.0/SHA256SUMS) / [GPG signature](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.0/SHA256SUMS.asc)** |
+| **ZIP: [universal](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.1/Microgravity-0.1.1.zip)** |
+| **Checksums: [SHA256SUMS](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.1/SHA256SUMS) / [GPG signature](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.1/SHA256SUMS.asc)** |
 
 > Requires macOS 14 or later. The universal build runs natively on Apple silicon and Intel Macs.
 
 > [!IMPORTANT]
 > Microgravity is signed with my Apple Developer ID and notarized by Apple.
-> The `.asc` files are detached GPG signatures. Verify them with the Microgravity release key,
-> fingerprint `F01DAAD63F4688AB0BBEC7085E7752731C2EC359`.
+> The `.asc` files are detached GPG signatures. Verify them with the Microgravity GPG public key: https://tuxedo.rosie.run/GPG/Microgravity_1C2EC359.asc
+> (fingerprint `F01DAAD63F4688AB0BBEC7085E7752731C2EC359`).
 > In-app updates are delivered by Sparkle and verified with an EdDSA signature before they install.
 
 ### ℹ️ Enjoying Microgravity? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 <!-- downloads:end -->
+
+## 0.1.1
+
+- **Processes:** Processes owned by other users and by the system (root) now appear. Quitting other users' processes works through the optional helper. The administrator password prompt no longer freezes the window, and Microgravity explains why it appears.
+- **Processes:** Process names are no longer cut off at 31 characters. Exited (zombie) processes are no longer listed.
+- **Processes:** Quit and Force Quit are disabled, with an explanation, for processes Microgravity never quits: root-owned and protected system processes, PID 1 and Microgravity itself.
+- **Processes:** Finder can be relaunched, as in the system Force Quit window: select Finder and choose Relaunch.
+- **Processes:** Force Quit no longer uses ⇧⌥⌘Q, which is the system Log Out shortcut. Quit and Force Quit ask for confirmation first.
+- **App History:** Days use the local calendar, with Today and Yesterday labels. Pauses, sleep and relaunches no longer mark every value as partial. History is written in batches, which greatly reduces disk writes. Background processes are hidden by default; turn on Show Background Processes to list them. Applications start collapsed, and days follow time-zone changes without a relaunch.
+- **Users and Details:** Permanent "Collection failed" warnings are gone, and banners are quieter. Users lists every account that owns a process, including root and system accounts.
+- **Helper:** Metrics that need the optional helper say so in plain language instead of showing an internal error code.
+- **Energy:** Apple-silicon powermetrics power keys are read. Per-process GPU time has been removed.
+- **Helper:** The helper no longer samples per-task data, and it does not poll when it is not installed.
+- **Network:** VPN interfaces are excluded from system network totals.
+- **Interface:** Settings and sidebar text are consistent, the Help menu is updated, the CPU column has a tooltip, dates are localized, and user LaunchAgents are labeled as launch agents.
+- **Build:** Core tests no longer write to the real history database.
+- **App History:** History is now stored by local day. Older versions of Microgravity cannot read history written by 0.1.1.
+- **Interface:** A Support Microgravity button at the bottom of the sidebar, and Support Microgravity… in the app menu, open https://rosie.run/support in your default browser.
+- **Processes:** Rows change order instantly when values update instead of sliding and fading on every sample. App History no longer re-animates its groups on each refresh. Expanding or collapsing a group yourself still animates.
+- **Processes:** The Name column refits to the window, so a column layout saved from a wider window no longer pushes the CPU, memory, disk and network columns out of view.
+- **Processes:** Idle disk and network rates show "0 KB/s" instead of "Zero KB/s".
+- **Processes:** The selection bar shows the PID once and the start time, instead of repeating the PID.
+- **Processes:** Long names such as `com.apple.Virtualization.VirtualMachine` are shortened in the middle, so the end that tells them apart stays visible. Hover to see the full name.
+- **Processes:** Column titles have the same side padding as their values, so PID and User no longer run together.
+- **Settings:** Labels line up across the Appearance, Sampling and history, and Optional integrations sections, and the Appearance row no longer jumps when you change it.
+- **Settings:** The privileged helper and Open at login can be set up on a fresh install. macOS reports a never-registered helper or login item as "not found", which was shown as "The bundled helper is missing" or "not installed in a supported location" and disabled setup, while Remove Helper stayed enabled.
+- **Releases:** GitHub releases list the download, the SHA-256 checksums, and the GPG public key (https://tuxedo.rosie.run/GPG/Microgravity_1C2EC359.asc) for verifying the `.asc` signatures.
+- **Updater:** The update window shows only what changed in the new version.
+- **Updater:** Sparkle is pinned to the official 2.9.6 release and checked against its published checksum and tag commit before it is built in.
+- **Build:** Building from source requires Node.js 24.13 or later.
 
 ## 0.1.0
 

@@ -152,4 +152,35 @@ final class MetricCellPresentationTests: XCTestCase {
                              MetricValueCellView.heatAlpha(intensity: 0.5, increaseContrast: false))
         XCTAssertLessThanOrEqual(MetricValueCellView.heatAlpha(intensity: 1, increaseContrast: true), 0.75)
     }
+
+    func testCombinedPairShowsBothValuesAndMarksAPartlyMissingPair() {
+        let read = MetricCellPresentation(MetricReading(value: 1_024, unit: .bytesPerSecond, timestamp: timestamp))
+        let write = MetricCellPresentation(MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp,
+                                                         reason: .permissionDenied, detail: detail))
+        let pair = MetricCellPresentation.combined([(label: "R", presentation: read), (label: "W", presentation: write)])
+
+        XCTAssertEqual(pair.valueText, "R \(UIFormat.bytesPerSecond(1_024)) · W —")
+        XCTAssertEqual(pair.badge, .partial)
+        XCTAssertEqual(pair.toolTip, "W: Permission denied · \(detail)")
+        XCTAssertEqual(pair.accessibilityDescription,
+                       "R \(UIFormat.bytesPerSecond(1_024)), W Unavailable, Permission denied · \(detail)")
+    }
+
+    func testCombinedPairIsDashWhenEveryPartIsUnavailable() {
+        let missing = MetricCellPresentation.unavailable(reason: .unsupported)
+        let pair = MetricCellPresentation.combined([(label: "R", presentation: missing), (label: "W", presentation: missing)])
+
+        XCTAssertEqual(pair.valueText, "—")
+        XCTAssertEqual(pair.badge, .unavailable)
+    }
+
+    func testCombinedPairWithCompleteValuesHasNoMarkerOrTooltip() {
+        let read = MetricCellPresentation(MetricReading(value: 1_024, unit: .bytesPerSecond, timestamp: timestamp))
+        let write = MetricCellPresentation(MetricReading(value: 2_048, unit: .bytesPerSecond, timestamp: timestamp))
+        let pair = MetricCellPresentation.combined([(label: "R", presentation: read), (label: "W", presentation: write)])
+
+        XCTAssertEqual(pair.valueText, "R \(UIFormat.bytesPerSecond(1_024)) · W \(UIFormat.bytesPerSecond(2_048))")
+        XCTAssertEqual(pair.badge, .none)
+        XCTAssertNil(pair.toolTip)
+    }
 }

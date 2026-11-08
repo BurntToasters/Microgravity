@@ -46,8 +46,8 @@ struct MetricCellPresentation: Equatable {
         if reading.isPartial {
             valueText = number
             badge = .partial
-            toolTip = "Partial value. \(detail ?? "Some contributors were not collected.")"
-            accessibilityDescription = [number, "partial", detail].compactMap { $0 }.joined(separator: ", ")
+            toolTip = String(localized: "Partial value. \(detail ?? String(localized: "Some contributors were not collected."))")
+            accessibilityDescription = [number, String(localized: "partial"), detail].compactMap { $0 }.joined(separator: ", ")
         } else {
             valueText = number
             badge = .none
@@ -71,12 +71,34 @@ struct MetricCellPresentation: Equatable {
             valueText: "—",
             badge: .unavailable,
             toolTip: reasonText,
-            accessibilityDescription: reasonText.hasPrefix("Unavailable") ? reasonText : "Unavailable, \(reasonText)"
+            accessibilityDescription: reasonText.hasPrefix(String(localized: "Unavailable")) ? reasonText : String(localized: "Unavailable, \(reasonText)")
         )
     }
 
     /// Presentation for a capability that is not available (`available == false`): "—" with its reason in the tooltip.
     static func unavailable(_ availability: MetricAvailability) -> MetricCellPresentation {
         unavailable(reason: availability.reason, detail: availability.detail)
+    }
+
+    /// One cell for several readings, such as "R 4 KB/s · W 8 KB/s". Each part keeps its own tooltip, prefixed
+    /// with its label. The cell is "—" only when every part is unavailable; a partly missing pair is marked partial.
+    static func combined(_ parts: [(label: String, presentation: MetricCellPresentation)]) -> MetricCellPresentation {
+        let unavailableCount = parts.filter { !$0.presentation.isAvailable }.count
+        let valueText = unavailableCount == parts.count
+            ? "—"
+            : parts.map { "\($0.label) \($0.presentation.valueText)" }.joined(separator: " · ")
+        let badge: Badge
+        if unavailableCount == parts.count {
+            badge = .unavailable
+        } else if unavailableCount > 0 || parts.contains(where: { $0.presentation.badge == .partial }) {
+            badge = .partial
+        } else {
+            badge = .none
+        }
+        let tips = parts.compactMap { part in part.presentation.toolTip.map { "\(part.label): \($0)" } }
+        let spoken = parts.map { "\($0.label) \($0.presentation.accessibilityDescription)" }.joined(separator: ", ")
+        return MetricCellPresentation(valueText: valueText, badge: badge,
+                                      toolTip: tips.isEmpty ? nil : tips.joined(separator: "\n"),
+                                      accessibilityDescription: spoken)
     }
 }

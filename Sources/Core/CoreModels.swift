@@ -582,6 +582,12 @@ public protocol MonitoringStore: AnyObject {
     func stop()
     func refreshNow() async
     func resetHistory() async throws
+    /// Commits buffered history totals to storage. Stores without buffered history keep the no-op default.
+    func flushHistory() async
+}
+
+extension MonitoringStore {
+    public func flushHistory() async {}
 }
 
 public protocol MonitoringHistoryManaging: Sendable {
@@ -589,6 +595,12 @@ public protocol MonitoringHistoryManaging: Sendable {
     func summaries(lastDays: Int, through date: Date) async throws -> [DailyHistorySummary]
     func reset() async throws
     func applicationSummaries(lastDays: Int, through date: Date) async throws -> [ApplicationDailyHistorySummary]
+    /// Commits buffered totals to durable storage. Conformers that write through keep the no-op default.
+    func flush() async throws
+}
+
+extension MonitoringHistoryManaging {
+    public func flush() async throws {}
 }
 
 public enum ProcessActionRejection: String, Codable, Hashable, Sendable {
@@ -623,4 +635,26 @@ public struct ProcessActionResult: Codable, Equatable, Sendable {
 
 public protocol ProcessActioning: Sendable {
     func terminate(identity: ProcessIdentity, force: Bool) async -> ProcessActionResult
+    /// Quits the current user's Finder and opens it again, like Relaunch in the system Force Quit window.
+    /// Finder lives in a protected system location, so it is never signaled by PID; this is its only quit path.
+    func relaunchFinder(identity: ProcessIdentity) async -> ProcessActionResult
+}
+
+extension ProcessActioning {
+    public func relaunchFinder(identity: ProcessIdentity) async -> ProcessActionResult {
+        ProcessActionResult(identity: identity, force: false,
+                            outcome: .rejected(.protectedProcess, detail: "Relaunching Finder is not available."))
+    }
+}
+
+/// Finder is identified by its bundle and its fixed system location, never by name alone.
+public enum FinderProcess {
+    public static let bundleIdentifier = "com.apple.finder"
+    public static let executablePath = "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder"
+    public static let applicationPath = "/System/Library/CoreServices/Finder.app"
+
+    /// True for the current user's Finder process.
+    public static func matches(executablePath: String?, ownerUID: UInt32?, currentUID: UInt32) -> Bool {
+        executablePath == Self.executablePath && ownerUID == currentUID
+    }
 }

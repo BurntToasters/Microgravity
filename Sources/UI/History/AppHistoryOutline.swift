@@ -5,7 +5,7 @@ import AppKit
 /// Groups stay expanded unless the user collapses them; collapsed state survives refreshes.
 /// Header clicks sort the applications and, within each application, its days.
 @MainActor
-final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
+final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
     /// Reference node so `NSOutlineView` can key expansion and selection on identity.
     private final class Node {
         let row: AppHistoryRow
@@ -25,12 +25,15 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
     private let emptyState: EmptyStateView
     private var source: [AppHistoryGroup] = []
     private var roots: [Node] = []
-    private var collapsedGroupIDs: Set<String> = []
+    /// Applications the user expanded. Everything starts collapsed: one row per application keeps a
+    /// 30-day history of hundreds of applications scannable, and each day list is one click away.
+    private var expandedGroupIDs: Set<String> = []
+    private let columnMenu = NSMenu()
 
     init(autosaveName: String? = "history.outline") {
         outline = NSOutlineView()
         outline.setAccessibilityIdentifier("history.table")
-        outline.setAccessibilityLabel("App history by application and day")
+        outline.setAccessibilityLabel(String(localized: "App history by application and day"))
         outline.style = .inset
         outline.usesAlternatingRowBackgroundColors = true
         outline.allowsMultipleSelection = false
@@ -53,6 +56,8 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
             tableColumn.headerCell.alignment = column.isNumeric ? .right : .left
             tableColumn.headerCell.setAccessibilityIdentifier(column.rawValue)
             tableColumn.sortDescriptorPrototype = NSSortDescriptor(key: column.rawValue, ascending: true)
+            // Set before the column joins the table, so a saved autosave layout still wins over the default.
+            tableColumn.isHidden = column.isHiddenByDefault
             outline.addTableColumn(tableColumn)
         }
         outline.outlineTableColumn = outline.tableColumns.first
@@ -66,10 +71,12 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scrollView = scroll
         emptyState = EmptyStateView.install(in: scroll, symbolName: "clock.arrow.circlepath",
-                                            title: "No app history yet")
+                                            title: String(localized: "No app history yet"))
         super.init()
         outline.dataSource = self
         outline.delegate = self
+        columnMenu.delegate = self
+        outline.headerView?.menu = columnMenu
         // Starts with no rows; `update` returns early for unchanged input, so show the empty state here.
         emptyState.isHidden = false
     }
@@ -99,8 +106,11 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
             return node
         }
         outline.reloadData()
-        MotionPolicy.animate {
-            for root in roots where !collapsedGroupIDs.contains(root.row.id) && !root.children.isEmpty {
+        // A rebuild restores expansion instantly; animating it on every data refresh is distracting.
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            for root in roots where expandedGroupIDs.contains(root.row.id) && !root.children.isEmpty {
                 outline.expandItem(root)
             }
         }
@@ -159,14 +169,35 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
         return cell
     }
 
+    // MARK: Header menu
+
+    /// Header context menu: one checkable item per column except the application column, which carries the disclosure triangles.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        for column in outline.tableColumns {
+            guard let key = AppHistoryColumn(rawValue: column.identifier.rawValue), key != .application else { continue }
+            let item = NSMenuItem(title: column.title, action: #selector(toggleColumnFromMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = key.rawValue
+            item.state = column.isHidden ? .off : .on
+            menu.addItem(item)
+        }
+    }
+
+    @objc private func toggleColumnFromMenu(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String,
+              let column = outline.tableColumns.first(where: { $0.identifier.rawValue == key }) else { return }
+        column.isHidden.toggle()
+    }
+
     func outlineViewItemDidExpand(_ notification: Notification) {
         guard let node = notification.userInfo?["NSObject"] as? Node, node.isApplication else { return }
-        collapsedGroupIDs.remove(node.row.id)
+        expandedGroupIDs.insert(node.row.id)
     }
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
         guard let node = notification.userInfo?["NSObject"] as? Node, node.isApplication else { return }
-        collapsedGroupIDs.insert(node.row.id)
+        expandedGroupIDs.remove(node.row.id)
     }
 }
 

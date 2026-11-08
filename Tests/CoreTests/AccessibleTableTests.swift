@@ -297,6 +297,43 @@ final class AccessibleTableTests: XCTestCase {
                        "a left-aligned value must start at the leading inset")
     }
 
+    func testCellDetailAddsTooltipSpokenTextAndMarkerWithoutChangingTheValue() throws {
+        let (table, _) = makeHostedTable()
+        let model = AccessibleTableModel(table: table, columns: [TableColumnSpec("name", "Name"), TableColumnSpec("cpu", "CPU", alignment: .right)])
+        let partial = AccessibleTableCellDetail(symbolName: "exclamationmark.triangle", isPartial: true,
+                                                toolTip: "Partial value. Some contributors were not collected.",
+                                                accessibilityDescription: "4%, partial")
+        let rows = [
+            AccessibleTableRow(id: "a", values: ["A", "4%"], cellDetails: [nil, partial]),
+            AccessibleTableRow(id: "b", values: ["B", "2%"])
+        ]
+        model.replaceRows(rows, in: table)
+        let cpuColumn = try XCTUnwrap(table.tableColumns.first { $0.identifier.rawValue == "cpu" })
+
+        let cell = try XCTUnwrap(table.delegate?.tableView?(table, viewFor: cpuColumn, row: 0) as? NSTableCellView)
+        let field = try XCTUnwrap(textFields(in: cell).first)
+        XCTAssertEqual(field.stringValue, "4%", "the visible value stays short")
+        XCTAssertEqual(field.toolTip, "Partial value. Some contributors were not collected.")
+        XCTAssertEqual(field.accessibilityLabel(), "4%, partial")
+        XCTAssertEqual(imageViews(in: cell).filter { !$0.isHidden && $0.image != nil }.count, 1)
+
+        let plain = try XCTUnwrap(table.delegate?.tableView?(table, viewFor: cpuColumn, row: 1) as? NSTableCellView)
+        XCTAssertNil(textFields(in: plain).first?.toolTip)
+        XCTAssertEqual(textFields(in: plain).first?.accessibilityLabel(), "2%")
+        XCTAssertTrue(imageViews(in: plain).allSatisfy { $0.isHidden || $0.image == nil })
+
+        // A changed tooltip or marker is a content change, so the row reloads in place.
+        table.resetRecordedUpdates()
+        model.replaceRows(rows, in: table)
+        XCTAssertTrue(table.partialReloads.isEmpty, "identical details must not reload rows")
+        let changed = [
+            AccessibleTableRow(id: "a", values: ["A", "4%"], cellDetails: [nil, nil]),
+            AccessibleTableRow(id: "b", values: ["B", "2%"])
+        ]
+        model.replaceRows(changed, in: table)
+        XCTAssertEqual(table.partialReloads, [IndexSet(integer: 0)])
+    }
+
     private func makeHostedTable() -> (RecordingTableView, NSScrollView) {
         let table = RecordingTableView(frame: NSRect(x: 0, y: 0, width: 480, height: 200))
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 480, height: 200))

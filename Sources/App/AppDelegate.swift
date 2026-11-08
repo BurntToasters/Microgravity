@@ -12,10 +12,33 @@ enum MicrogravityApplication {
     }
 }
 
+/// Answers an application-should-terminate request exactly once, whichever finishes first.
+@MainActor
+private final class TerminationReplyGate {
+    private let application: NSApplication
+    private var replied = false
+
+    init(application: NSApplication) {
+        self.application = application
+    }
+
+    func reply() {
+        guard !replied else { return }
+        replied = true
+        application.reply(toApplicationShouldTerminate: true)
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Quit never waits longer than this for buffered history to commit.
+    private static let historyFlushTimeout: Duration = .seconds(2)
+
     private var windowController: MainWindowController?
     private var fixtureDefaultsSuite: String?
+    private var monitoringStore: (any MonitoringStore)?
+    private var isFixtureMode = false
+    private var sleepObserver: NSObjectProtocol?
 
     private static func fixtureWindowAutosaveName(for suite: String) -> String {
         "Microgravity.UITests.Window.\(suite)"
@@ -25,6 +48,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppearancePreference.applyCurrent()
         NSApp.mainMenu = MainMenu.make()
         let dependencies = AppComposition.make()
+        isFixtureMode = dependencies.fixtureMode
+        monitoringStore = dependencies.monitoringStore
+        if !dependencies.fixtureMode {
+            // Commit buffered history before the Mac sleeps. Best effort: the system may not wait for it.
+            sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.flushHistoryInBackground() }
+            }
+        }
         if dependencies.fixtureMode {
             fixtureDefaultsSuite = AppComposition.fixtureDefaultsSuiteForCleanup
         }
@@ -70,11 +103,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return clearFixtureDefaults(suite: fixtureDefaultsSuite) ? .terminateNow : .terminateCancel
         }
         #endif
-        return .terminateNow
+        guard !isFixtureMode, let monitoringStore else { return .terminateNow }
+        // Quit waits for the history commit, but never longer than the timeout.
+        let gate = TerminationReplyGate(application: sender)
+        Task { @MainActor in
+            try? await Task.sleep(for: Self.historyFlushTimeout)
+            gate.reply()
+        }
+        Task { @MainActor in
+            await monitoringStore.flushHistory()
+            gate.reply()
+        }
+        return .terminateLater
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // shouldTerminate already waited for the commit. This is a last attempt for any path that skipped it.
+        flushHistoryInBackground()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    private func flushHistoryInBackground() {
+        guard !isFixtureMode, let monitoringStore else { return }
+        Task { @MainActor in
+            await monitoringStore.flushHistory()
+        }
     }
 
     #if DEBUG

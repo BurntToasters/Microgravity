@@ -1,6 +1,6 @@
 import AppKit
 
-/// Insets and spacing shared by every page (plan 1.3): 20 pt horizontal, 12 pt below the toolbar.
+/// Insets and spacing shared by every page: 20 pt horizontal, 12 pt below the toolbar.
 @MainActor
 enum PageLayout {
     static let horizontalInset: CGFloat = 20

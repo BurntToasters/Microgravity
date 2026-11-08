@@ -134,12 +134,14 @@ UI (AppKit):
 
 1. **Release proof.** The signed composite gate exited 0 (243 tests, 0 failed,
    0 skipped), but `test:all` reported a dirty worktree. No reusable release
-   proof exists. Run `release:prepare` only after the full gate passes from a
-   clean canonical checkout; see
-   [RELEASING.md](RELEASING.md#ui-tests-and-the-hard-release-gate). Run the gates
-   from a checkout outside `~/Documents`. From a checkout there, XCTest can hang
-   before connecting, because the unsigned test host triggers a macOS Documents
-   privacy prompt while loading Sparkle.framework.
+   proof exists. `release:prepare` records one from a clean canonical checkout;
+   it runs `test:all -- --skip-ui` unless `MICROGRAVITY_RELEASE_UI_TESTS=1`
+   (see [RELEASING.md](RELEASING.md#ui-tests-and-the-release-gate)). A
+   `--skip-ui` run on 2026-11-08 (220 Core tests, 0 failed) completed from the
+   `~/Documents` checkout. The full UI suite can hang before connecting from a
+   checkout there, because the unsigned test host triggers a macOS Documents
+   privacy prompt while loading Sparkle.framework; run it from a checkout
+   outside `~/Documents`.
 2. **Manual UI review.** Pending: VoiceOver spot check; keyboard shortcuts, menu,
    toolbar, and sidebar toggle; manual drag-resize to 960 × 600 and back; live
    Force Quit and Reset History sheets on a tester-created throwaway process and
@@ -148,9 +150,9 @@ UI (AppKit):
    setup, removal, and protected-process rejection; live login item; and
    long-running live metrics and history.
 3. **Known open visual issues** (non-blocking, cosmetic):
-   a. On first open of Settings, the Appearance row (label and pop-up) is
-   leading-aligned in its card. After the value changes, it is trailing-aligned
-   like the other rows.
+   a. Fixed in 0.1.1: Settings form labels share one column width across cards,
+   and the Appearance row no longer moves when its value changes (Core test
+   `testSettingsLabelsLineUpAcrossCardsAndStayPutWhenAppearanceChanges`).
    b. Details "Disk R / W" values middle-truncate at the default column width.
    The column is resizable. The full value is in the accessibility label.
    c. Wide tables (Processes, App History, Details, inventory) scroll

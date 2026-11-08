@@ -70,6 +70,7 @@ final class SettingsViewController: NSViewController {
 
         let header = UIComponents.header(title: "Settings", subtitle: "Appearance, sampling, history, and optional integrations.")
         let sections = [makeAppearanceSection(), makeSamplingSection(), makeIntegrationSection()]
+        alignFormGrids()
         let content = NSStackView(views: [header] + sections)
         content.orientation = .vertical
         content.alignment = .leading
@@ -224,8 +225,26 @@ final class SettingsViewController: NSViewController {
 
     // MARK: - Form building
 
+    /// Every card's form grid, so their label columns can share one width.
+    private(set) var formGrids: [NSGridView] = []
+
+    /// Gives every card the same label column (the widest label) and stretches each grid to its card,
+    /// so labels line up across cards and do not move when a value changes.
+    private func alignFormGrids() {
+        let labelWidth = formGrids.flatMap { grid in
+            (0..<grid.numberOfRows).compactMap { grid.cell(atColumnIndex: 0, rowIndex: $0).contentView?.fittingSize.width }
+        }.max() ?? 0
+        for grid in formGrids {
+            grid.column(at: 0).width = ceil(labelWidth)
+            if let rows = grid.superview {
+                grid.trailingAnchor.constraint(equalTo: rows.trailingAnchor).isActive = true
+            }
+        }
+    }
+
     private func makeFormGrid() -> NSGridView {
         let grid = NSGridView(numberOfColumns: 2, rows: 0)
+        formGrids.append(grid)
         grid.rowSpacing = 8
         grid.columnSpacing = 12
         grid.rowAlignment = .firstBaseline

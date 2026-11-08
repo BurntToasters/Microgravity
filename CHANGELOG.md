@@ -5,19 +5,35 @@
 
 | <img height="20" src="https://github.com/user-attachments/assets/42d7e887-4616-4e8c-b1d3-e44e01340f8c" /> macOS |
 | :-- |
-| **ZIP: [universal](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.0/Microgravity-0.1.0.zip)** |
-| **Checksums: [SHA256SUMS](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.0/SHA256SUMS) / [GPG signature](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.0/SHA256SUMS.asc)** |
+| **ZIP: [universal](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.1/Microgravity-0.1.1.zip)** |
+| **Checksums: [SHA256SUMS](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.1/SHA256SUMS) / [GPG signature](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.1/SHA256SUMS.asc)** |
 
 > Requires macOS 14 or later. The universal build runs natively on Apple silicon and Intel Macs.
 
 > [!IMPORTANT]
 > Microgravity is signed with my Apple Developer ID and notarized by Apple.
-> The `.asc` files are detached GPG signatures. Verify them with the Microgravity release key,
-> fingerprint `F01DAAD63F4688AB0BBEC7085E7752731C2EC359`.
+> The `.asc` files are detached GPG signatures. Verify them with the Microgravity GPG public key: https://tuxedo.rosie.run/GPG/Microgravity_1C2EC359.asc
+> (fingerprint `F01DAAD63F4688AB0BBEC7085E7752731C2EC359`).
 > In-app updates are delivered by Sparkle and verified with an EdDSA signature before they install.
 
 ### ℹ️ Enjoying Microgravity? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 <!-- downloads:end -->
+
+## 0.1.1
+
+- **Interface:** A ❤️ Support Me button at the bottom of the sidebar opens https://rosie.run/support in your default browser.
+- **Processes:** Rows change order instantly when values update instead of sliding and fading on every sample. App History no longer re-animates its groups on each refresh. Expanding or collapsing a group yourself still animates.
+- **Processes:** The Name column refits to the window, so a column layout saved from a wider window no longer pushes the CPU, memory, disk and network columns out of view.
+- **Processes:** Idle disk and network rates show "0 KB/s" instead of "Zero KB/s".
+- **Processes:** The selection bar shows the PID once and the start time, instead of repeating the PID.
+- **Processes:** Long names such as `com.apple.Virtualization.VirtualMachine` are shortened in the middle, so the end that tells them apart stays visible. Hover to see the full name.
+- **Processes:** Column titles have the same side padding as their values, so PID and User no longer run together.
+- **Settings:** Labels line up across the Appearance, Sampling and history, and Optional integrations sections, and the Appearance row no longer jumps when you change it.
+- **Settings:** The privileged helper and Open at login can be set up on a fresh install. macOS reports a never-registered helper or login item as "not found", which was shown as "The bundled helper is missing" or "not installed in a supported location" and disabled setup, while Remove Helper stayed enabled.
+- **Releases:** GitHub releases list the download, the SHA-256 checksums, and the GPG public key (https://tuxedo.rosie.run/GPG/Microgravity_1C2EC359.asc) for verifying the `.asc` signatures.
+- **Updater:** The update window shows only what changed in the new version.
+- **Updater:** Sparkle is pinned to the official 2.9.6 release and checked against its published checksum and tag commit before it is built in.
+- **Build:** Building from source requires Node.js 24.13 or later.
 
 ## 0.1.0
 

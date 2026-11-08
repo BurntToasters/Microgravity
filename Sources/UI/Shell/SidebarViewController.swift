@@ -31,12 +31,18 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         Node(page: .settings)
     ]
 
+    static let supportURL = URL(string: "https://rosie.run/support")!
+
     private let monitoringStore: any MonitoringStore
     private let outlineView = NSOutlineView()
     private let footer: SidebarStatusFooter
+    private let openURL: (URL) -> Void
+    let supportButton = NSButton(title: "❤️ Support Me", target: nil, action: nil)
 
-    init(monitoringStore: any MonitoringStore) {
+    /// `openURL` opens a link in the user's default browser; tests replace it.
+    init(monitoringStore: any MonitoringStore, openURL: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }) {
         self.monitoringStore = monitoringStore
+        self.openURL = openURL
         footer = SidebarStatusFooter(monitoringStore: monitoringStore)
         super.init(nibName: nil, bundle: nil)
     }
@@ -77,14 +83,29 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         scroll.automaticallyAdjustsContentInsets = true
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
+        supportButton.target = self
+        supportButton.action = #selector(openSupportPage)
+        supportButton.bezelStyle = .push
+        supportButton.controlSize = .small
+        supportButton.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
+        supportButton.toolTip = "Open \(Self.supportURL.absoluteString) in your browser"
+        supportButton.setAccessibilityIdentifier("sidebar.support")
+        supportButton.setAccessibilityLabel("Support Me")
+        supportButton.setAccessibilityHelp("Opens the support page in your default browser.")
+        supportButton.translatesAutoresizingMaskIntoConstraints = false
+
         footer.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(scroll)
+        view.addSubview(supportButton)
         view.addSubview(footer)
         NSLayoutConstraint.activate([
             scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -8),
+            scroll.bottomAnchor.constraint(equalTo: supportButton.topAnchor, constant: -8),
+            supportButton.leadingAnchor.constraint(equalTo: footer.leadingAnchor),
+            supportButton.trailingAnchor.constraint(lessThanOrEqualTo: footer.trailingAnchor),
+            supportButton.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -8),
             footer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             footer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
             footer.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12)
@@ -102,6 +123,10 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     func refreshStatus(snapshot: MonitoringSnapshot? = nil) {
         footer.refresh(snapshot: snapshot)
+    }
+
+    @objc func openSupportPage() {
+        openURL(Self.supportURL)
     }
 
     private static let allPageNodes: [Node] = roots.flatMap { $0.isGroup ? $0.children : [$0] }

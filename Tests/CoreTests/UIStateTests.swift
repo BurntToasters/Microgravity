@@ -50,7 +50,7 @@ final class UIStateTests: XCTestCase {
 
         let rootRow = try! XCTUnwrap(processRow(named: "Fixture Editor Renderer", controller: controller, table: table))
         table.selectRowIndexes(IndexSet(integer: rootRow), byExtendingSelection: false)
-        XCTAssertTrue(textField(withIdentifier: "process.selection.identity", in: controller.view)?.stringValue.contains("pid=410") == true)
+        XCTAssertTrue(textField(withIdentifier: "process.selection.identity", in: controller.view)?.accessibilityLabel()?.contains("PID 410,") == true)
 
         for offset in 1...4 {
             controller.update(snapshot: copy(snapshot, timestamp: snapshot.timestamp.addingTimeInterval(Double(offset))))

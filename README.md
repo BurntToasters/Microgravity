@@ -40,8 +40,8 @@ The optional privileged helper, login item and updates report their state in Set
 
 > [!IMPORTANT]
 > Releases are signed with my Apple Developer ID and notarized by Apple.
-> Each release also ships `SHA256SUMS` and detached GPG signatures (`.asc`) made with the Microgravity release key,
-> fingerprint `F01DAAD63F4688AB0BBEC7085E7752731C2EC359`.
+> Each release also ships `SHA256SUMS` and detached GPG signatures (`.asc`). Verify them with the Microgravity GPG public key:
+> https://tuxedo.rosie.run/GPG/Microgravity_1C2EC359.asc (fingerprint `F01DAAD63F4688AB0BBEC7085E7752731C2EC359`).
 > In-app updates are delivered by [Sparkle](https://sparkle-project.org) and verified with an EdDSA signature before they install.
 
 # Build from source
@@ -52,7 +52,7 @@ The optional privileged helper, login item and updates report their state in Set
 
 The unsigned development app is written to `DerivedData/Build/Build/Products/Debug/Microgravity.app`.
 
-`npm run test:all` runs the Core and UI XCTest suites and is a release gate. The UI tests need a signed build, a logged-in desktop session and UI automation permission. The non-UI checks, signing, and the release process are in [docs/RELEASING.md](docs/RELEASING.md).
+`npm run test:all` runs the Core and UI XCTest suites; `npm run test:all -- --skip-ui` leaves out the UI suite, and releases use that by default. The UI tests need a signed build, a logged-in desktop session and UI automation permission. The non-UI checks, signing, and the release process are in [docs/RELEASING.md](docs/RELEASING.md).
 
 # License
 

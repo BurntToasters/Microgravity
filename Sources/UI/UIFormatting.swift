@@ -24,7 +24,7 @@ enum UIFormat {
         case .percent:
             return percent(value)
         case .bytes:
-            return ByteCountFormatter.string(fromByteCount: boundedInt64(value), countStyle: .memory)
+            return memoryFormatter.string(fromByteCount: boundedInt64(value))
         case .bytesPerSecond:
             return bytesPerSecond(value)
         case .count:
@@ -40,6 +40,17 @@ enum UIFormat {
         }
     }
 
+    /// Byte formatters that write "0 KB" rather than ByteCountFormatter's default "Zero KB".
+    private static let memoryFormatter = byteFormatter(.memory)
+    private static let throughputFormatter = byteFormatter(.decimal)
+
+    private static func byteFormatter(_ style: ByteCountFormatter.CountStyle) -> ByteCountFormatter {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = style
+        formatter.allowsNonnumericFormatting = false
+        return formatter
+    }
+
     /// Locale-correct percentage for a value on the 0...100 scale (`42.5` becomes "42.5%").
     static func percent(_ value: Double) -> String {
         guard value.isFinite else { return "Unavailable" }
@@ -49,7 +60,7 @@ enum UIFormat {
     /// Throughput in decimal units (KB = 1000 bytes), matching Activity Monitor.
     static func bytesPerSecond(_ value: Double) -> String {
         guard value.isFinite else { return "Unavailable" }
-        let count = ByteCountFormatter.string(fromByteCount: boundedInt64(value), countStyle: .decimal)
+        let count = throughputFormatter.string(fromByteCount: boundedInt64(value))
         return "\(count)/s"
     }
 

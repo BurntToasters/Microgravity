@@ -123,6 +123,33 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         updateSelectionDetails()
     }
 
+    private var lastFittedWidth: CGFloat = 0
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        fitNameColumn(force: false)
+    }
+
+    /// Name width that fills the visible table exactly, never below its minimum. Restored or hand-tuned
+    /// widths from a wider window would otherwise leave Name wide enough to push the metric columns
+    /// out of view.
+    static func fittedNameWidth(visibleWidth: CGFloat, otherColumnWidths: CGFloat, minimum: CGFloat) -> CGFloat {
+        max(minimum, (visibleWidth - otherColumnWidths).rounded(.down))
+    }
+
+    /// Refits Name when the visible width changes (window resize, first layout after restoring saved
+    /// widths) or when column visibility changes. A Name width the user drags stays until the next change.
+    private func fitNameColumn(force: Bool) {
+        guard let clipWidth = outlineView.enclosingScrollView?.contentView.bounds.width, clipWidth > 0,
+              let name = outlineView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(ProcessColumn.name.rawValue))
+        else { return }
+        guard force || abs(clipWidth - lastFittedWidth) > 0.5 else { return }
+        lastFittedWidth = clipWidth
+        let others = outlineView.tableColumns.filter { !$0.isHidden && $0 !== name }.reduce(CGFloat(0)) { $0 + $1.width }
+        let target = Self.fittedNameWidth(visibleWidth: clipWidth, otherColumnWidths: others, minimum: name.minWidth)
+        if abs(name.width - target) > 0.5 { name.width = target }
+    }
+
     // MARK: - Configuration
 
     private func configureOutline() {
@@ -145,6 +172,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
 
         for column in ProcessColumn.allCases {
             let tableColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(column.rawValue))
+            tableColumn.headerCell = PaddedTableHeaderCell(textCell: column.title)
             tableColumn.title = column.title
             tableColumn.width = Self.defaultWidth(for: column)
             tableColumn.minWidth = Self.minimumWidth(for: column)
@@ -306,7 +334,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         // Collapse groups the new layout no longer expands, so their member rows leave first.
         for id in Array(shownChildren.keys) where output.children[id] == nil {
             if let item = items[id], outlineView.row(forItem: item) >= 0 {
-                animated { outlineView.collapseItem(item) }
+                withoutAnimation { outlineView.collapseItem(item) }
             }
             shownChildren[id] = nil
         }
@@ -318,22 +346,25 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             let operations = ProcessRowModel.operations(from: shown, to: wanted)
             if !operations.isEmpty { childOperations.append((id, operations)) }
         }
-        outlineView.beginUpdates()
-        for operation in topOperations {
-            perform(operation, parent: nil)
-        }
-        for (parent, operations) in childOperations {
-            for operation in operations {
-                perform(operation, parent: parent)
+        // Sampling reorders rows every refresh; rows change place instantly so the table never slides under the user.
+        withoutAnimation {
+            outlineView.beginUpdates()
+            for operation in topOperations {
+                perform(operation, parent: nil)
             }
+            for (parent, operations) in childOperations {
+                for operation in operations {
+                    perform(operation, parent: parent)
+                }
+            }
+            outlineView.endUpdates()
         }
-        outlineView.endUpdates()
 
         // Groups that are newly expanded: their members are inserted after the group row exists.
         for id in output.topLevel where shownChildren[id] == nil {
             guard let wanted = output.children[id], let item = items[id] else { continue }
             shownChildren[id] = wanted
-            animated { outlineView.expandItem(item) }
+            withoutAnimation { outlineView.expandItem(item) }
         }
 
         reloadChangedCells(previous: previousRows, next: output)
@@ -350,14 +381,13 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     /// Applies one diff step to the outline and to the mirror, which must change together.
     private func perform(_ operation: ProcessRowDiffOperation<ProcessRowID>, parent: ProcessRowID?) {
         let parentItem: Any? = parent.flatMap { items[$0] }
-        let options = animationOptions
         switch operation {
         case .remove(let index):
             mutateChildren(of: parent) { children in _ = children.remove(at: index) }
-            outlineView.removeItems(at: IndexSet(integer: index), inParent: parentItem, withAnimation: options)
+            outlineView.removeItems(at: IndexSet(integer: index), inParent: parentItem, withAnimation: [])
         case .insert(let id, let index):
             mutateChildren(of: parent) { children in children.insert(id, at: index) }
-            outlineView.insertItems(at: IndexSet(integer: index), inParent: parentItem, withAnimation: options)
+            outlineView.insertItems(at: IndexSet(integer: index), inParent: parentItem, withAnimation: [])
         case .move(let from, let to):
             mutateChildren(of: parent) { children in
                 let moved = children.remove(at: from)
@@ -377,12 +407,17 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         shownChildren[parent] = children
     }
 
-    private var animationOptions: NSTableView.AnimationOptions {
-        MotionPolicy.prefersReducedMotion ? [] : .effectFade
-    }
-
+    /// Only a disclosure click by the user animates; everything the model applies is instant.
     private func animated(_ changes: () -> Void) {
         MotionPolicy.animate(changes)
+    }
+
+    private func withoutAnimation(_ changes: () -> Void) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            changes()
+        }
     }
 
     private func register(_ output: ProcessOutline) {
@@ -459,6 +494,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             guard let tableColumn = outlineView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(column.rawValue)) else { continue }
             tableColumn.isHidden = columnHidden(column)
         }
+        fitNameColumn(force: true)
     }
 
     private func rebuildColumnMenu() {
@@ -509,7 +545,8 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         selectionBar.show(
             title: title,
             summary: "PID \(process.id.pid) · \(owner) · \(path ?? "Path unavailable")",
-            identity: "pid=\(process.id.pid) · started \(start)",
+            identity: "Started \(start)",
+            identityAccessibilityLabel: "PID \(process.id.pid), started \(start)",
             icon: icon
         )
         setActionsEnabled(true)

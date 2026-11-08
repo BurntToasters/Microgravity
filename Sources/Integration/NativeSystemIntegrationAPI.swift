@@ -14,7 +14,7 @@ final class NativeSystemIntegrationAPI: NSObject, SystemIntegrationAPI, SPUUpdat
     private var statusRefresh: Task<Void, Never>?
     var status: SystemIntegrationStatus {
         SystemIntegrationStatus(helper: helperStatus, loginItem: loginStatus, updates: updateState,
-                                helperRegistered: daemon.status != .notRegistered)
+                                helperRegistered: Self.isRegistered(daemon.status))
     }
 
     override init() {
@@ -41,12 +41,29 @@ final class NativeSystemIntegrationAPI: NSObject, SystemIntegrationAPI, SPUUpdat
 
     private var helperStatus: IntegrationAvailability { helperConnectionStatus }
 
-    private var loginStatus: LoginItemAvailability {
-        switch SMAppService.mainApp.status {
+    private var loginStatus: LoginItemAvailability { Self.loginItemAvailability(SMAppService.mainApp.status) }
+
+    /// The helper's launchd plist and executable inside this app bundle.
+    nonisolated static let bundledHelperPaths = ["Contents/Library/LaunchDaemons/run.rosie.microgravity.helper.plist",
+                                                 "Contents/Helpers/MicrogravityHelper"]
+
+    nonisolated static func helperIsBundled(in bundleURL: URL = Bundle.main.bundleURL) -> Bool {
+        bundledHelperPaths.allSatisfy { FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent($0).path) }
+    }
+
+    /// SMAppService reports `.notFound`, not `.notRegistered`, for a service that has never been registered.
+    /// Only `.enabled` and `.requiresApproval` mean macOS holds a registration that Remove Helper can undo.
+    nonisolated static func isRegistered(_ status: SMAppService.Status) -> Bool {
+        status == .enabled || status == .requiresApproval
+    }
+
+    /// `.notFound` is treated as "not set up yet" so the first registration can be attempted;
+    /// a real failure then surfaces as the register() error.
+    nonisolated static func loginItemAvailability(_ status: SMAppService.Status) -> LoginItemAvailability {
+        switch status {
         case .enabled: return .enabled
-        case .notRegistered: return .disabled
+        case .notRegistered, .notFound: return .disabled
         case .requiresApproval: return .requiresApproval
-        case .notFound: return .unavailable("The app is not installed in a supported location.")
         @unknown default: return .unavailable("Unknown login item status.")
         }
     }
@@ -89,7 +106,9 @@ final class NativeSystemIntegrationAPI: NSObject, SystemIntegrationAPI, SPUUpdat
         switch daemon.status {
         case .notRegistered: helperConnectionStatus = .notConfigured
         case .requiresApproval: helperConnectionStatus = .requiresApproval
-        case .notFound: helperConnectionStatus = .unavailable("The bundled helper is missing.")
+        case .notFound:
+            // Never registered, unless the bundle really lacks the helper.
+            helperConnectionStatus = Self.helperIsBundled() ? .notConfigured : .unavailable("The bundled helper is missing.")
         case .enabled:
             helperConnectionStatus = await HelperHandshake.check(requirement: requirement)
         @unknown default: helperConnectionStatus = .unavailable("Unknown helper status.")

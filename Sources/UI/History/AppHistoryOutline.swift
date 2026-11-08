@@ -99,7 +99,10 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
             return node
         }
         outline.reloadData()
-        MotionPolicy.animate {
+        // A rebuild restores expansion instantly; animating it on every data refresh is distracting.
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
             for root in roots where !collapsedGroupIDs.contains(root.row.id) && !root.children.isEmpty {
                 outline.expandItem(root)
             }

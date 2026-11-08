@@ -134,7 +134,8 @@ test("version synchronization updates both lockfile identity fields and refuses 
   assert.match(bumped, /This is a Beta build[\s\S]*\/download\/v0\.2\.0-beta\.1\/Microgravity-0\.2\.0-beta\.1\.zip[\s\S]*<!-- downloads:end -->\n\n## 0\.2\.0-beta\.1\n\nRelease notes pending\.\n\n## 0\.1\.0\n/);
   assert.doesNotMatch(bumped, /\/download\/v0\.1\.0\//);
   assert.throws(() => expectedChangelog("Wrong title\n", "0.1.0"), /must start/);
-  assert.deepEqual(versionInfo(), { version: "0.1.0", buildNumber: 1, channel: "stable", tag: "v0.1.0" });
+  const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  assert.deepEqual(versionInfo(), { version: packageJson.version, buildNumber: packageJson.buildNumber, channel: packageJson.version.includes("-beta.") ? "beta" : "stable", tag: `v${packageJson.version}` });
 });
 
 test("Sparkle feed URL escapes // for xcconfig and decodes to the channel appcast", () => {
@@ -262,4 +263,17 @@ test("Debug project builds app and hosted tests for the active architecture", ()
   const project = renderProject();
   const debug = project.match(/\/\* Project Debug \*\/ = \{isa = XCBuildConfiguration; buildSettings = \{([^}]*)\}/)?.[1] ?? "";
   assert.match(debug, /ONLY_ACTIVE_ARCH = YES/);
+});
+
+test("release prepare skips the UI automation suite unless MICROGRAVITY_RELEASE_UI_TESTS=1", async () => {
+  const { releaseTestArguments } = await import("../release.mjs");
+  assert.deepEqual(releaseTestArguments({}), ["--", "--skip-ui"]);
+  assert.deepEqual(releaseTestArguments({ MICROGRAVITY_RELEASE_UI_TESTS: "0" }), ["--", "--skip-ui"]);
+  assert.deepEqual(releaseTestArguments({ MICROGRAVITY_RELEASE_UI_TESTS: "1" }), []);
+});
+
+test("GitHub release title is the version tag without the app name", async () => {
+  const { expectedDraftTarget } = await import("../release.mjs");
+  assert.equal(expectedDraftTarget({ tag: "v0.1.1", version: "0.1.1", channel: "stable" }, "abc").title, "v0.1.1");
+  assert.equal(expectedDraftTarget({ tag: "v0.2.0-beta.1", version: "0.2.0-beta.1", channel: "beta" }, "abc").title, "v0.2.0-beta.1");
 });

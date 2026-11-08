@@ -2,7 +2,8 @@ import AppKit
 
 /// Slim strip under the process table: icon, name, "PID · user · path", and the identity on the trailing edge.
 ///
-/// The trailing label keeps the `process.selection.identity` identifier and carries `pid=<n>` in its text.
+/// The trailing label keeps the `process.selection.identity` identifier. It shows the start time; the PID is
+/// already in the summary, and the label's accessibility text names both.
 @MainActor
 final class ProcessSelectionBar: NSView {
     static let height: CGFloat = 36
@@ -72,13 +73,13 @@ final class ProcessSelectionBar: NSView {
         identityField.setAccessibilityLabel(Self.emptyIdentity)
     }
 
-    func show(title: String, summary: String, identity: String, icon: NSImage) {
+    func show(title: String, summary: String, identity: String, identityAccessibilityLabel: String? = nil, icon: NSImage) {
         iconView.isHidden = false
         iconView.image = icon
         titleField.stringValue = title
         summaryField.stringValue = summary
         identityField.stringValue = identity
-        identityField.setAccessibilityLabel(identity)
+        identityField.setAccessibilityLabel(identityAccessibilityLabel ?? identity)
     }
 
     override func draw(_ dirtyRect: NSRect) {

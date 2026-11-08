@@ -19,10 +19,10 @@ function uiSigning() {
   return { identity, team, enabled: Boolean(identity) };
 }
 
-function xcodeTests() {
+function xcodeTests({ skipUI = false } = {}) {
   const architecture = os.arch() === "x64" ? "x86_64" : "arm64";
-  const signing = uiSigning();
-  if (!signing.enabled) console.warn("test:all: UI tests are unsigned; set MICROGRAVITY_UI_SIGNING_IDENTITY and MICROGRAVITY_UI_TEAM_ID if the runner cannot connect.");
+  const signing = skipUI ? { identity: "", team: "", enabled: false } : uiSigning();
+  if (!skipUI && !signing.enabled) console.warn("test:all: UI tests are unsigned; set MICROGRAVITY_UI_SIGNING_IDENTITY and MICROGRAVITY_UI_TEAM_ID if the runner cannot connect.");
   const resultBundle = path.join(root, "DerivedData/TestResults/Microgravity.xcresult");
   fs.rmSync(resultBundle, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(resultBundle), { recursive: true });
@@ -36,6 +36,7 @@ function xcodeTests() {
     "-destination", `platform=macOS,arch=${architecture}`,
     "-parallel-testing-enabled", "NO",
     "-resultBundlePath", resultBundle,
+    ...(skipUI ? ["-skip-testing:MicrogravityUITests"] : []),
     "test",
     `CODE_SIGNING_ALLOWED=${signing.enabled ? "YES" : "NO"}`,
     ...(signing.enabled ? [`CODE_SIGN_IDENTITY=${signing.identity}`, `DEVELOPMENT_TEAM=${signing.team}`] : []),
@@ -45,29 +46,35 @@ function xcodeTests() {
   run("xcodebuild", args, { env: { MICROGRAVITY_SPARKLE_PUBLIC_KEY: process.env.MICROGRAVITY_SPARKLE_PUBLIC_KEY ?? "", MICROGRAVITY_SKIP_EMBED_SIGNING: signing.enabled ? "0" : "1" } });
 }
 
-export function runAllTests() {
+export const uiGate = "npm run test:all";
+export const coreGate = "npm run test:all -- --skip-ui";
+
+// --skip-ui runs every gate except the UI automation suite (MicrogravityUITests).
+export function runAllTests({ skipUI = false } = {}) {
   clearProof();
   run(process.execPath, ["scripts/sync-version.mjs", "--check"]);
   run(process.execPath, ["scripts/generate-project.mjs", "--check"]);
   run(process.execPath, ["scripts/validate.mjs"]);
   nodeTests();
-  xcodeTests();
+  xcodeTests({ skipUI });
   if (run("git", ["status", "--porcelain"], { capture: true }).stdout) {
     console.log("test:all: ok (dirty worktree; no reusable release proof recorded)");
   } else {
-    recordProof();
-    console.log("test:all: ok (24-hour release proof recorded)");
+    recordProof(skipUI ? coreGate : uiGate);
+    console.log(`test:all: ok (24-hour release proof recorded${skipUI ? "; UI tests skipped" : ""})`);
   }
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
   if (process.argv.slice(2).some((argument) => argument === "--help" || argument === "-h")) {
-    console.log("Usage: node scripts/test-all.mjs");
-    console.log("Runs version, project, workspace, Node, Core XCTest, and UI XCTest gates.");
+    console.log("Usage: node scripts/test-all.mjs [--skip-ui]");
+    console.log("Runs version, project, workspace, Node, Core XCTest, and UI XCTest gates. --skip-ui leaves out UI XCTest.");
     console.log("UI tests need Automation Mode; set MICROGRAVITY_UI_SIGNING_IDENTITY and MICROGRAVITY_UI_TEAM_ID to sign them.");
   } else {
     try {
-      runAllTests();
+      const unknown = process.argv.slice(2).filter((argument) => argument !== "--skip-ui");
+      if (unknown.length) throw new Error(`unknown argument: ${unknown.join(" ")}`);
+      runAllTests({ skipUI: process.argv.includes("--skip-ui") });
     } catch (error) {
       console.error(`test:all: FAILED:\n${error.message}`);
       process.exit(1);

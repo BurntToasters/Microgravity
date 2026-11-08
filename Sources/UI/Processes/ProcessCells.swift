@@ -17,7 +17,9 @@ final class ProcessNameCellView: NSTableCellView {
         iconView.setAccessibilityElement(false)
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
-        nameField.lineBreakMode = .byTruncatingTail
+        // Bundle-style names (com.apple.Virtualization.VirtualMachine) are told apart by their end,
+        // so long names lose their middle, not their tail. The full name is in the tooltip.
+        nameField.lineBreakMode = .byTruncatingMiddle
         nameField.maximumNumberOfLines = 1
         nameField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         nameField.translatesAutoresizingMaskIntoConstraints = false
@@ -44,6 +46,7 @@ final class ProcessNameCellView: NSTableCellView {
         nameField.font = .systemFont(ofSize: 12, weight: content.isGroup ? .semibold : .regular)
         nameField.setAccessibilityIdentifier(content.accessibilityID + ".name")
         nameField.setAccessibilityLabel(content.title)
+        toolTip = content.title
         setAccessibilityIdentifier(content.accessibilityID + ".cell.name")
         iconView.image = AppIconProvider.icon(forBundlePath: content.bundlePath)
     }
@@ -132,5 +135,19 @@ final class ProcessRowView: NSTableRowView {
     func setDisclosureExpanded(_ expanded: Bool) {
         disclosureTarget.setAccessibilityLabel(expanded ? "Collapse group" : "Expand group")
         disclosureTarget.toolTip = expanded ? "Collapse process group" : "Expand process group"
+    }
+}
+
+/// Column header with the same 8 pt side padding as the value cells, so adjacent right- and
+/// left-aligned titles (PID, User) do not run together.
+final class PaddedTableHeaderCell: NSTableHeaderCell {
+    static let horizontalInset: CGFloat = 8
+
+    override func titleRect(forBounds rect: NSRect) -> NSRect {
+        super.titleRect(forBounds: rect).insetBy(dx: Self.horizontalInset, dy: 0)
+    }
+
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        super.drawInterior(withFrame: cellFrame.insetBy(dx: Self.horizontalInset, dy: 0), in: controlView)
     }
 }

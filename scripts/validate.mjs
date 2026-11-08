@@ -220,11 +220,14 @@ export function validateWorkspace({ release = false, bundle = null } = {}) {
   const upstreamPath = path.join(root, "vendor/Sparkle/UPSTREAM");
   const upstream = fs.existsSync(upstreamPath) ? fs.readFileSync(upstreamPath, "utf8") : "";
   const upstreamFields = Object.fromEntries([...upstream.matchAll(/^([A-Z0-9_]+)=(.*)$/gm)].map((match) => [match[1], match[2]]));
+  const pinPath = path.join(root, "sparkle_pin.yml");
+  const pinText = fs.existsSync(pinPath) ? fs.readFileSync(pinPath, "utf8") : "";
+  const pin = Object.fromEntries([...pinText.matchAll(/^([a-z0-9_]+):\s*["']?([^"'\s#]+)/gm)].map((match) => [match[1], match[2]]));
+  add(failures, /^[0-9]+\.[0-9]+\.[0-9]+$/.test(pin.version ?? "") && /^[0-9]+$/.test(pin.build ?? "") && /^[a-f0-9]{40}$/.test(pin.commit ?? "") && /^[a-f0-9]{64}$/.test(pin.tarball_sha256 ?? ""), "sparkle_pin.yml must pin version, build, commit, and tarball_sha256");
   const sparkleVersion = upstreamFields.VERSION;
-  add(failures, sparkleVersion === "2.9.6", "vendored Sparkle must use patched upstream version 2.9.6");
-  add(failures, upstreamFields.SOURCE === "https://codeload.github.com/sparkle-project/Sparkle/tar.gz/refs/tags/2.9.6", "Sparkle source provenance must point to the 2.9.6 upstream tag archive");
-  add(failures, upstreamFields.RELEASE_ARCHIVE === "https://github.com/sparkle-project/Sparkle/releases/download/2.9.6/Sparkle-2.9.6.tar.xz", "Sparkle helper provenance must point to the 2.9.6 upstream release archive");
-  add(failures, /^[a-f0-9]{64}$/.test(upstreamFields.SOURCE_SHA256 ?? "") && /^[a-f0-9]{64}$/.test(upstreamFields.RELEASE_ARCHIVE_SHA256 ?? ""), "Sparkle upstream archive hashes must be recorded");
+  add(failures, sparkleVersion === pin.version, `vendored Sparkle must be the pinned version ${pin.version}; run ./get_sparkle.sh`);
+  add(failures, upstreamFields.COMMIT === pin.commit && upstreamFields.SHA256 === pin.tarball_sha256, "vendor/Sparkle/UPSTREAM commit and SHA-256 must match sparkle_pin.yml; run ./get_sparkle.sh");
+  add(failures, upstreamFields.SOURCE === `https://github.com/sparkle-project/Sparkle/releases/download/${pin.version}/Sparkle-${pin.version}.tar.xz`, "Sparkle provenance must point to the pinned upstream release archive");
   const sparklePackagePath = path.join(root, "vendor/Sparkle/Package.swift");
   const sparklePackage = fs.existsSync(sparklePackagePath) ? fs.readFileSync(sparklePackagePath, "utf8") : "";
   const packageSparkleVersion = sparklePackage.match(/MARKETING_VERSION[^\n]*?([0-9]+\.[0-9]+\.[0-9]+)/)?.[1];

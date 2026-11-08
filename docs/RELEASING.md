@@ -98,6 +98,12 @@ Troubleshooting:
 - UI element not found or timeout: inspect failure attachments and the accessibility hierarchy with `xcrun xcresulttool`. Check the actual native control type and accessibility identifiers before changing a test.
 - `test runner hung before establishing connection` from a checkout under `~/Documents`: the unsigned test host triggers a macOS privacy (Documents folder) prompt while loading Sparkle.framework from DerivedData. Run the gates from a checkout outside `~/Documents`.
 
+## Updating Sparkle
+
+`sparkle_pin.yml` names the Sparkle release Microgravity vendors: its version, build, tag commit, and the SHA-256 of the official `Sparkle-<version>.tar.xz`. To move to another release, take those values from <https://github.com/sparkle-project/Sparkle/releases> (the file's comments list the commands), then run `./get_sparkle.sh`. It refuses to install unless the download matches the pinned checksum and GitHub's published digest, the tag resolves to the pinned commit, and the release reports the pinned version and build. It updates only pristine library sources and upstream translations, keeps Microgravity's own translations (`en.lproj`) and local edits that upstream did not touch, and stops on any other conflict. Vendored helpers stay ad hoc signed; the release build signs them with the app. Add a `CHANGELOG.md` entry, run `npm run validate` and `npm run test:all`, and commit. `./get_sparkle.sh --verify-only` checks `vendor/Sparkle` against the official release without writing anything; `npm run validate` checks `vendor/Sparkle/UPSTREAM` and the versions against the pin offline. Do not hand-edit `vendor/Sparkle` sources, helpers, or `sign_update`.
+
+The vendored copy omits `generate_keys` and `generate_appcast`. `./get_sparkle.sh --tools [DIR]` runs the same verification, then installs the complete pinned release into `DIR` (default `~/Sparkle`) without touching `vendor/Sparkle`. An existing `DIR` is moved aside to `DIR.previous-<version>-<timestamp>`, never deleted; Sparkle keys live in the login keychain, so replacing the directory does not affect them.
+
 ## Manual UI checklist (0.1.0)
 
 Run this on a Mac with a logged-in desktop session before tagging, and record the date, macOS version, Xcode version, and any failure in `docs/IMPLEMENTATION_STATUS.md`.

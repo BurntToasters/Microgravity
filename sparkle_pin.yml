@@ -1,0 +1,11 @@
+# The Sparkle release Microgravity vendors in vendor/Sparkle. Run ./get_sparkle.sh after changing it.
+#
+# To move to a new release, take every value from the official release, never from a mirror:
+#   gh release view <version> -R sparkle-project/Sparkle --json assets --jq '.assets[] | select(.name=="Sparkle-<version>.tar.xz") | .digest'
+#   gh api repos/sparkle-project/Sparkle/commits/<version> --jq .sha
+#   build: CURRENT_PROJECT_VERSION in that tag's Configurations/ConfigCommon.xcconfig
+# Check https://github.com/sparkle-project/Sparkle/security/advisories before pinning.
+version: 2.9.6
+build: 2061
+commit: ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a
+tarball_sha256: 52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2609e192

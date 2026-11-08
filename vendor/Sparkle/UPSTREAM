@@ -1,6 +1,5 @@
 VERSION=2.9.6
-SOURCE=https://codeload.github.com/sparkle-project/Sparkle/tar.gz/refs/tags/2.9.6
-SOURCE_SHA256=1dcf4a6ace36d25cf09e734756f8aba6ce1de4ad5506a4b9563fde8c6542cc75
-RELEASE_ARCHIVE=https://github.com/sparkle-project/Sparkle/releases/download/2.9.6/Sparkle-2.9.6.tar.xz
-RELEASE_ARCHIVE_SHA256=52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2609e192
-DATE=2026-11-06
+COMMIT=ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a
+SHA256=52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2609e192
+SOURCE=https://github.com/sparkle-project/Sparkle/releases/download/2.9.6/Sparkle-2.9.6.tar.xz
+DATE=2026-11-08

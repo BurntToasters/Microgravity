@@ -6,16 +6,19 @@ final class MainWindowController: NSWindowController {
     static let minimumContentSize = NSSize(width: 960, height: 600)
     nonisolated static let frameAutosaveName = "Main"
     private static let fixtureVisualWindowIdentifier = NSUserInterfaceItemIdentifier("ui-test.visual-window")
+    private static let fixtureContentSizeArgumentPrefix = "--ui-test-window-content-size="
 
     private let dependencies: AppDependencies
     let root: RootViewController
     private let mainToolbar: MainToolbar
 
+    /// `initialContentSize` is only supplied by DEBUG fixture launches; nil opens at `defaultContentSize`.
     init(dependencies: AppDependencies, frameAutosaveName: String? = MainWindowController.frameAutosaveName,
-         identifiesFixtureVisualWindow: Bool = false) {
+         identifiesFixtureVisualWindow: Bool = false, initialContentSize: NSSize? = nil) {
         self.dependencies = dependencies
         let root = RootViewController(dependencies: dependencies)
-        let window = Self.makeWindow(root: root, frameAutosaveName: frameAutosaveName)
+        let window = Self.makeWindow(root: root, frameAutosaveName: frameAutosaveName,
+                                     initialContentSize: initialContentSize ?? Self.defaultContentSize)
         if identifiesFixtureVisualWindow {
             window.identifier = Self.fixtureVisualWindowIdentifier
         }
@@ -38,9 +41,10 @@ final class MainWindowController: NSWindowController {
 
     /// Sets the content controller first so the window is sized from the real content, then
     /// applies the intended size. Autosave comes last so a saved frame from a previous launch wins.
-    private static func makeWindow(root: RootViewController, frameAutosaveName: String?) -> NSWindow {
+    private static func makeWindow(root: RootViewController, frameAutosaveName: String?,
+                                   initialContentSize: NSSize) -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: defaultContentSize),
+            contentRect: NSRect(origin: .zero, size: initialContentSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -52,13 +56,37 @@ final class MainWindowController: NSWindowController {
         window.contentViewController = root
         // Content minimum only: NSWindow derives the frame minimum from it, including the title bar.
         window.contentMinSize = minimumContentSize
-        window.setContentSize(defaultContentSize)
+        window.setContentSize(initialContentSize)
         window.center()
         // Autosave comes last so a saved frame wins; fixture windows use isolated names or disable autosave.
         if let frameAutosaveName {
             window.setFrameAutosaveName(frameAutosaveName)
         }
         return window
+    }
+
+    /// Reads `--ui-test-window-content-size=<W>x<H>` from fixture launch arguments. Nil when absent or invalid.
+    static func fixtureContentSize(fromArguments arguments: [String]) -> NSSize? {
+        guard let argument = arguments.first(where: { $0.hasPrefix(fixtureContentSizeArgumentPrefix) }) else {
+            return nil
+        }
+        return parseFixtureContentSize(String(argument.dropFirst(fixtureContentSizeArgumentPrefix.count)))
+    }
+
+    /// Accepts plain decimal `<W>x<H>` (lowercase x) no smaller than `minimumContentSize` on either axis.
+    static func parseFixtureContentSize(_ value: String) -> NSSize? {
+        let parts = value.split(separator: "x", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy { $0.isASCII && $0.isNumber } }),
+              let width = Int(parts[0]),
+              let height = Int(parts[1]) else {
+            return nil
+        }
+        let size = NSSize(width: width, height: height)
+        guard size.width >= minimumContentSize.width, size.height >= minimumContentSize.height else {
+            return nil
+        }
+        return size
     }
 
     // MARK: Menu and responder actions

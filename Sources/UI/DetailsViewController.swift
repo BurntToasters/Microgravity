@@ -45,7 +45,8 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
         return item
     }()
 
-    init() {
+    /// - Parameter autosaveName: Persists column layout under this name. Tests pass nil to keep defaults out of the app domain.
+    init(autosaveName: String? = "Microgravity.details.columns.v2") {
         let tableParts = makeAccessibleTable(identifier: "details.table")
         table = tableParts.0
         table.setAccessibilityLabel("Process details")
@@ -63,7 +64,7 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
             TableColumnSpec("network", "Network", width: 92, alignment: .right),
             TableColumnSpec("gpu", "GPU", width: 80, alignment: .right),
             TableColumnSpec("path", "Executable path", width: 180)
-        ], autosaveName: "Microgravity.details.columns.v2", showsIconsInFirstColumn: true)
+        ], autosaveName: autosaveName, showsIconsInFirstColumn: true)
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         table.tableColumns.first { $0.identifier.rawValue == "path" }?.minWidth = 120
         super.init(nibName: nil, bundle: nil)
@@ -124,24 +125,24 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
                     String(process.id.pid),
                     UIFormat.ownerName(process.ownerUID),
                     process.parentIdentity.map { String($0.pid) } ?? "—",
-                    process.executablePath ?? "Unavailable",
                     UIFormat.metric(process.cpuPercent),
                     UIFormat.metric(process.memoryBytes),
                     "R \(UIFormat.metric(process.diskReadBytesPerSecond)) · W \(UIFormat.metric(process.diskWriteBytesPerSecond))",
                     UIFormat.metric(network),
-                    UIFormat.metric(gpu)
+                    UIFormat.metric(gpu),
+                    process.executablePath ?? "Unavailable"
                 ],
                 sortKeys: [
                     .text(process.name),
                     .number(Double(process.id.pid)),
                     .text(UIFormat.ownerName(process.ownerUID)),
                     .numeric(process.parentIdentity.map { Double($0.pid) }),
-                    .text(process.executablePath ?? "Unavailable"),
                     .numeric(process.cpuPercent.value),
                     .numeric(process.memoryBytes.value),
                     diskSortKey,
                     .numeric(network.value),
-                    .numeric(gpu.value)
+                    .numeric(gpu.value),
+                    .text(process.executablePath ?? "Unavailable")
                 ],
                 icon: AppIconProvider.icon(forBundlePath: DetailsPresentation.appBundlePath(forExecutable: process.executablePath))
             )

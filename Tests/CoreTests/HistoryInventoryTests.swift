@@ -99,21 +99,101 @@ final class HistoryInventoryTests: XCTestCase {
     }
 
     func testMissingValuesStayUnavailableAndPartialTotalsAreMarked() {
-        XCTAssertEqual(AppHistoryBuilder.totalText([nil, nil], unit: .bytes, gapCount: 0), "Unavailable")
-        XCTAssertEqual(AppHistoryBuilder.totalText([nil, nil], unit: .bytes, gapCount: 2), "Unavailable · 2 gap(s)")
+        let unmeasured = AppHistoryBuilder.totalText([nil, nil], unit: .bytes, gapCount: 0)
+        XCTAssertEqual(unmeasured, AppHistoryCellText(display: "Unavailable", detail: nil))
+
+        let unmeasuredWithGaps = AppHistoryBuilder.totalText([nil, nil], unit: .bytes, gapCount: 2)
+        XCTAssertEqual(unmeasuredWithGaps, AppHistoryCellText(display: "Unavailable", detail: "No measured value; 2 gap(s)"))
 
         let partial = AppHistoryBuilder.totalText([1_024, nil], unit: .bytes, gapCount: 0)
-        XCTAssertTrue(partial.hasPrefix("Measured "))
-        XCTAssertTrue(partial.hasSuffix("· partial"))
+        XCTAssertTrue(partial.display.hasPrefix("≥ "), partial.display)
+        XCTAssertFalse(partial.display.contains("partial"))
+        XCTAssertEqual(partial.detail?.hasPrefix("Measured "), true)
+        XCTAssertEqual(partial.detail?.contains("partial"), true)
+        XCTAssertEqual(partial.detail?.contains("1 day(s) not measured"), true)
 
         let complete = AppHistoryBuilder.totalText([1_024, 2_048], unit: .bytes, gapCount: 0)
-        XCTAssertFalse(complete.contains("partial"))
-        XCTAssertFalse(complete.hasPrefix("Measured"))
+        XCTAssertFalse(complete.display.hasPrefix("≥"))
+        XCTAssertFalse(complete.display.contains("partial"))
+        XCTAssertNil(complete.detail)
 
-        XCTAssertEqual(AppHistoryBuilder.dailyText(nil, unit: .seconds, gaps: 1), "Missing · 1 gap(s)")
-        XCTAssertEqual(AppHistoryBuilder.dailyText(nil, unit: .seconds, gaps: 0), "Unavailable")
+        XCTAssertEqual(AppHistoryBuilder.dailyText(nil, unit: .seconds, gaps: 1),
+                       AppHistoryCellText(display: "Missing", detail: "No measured value; 1 gap(s)"))
+        XCTAssertEqual(AppHistoryBuilder.dailyText(nil, unit: .seconds, gaps: 0),
+                       AppHistoryCellText(display: "Unavailable", detail: nil))
+        let partialDay = AppHistoryBuilder.dailyText(108, unit: .seconds, gaps: 1)
+        XCTAssertTrue(partialDay.display.hasPrefix("≥ "), partialDay.display)
+        XCTAssertEqual(partialDay.detail?.contains("partial"), true)
         XCTAssertNil(AppHistoryBuilder.sumOfMeasured([nil, nil]))
         XCTAssertEqual(AppHistoryBuilder.sumOfMeasured([1, nil, 2]), 3)
+    }
+
+    func testPartialTotalKeepsTheNumberVisibleAndExplainsItInTooltipAndAccessibility() {
+        let text = AppHistoryBuilder.totalText([108], unit: .seconds, gapCount: 1)
+        let number = UIFormat.metric(MetricReading(value: 108, unit: .seconds, timestamp: .distantPast))
+        XCTAssertEqual(number, "108.0 s")
+        XCTAssertEqual(text.display, "≥ 108.0 s")
+
+        let detail = try! XCTUnwrap(text.detail)
+        XCTAssertEqual(detail, "Measured 108.0 s; partial — 1 gap(s); actual total may be higher")
+        XCTAssertFalse(text.display.contains("Measured"))
+        XCTAssertFalse(text.display.contains("·"))
+
+        // Partial day rows follow the same rule.
+        let day = AppHistoryBuilder.dailyText(108, unit: .seconds, gaps: 1)
+        XCTAssertEqual(day.display, "≥ 108.0 s")
+        XCTAssertEqual(day.detail, "Measured 108.0 s; partial — 1 gap(s) on this day; actual value may be higher")
+
+        // Row wiring: the detail is exposed per column and the visible text stays the compact form.
+        let appRow = AppHistoryRow(
+            id: "history.total.editor",
+            values: ["Editor", text.display, "", "", "", "", "1 / 1 / 0"],
+            details: [nil, text.detail, nil, nil, nil, nil, nil],
+            numbers: [nil, 108, nil, nil, nil, nil, 1]
+        )
+        XCTAssertEqual(appRow.detail(.cpu), detail)
+        XCTAssertNil(appRow.detail(.application))
+    }
+
+    func testPartialTotalsFitTheCpuColumnAtTheCellFont() {
+        let column = AppHistoryColumn.cpu
+        let available = column.width - AppHistoryColumn.cellLeadingInset - AppHistoryColumn.cellTrailingInset
+        let samples: [(Double, MetricUnit)] = [(0.5, .seconds), (108, .seconds), (9_999.9, .seconds), (999.9, .seconds)]
+        for (value, unit) in samples {
+            let text = AppHistoryBuilder.totalText([value], unit: unit, gapCount: 1).display
+            let width = NSAttributedString(string: text, attributes: [.font: column.cellFont]).size().width
+            XCTAssertLessThanOrEqual(width, available, "\"\(text)\" needs \(width)pt, column allows \(available)pt")
+        }
+        let worst = AppHistoryBuilder.totalText([9_999.9], unit: .seconds, gapCount: 1).display
+        let worstNumber = UIFormat.metric(MetricReading(value: 9_999.9, unit: .seconds, timestamp: .distantPast))
+        XCTAssertEqual(worst, "≥ \(worstNumber)")
+    }
+
+    func testNumericHistoryCellsMeetTheTrailingInsetUnderTheirRightAlignedHeader() throws {
+        let values = ["Safari", "≥ 108.0 s", "1 MB", "2 MB", "3 MB", "4 MB", "2 samples"]
+        let total = AppHistoryRow(id: "history.total.safari", values: values,
+                                  numbers: [nil, 108, 1, 2, 3, 4, 2])
+        let group = AppHistoryGroup(total: total, executablePath: nil, days: [])
+        let controller = AppHistoryOutlineController(autosaveName: nil)
+        controller.scrollView.frame = NSRect(x: 0, y: 0, width: 1000, height: 300)
+        controller.update(groups: [group])
+        controller.scrollView.layoutSubtreeIfNeeded()
+
+        let outline = try XCTUnwrap(controller.scrollView.documentView as? NSOutlineView)
+        let cpuIndex = try XCTUnwrap(outline.tableColumns.firstIndex { $0.identifier.rawValue == AppHistoryColumn.cpu.rawValue })
+        let cell = try XCTUnwrap(outline.view(atColumn: cpuIndex, row: 0, makeIfNecessary: true) as? NSTableCellView)
+        cell.layoutSubtreeIfNeeded()
+        let label = try XCTUnwrap(textFields(in: cell).first { $0.accessibilityIdentifier() == "history.total.safari.cpu" })
+        let labelFrame = label.convert(label.bounds, to: cell)
+
+        XCTAssertEqual(label.stringValue, "≥ 108.0 s")
+        XCTAssertEqual(label.alignment, .right)
+        // A bezel-less label's frame extends about 2 pt beyond its drawn text on each side, so allow 3 pt.
+        XCTAssertEqual(labelFrame.maxX, cell.bounds.width - AppHistoryColumn.cellTrailingInset, accuracy: 3,
+                       "a numeric value must end at the trailing inset, under its right-aligned header")
+        XCTAssertGreaterThanOrEqual(labelFrame.width,
+                                    cell.bounds.width - AppHistoryColumn.cellLeadingInset - AppHistoryColumn.cellTrailingInset - 4,
+                                    "a numeric value must fill the cell so its text reaches the trailing edge")
     }
 
     func testSortingUsesNumericValuesAndSendsUnavailableLast() {
@@ -184,5 +264,12 @@ final class HistoryInventoryTests: XCTestCase {
 
     private func date(_ iso: String) -> Date {
         ISO8601DateFormatter().date(from: iso)!
+    }
+
+    private func textFields(in view: NSView) -> [NSTextField] {
+        var found: [NSTextField] = []
+        if let field = view as? NSTextField { found.append(field) }
+        for subview in view.subviews { found += textFields(in: subview) }
+        return found
     }
 }

@@ -205,7 +205,9 @@ private final class PageHostViewController: NSViewController {
         case .history: return HistoryViewController(dependencies: context)
         case .startup: return InventoryViewController(kind: .startup, dependencies: context)
         case .users: return UsersViewController()
-        case .details: return DetailsViewController()
+        case .details:
+            // Fixture launches keep column layout out of the app's real defaults domain.
+            return context.fixtureMode ? DetailsViewController(autosaveName: nil) : DetailsViewController()
         case .services: return InventoryViewController(kind: .services, dependencies: context)
         case .settings: return SettingsViewController(dependencies: context)
         }

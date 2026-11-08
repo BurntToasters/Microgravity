@@ -84,6 +84,110 @@ final class WindowTests: XCTestCase {
                        "Menu navigation must preserve the user's current window frame too.")
     }
 
+    func testMainWindowKeepsExactFramesAcrossNavigationAndAppearanceChanges() {
+        // Sets NSApp.appearance directly so the test never writes the app defaults domain.
+        let savedNSAppearance = NSApp.appearance
+        addTeardownBlock { NSApp.appearance = savedNSAppearance }
+
+        let custom = MainWindowController(dependencies: makeDependencies(), frameAutosaveName: nil)
+        let customWindow = try! XCTUnwrap(custom.window)
+        custom.showWindow(nil)
+        let customFrame = NSRect(x: 105, y: 115, width: 1100, height: 700)
+        customWindow.setFrame(customFrame, display: false)
+        assertFrameSurvivesInteractions(custom, expected: customFrame)
+        customWindow.close()
+
+        let minimum = MainWindowController(dependencies: makeDependencies(), frameAutosaveName: nil,
+                                           initialContentSize: MainWindowController.minimumContentSize)
+        let minimumWindow = try! XCTUnwrap(minimum.window)
+        minimum.showWindow(nil)
+        settle(minimumWindow)
+        XCTAssertEqual(minimumWindow.frame.size, NSSize(width: 960, height: 600))
+        assertFrameSurvivesInteractions(minimum, expected: minimumWindow.frame)
+        minimumWindow.close()
+    }
+
+    func testMinimumWindowReexpandsToCustomFrame() {
+        let controller = MainWindowController(dependencies: makeDependencies(), frameAutosaveName: nil,
+                                              initialContentSize: MainWindowController.minimumContentSize)
+        let window = try! XCTUnwrap(controller.window)
+        defer { window.close() }
+        controller.showWindow(nil)
+        settle(window)
+        XCTAssertEqual(window.contentRect(forFrameRect: window.frame).size, NSSize(width: 960, height: 600))
+
+        let expanded = NSRect(x: 105, y: 115, width: 1100, height: 700)
+        window.setFrame(expanded, display: false)
+        settle(window)
+        XCTAssertEqual(window.frame, expanded, "Growing back from the minimum must keep the requested frame.")
+        XCTAssertEqual(window.contentRect(forFrameRect: window.frame).size, NSSize(width: 1100, height: 700))
+    }
+
+    func testFixtureContentSizeParserAcceptsValidSizesAndRejectsMalformedOrSmallValues() {
+        XCTAssertEqual(MainWindowController.parseFixtureContentSize("960x600"), NSSize(width: 960, height: 600))
+        XCTAssertEqual(MainWindowController.parseFixtureContentSize("1100x700"), NSSize(width: 1100, height: 700))
+
+        for value in ["", "960", "960x", "x600", "960x600x1", "960X600", "960*600", "960.5x600",
+                      " 960x600", "+960x600", "-960x600", "abcxdef", "959x600", "960x599", "600x960"] {
+            XCTAssertNil(MainWindowController.parseFixtureContentSize(value), "Accepted malformed size \(value)")
+        }
+
+        XCTAssertEqual(MainWindowController.fixtureContentSize(fromArguments: [
+            "--ui-test-fixtures", "--ui-test-window-content-size=1100x700"
+        ]), NSSize(width: 1100, height: 700))
+        XCTAssertNil(MainWindowController.fixtureContentSize(fromArguments: ["--ui-test-fixtures"]))
+        XCTAssertNil(MainWindowController.fixtureContentSize(fromArguments: ["--ui-test-window-content-size=900x600"]))
+    }
+
+    func testWindowOpenedAtMinimumInitialContentSizeHasExactContentFrameAndConstraints() {
+        let controller = MainWindowController(dependencies: makeDependencies(), frameAutosaveName: nil,
+                                              initialContentSize: MainWindowController.minimumContentSize)
+        let window = try! XCTUnwrap(controller.window)
+        defer { window.close() }
+        controller.showWindow(nil)
+        settle(window)
+
+        XCTAssertEqual(window.contentRect(forFrameRect: window.frame).size, NSSize(width: 960, height: 600))
+        XCTAssertEqual(window.frame.size, NSSize(width: 960, height: 600))
+        XCTAssertTrue(window.styleMask.contains(.resizable))
+        XCTAssertEqual(window.contentMinSize, NSSize(width: 960, height: 600))
+    }
+
+    /// Runs the same frame-preserving interactions the app performs: sidebar selection, menu navigation, and appearance.
+    private func assertFrameSurvivesInteractions(_ controller: MainWindowController, expected: NSRect) {
+        let window = try! XCTUnwrap(controller.window)
+        for page in DashboardPage.allCases {
+            controller.root.select(page)
+            settle(window)
+            XCTAssertEqual(window.frame, expected, "Sidebar selection of \(page) changed the window frame.")
+        }
+
+        for (index, page) in DashboardPage.allCases.enumerated() {
+            let menuItem = NSMenuItem()
+            menuItem.tag = index
+            controller.showPage(menuItem)
+            settle(window)
+            XCTAssertEqual(window.frame, expected, "Menu navigation to \(page) changed the window frame.")
+        }
+
+        let appearances: [(name: String, appearance: NSAppearance?)] = [
+            ("light", NSAppearance(named: .aqua)),
+            ("dark", NSAppearance(named: .darkAqua)),
+            ("system", nil)
+        ]
+        for (value, appearance) in appearances {
+            NSApp.appearance = appearance
+            settle(window)
+            XCTAssertEqual(window.frame, expected, "Switching to \(value) appearance changed the window frame.")
+        }
+    }
+
+    private func settle(_ window: NSWindow) {
+        window.contentView?.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+    }
+
     private func makeDependencies() -> AppDependencies {
         let configuration = FixtureConfiguration(arguments: [])
         return AppDependencies(

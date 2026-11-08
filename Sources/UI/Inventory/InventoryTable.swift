@@ -15,7 +15,7 @@ final class InventoryTableController: NSObject, NSTableViewDataSource, NSTableVi
     /// Fires with the selected row ID, or nil when the selection is cleared.
     var onSelectionChanged: ((String?) -> Void)?
 
-    init(identifier: String, autosaveName: String, accessibilityLabel: String) {
+    init(identifier: String, autosaveName: String?, accessibilityLabel: String) {
         let table = NSTableView()
         table.setAccessibilityIdentifier(identifier)
         table.setAccessibilityLabel(accessibilityLabel)
@@ -28,8 +28,10 @@ final class InventoryTableController: NSObject, NSTableViewDataSource, NSTableVi
         table.intercellSpacing = .zero
         table.gridStyleMask = []
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
-        table.autosaveName = autosaveName
-        table.autosaveTableColumns = true
+        if let autosaveName {
+            table.autosaveName = autosaveName
+            table.autosaveTableColumns = true
+        }
         table.headerView?.setAccessibilityIdentifier(identifier + ".header")
         for column in InventoryColumn.allCases {
             let tableColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(column.rawValue))

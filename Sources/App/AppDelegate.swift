@@ -47,10 +47,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         windowController = MainWindowController(
             dependencies: dependencies,
             frameAutosaveName: frameAutosaveName,
-            identifiesFixtureVisualWindow: isVisualFixtureRun
+            identifiesFixtureVisualWindow: isVisualFixtureRun,
+            initialContentSize: Self.fixtureWindowContentSize(fixtureMode: dependencies.fixtureMode)
         )
         windowController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Fixture-only initial size for the minimum-size visual matrix. The window still goes through the production sizing path.
+    private static func fixtureWindowContentSize(fixtureMode: Bool) -> NSSize? {
+        #if DEBUG
+        guard fixtureMode else { return nil }
+        return MainWindowController.fixtureContentSize(fromArguments: ProcessInfo.processInfo.arguments)
+        #else
+        return nil
+        #endif
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

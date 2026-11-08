@@ -35,6 +35,23 @@ enum AppHistoryColumn: String, CaseIterable {
 
     /// Position in `AppHistoryRow.values` and `AppHistoryRow.numbers`.
     var index: Int { Self.allCases.firstIndex(of: self) ?? 0 }
+
+    /// Font the cell label draws with: monospaced digits for numeric columns.
+    var cellFont: NSFont {
+        isNumeric ? .monospacedDigitSystemFont(ofSize: 12, weight: .regular) : .systemFont(ofSize: 12)
+    }
+
+    /// Space the cell keeps around its label (see `AppHistoryCellView`).
+    static let cellLeadingInset: CGFloat = 4
+    static let cellTrailingInset: CGFloat = 8
+}
+
+/// Visible text for one cell, with the explanation kept out of the visible string.
+struct AppHistoryCellText: Equatable {
+    /// Compact text shown in the cell. Partial values lead with "≥" so the number stays readable in a narrow column.
+    let display: String
+    /// Tooltip and accessibility text explaining `display`, or nil when `display` says everything.
+    let detail: String?
 }
 
 /// One outline row: an application total or one day of an application.
@@ -43,10 +60,23 @@ struct AppHistoryRow: Equatable {
     let id: String
     /// Display text per column, indexed by `AppHistoryColumn.index`. Index 0 is the application or day title.
     let values: [String]
+    /// Tooltip and accessibility text per column, index-aligned with `values`. Nil entries mean no extra detail.
+    let details: [String?]
     /// Numeric sort value per column (nil = unavailable, sorts last). Index 0 is unused.
     let numbers: [Double?]
 
+    init(id: String, values: [String], details: [String?] = [], numbers: [Double?]) {
+        self.id = id
+        self.values = values
+        self.details = details
+        self.numbers = numbers
+    }
+
     var title: String { values[0] }
+
+    func detail(_ column: AppHistoryColumn) -> String? {
+        details.indices.contains(column.index) ? details[column.index] : nil
+    }
 }
 
 /// One application: its total row and per-day rows, newest day first.
@@ -105,17 +135,17 @@ enum AppHistoryBuilder {
             let gaps = records.reduce(0) { $0 + $1.gaps }
             let resets = records.reduce(0) { $0 + $1.counterResets }
             let samples = records.reduce(0) { $0 + $1.sampleCount }
+            let totals: [AppHistoryCellText] = [
+                totalText(records.map(\.cpuSeconds), unit: .seconds, gapCount: gaps),
+                totalText(records.map { $0.diskReadBytes.map(Double.init) }, unit: .bytes, gapCount: gaps),
+                totalText(records.map { $0.diskWriteBytes.map(Double.init) }, unit: .bytes, gapCount: gaps),
+                totalText(records.map { $0.networkReceiveBytes.map(Double.init) }, unit: .bytes, gapCount: gaps),
+                totalText(records.map { $0.networkTransmitBytes.map(Double.init) }, unit: .bytes, gapCount: gaps)
+            ]
             let total = AppHistoryRow(
                 id: "history.total.\(applicationSlug)\(suffix)",
-                values: [
-                    application.name,
-                    totalText(records.map(\.cpuSeconds), unit: .seconds, gapCount: gaps),
-                    totalText(records.map { $0.diskReadBytes.map(Double.init) }, unit: .bytes, gapCount: gaps),
-                    totalText(records.map { $0.diskWriteBytes.map(Double.init) }, unit: .bytes, gapCount: gaps),
-                    totalText(records.map { $0.networkReceiveBytes.map(Double.init) }, unit: .bytes, gapCount: gaps),
-                    totalText(records.map { $0.networkTransmitBytes.map(Double.init) }, unit: .bytes, gapCount: gaps),
-                    "\(samples) / \(gaps) / \(resets)"
-                ],
+                values: [application.name] + totals.map(\.display) + ["\(samples) / \(gaps) / \(resets)"],
+                details: [nil] + totals.map(\.detail) + [nil],
                 numbers: [
                     nil,
                     sumOfMeasured(records.map(\.cpuSeconds)),
@@ -135,17 +165,17 @@ enum AppHistoryBuilder {
                 let write = record.diskWriteBytes.map(Double.init)
                 let receive = record.networkReceiveBytes.map(Double.init)
                 let transmit = record.networkTransmitBytes.map(Double.init)
+                let texts: [AppHistoryCellText] = [
+                    dailyText(record.cpuSeconds, unit: .seconds, gaps: record.gaps),
+                    dailyText(read, unit: .bytes, gaps: record.gaps),
+                    dailyText(write, unit: .bytes, gaps: record.gaps),
+                    dailyText(receive, unit: .bytes, gaps: record.gaps),
+                    dailyText(transmit, unit: .bytes, gaps: record.gaps)
+                ]
                 return AppHistoryRow(
                     id: id,
-                    values: [
-                        day,
-                        dailyText(record.cpuSeconds, unit: .seconds, gaps: record.gaps),
-                        dailyText(read, unit: .bytes, gaps: record.gaps),
-                        dailyText(write, unit: .bytes, gaps: record.gaps),
-                        dailyText(receive, unit: .bytes, gaps: record.gaps),
-                        dailyText(transmit, unit: .bytes, gaps: record.gaps),
-                        "\(record.sampleCount) / \(record.gaps) / \(record.counterResets)"
-                    ],
+                    values: [day] + texts.map(\.display) + ["\(record.sampleCount) / \(record.gaps) / \(record.counterResets)"],
+                    details: [nil] + texts.map(\.detail) + [nil],
                     numbers: [
                         nil,
                         record.cpuSeconds,
@@ -166,23 +196,40 @@ enum AppHistoryBuilder {
         )
     }
 
-    /// Total for an application across days. Missing days or gaps make the total partial; all-missing stays "Unavailable".
-    static func totalText(_ values: [Double?], unit: MetricUnit, gapCount: Int) -> String {
+    /// Total for an application across days. Missing days or gaps make the total a partial lower bound: the
+    /// number leads with "≥" and the reasons go to `detail`. All-missing stays "Unavailable", never zero.
+    static func totalText(_ values: [Double?], unit: MetricUnit, gapCount: Int) -> AppHistoryCellText {
         let present = values.compactMap { $0 }.filter { $0.isFinite }
         guard !present.isEmpty else {
-            return gapCount > 0 ? "Unavailable · \(gapCount) gap(s)" : "Unavailable"
+            return AppHistoryCellText(display: "Unavailable",
+                                      detail: gapCount > 0 ? "No measured value; \(gapCount) gap(s)" : nil)
         }
         let formatted = UIFormat.metric(MetricReading(value: present.reduce(0, +), unit: unit, timestamp: .distantPast))
-        let partial = values.contains(where: { $0 == nil }) || gapCount > 0
-        return partial ? "Measured \(formatted) · partial" : formatted
+        let missingDays = values.filter { $0 == nil }.count
+        guard missingDays > 0 || gapCount > 0 else {
+            return AppHistoryCellText(display: formatted, detail: nil)
+        }
+        var reasons: [String] = []
+        if missingDays > 0 { reasons.append("\(missingDays) day(s) not measured") }
+        if gapCount > 0 { reasons.append("\(gapCount) gap(s)") }
+        return AppHistoryCellText(
+            display: "≥ \(formatted)",
+            detail: "Measured \(formatted); partial — \(reasons.joined(separator: ", ")); actual total may be higher"
+        )
     }
 
-    static func dailyText(_ value: Double?, unit: MetricUnit, gaps: Int) -> String {
+    /// One day of an application. Gaps on the day make the value a partial lower bound, shown with "≥".
+    static func dailyText(_ value: Double?, unit: MetricUnit, gaps: Int) -> AppHistoryCellText {
         guard let value, value.isFinite else {
-            return gaps > 0 ? "Missing · \(gaps) gap(s)" : "Unavailable"
+            return AppHistoryCellText(display: gaps > 0 ? "Missing" : "Unavailable",
+                                      detail: gaps > 0 ? "No measured value; \(gaps) gap(s)" : nil)
         }
         let formatted = UIFormat.metric(MetricReading(value: value, unit: unit, timestamp: .distantPast))
-        return gaps > 0 ? "\(formatted) · partial" : formatted
+        guard gaps > 0 else { return AppHistoryCellText(display: formatted, detail: nil) }
+        return AppHistoryCellText(
+            display: "≥ \(formatted)",
+            detail: "Measured \(formatted); partial — \(gaps) gap(s) on this day; actual value may be higher"
+        )
     }
 
     /// Sum of the finite measured values, or nil when none were measured.

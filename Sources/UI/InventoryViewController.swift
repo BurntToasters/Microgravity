@@ -52,11 +52,16 @@ final class InventoryViewController: NSViewController, SnapshotUpdating, PageToo
         NSToolbarItem.Identifier("\(kind.pageIdentifier).toolbar.login-items")
     }
 
+    /// Fixture launches get no autosave name so UI tests never read or write the app's real column state.
+    static func tableAutosaveName(for kind: InventoryKind, fixtureMode: Bool) -> String? {
+        fixtureMode ? nil : "\(kind.pageIdentifier).table"
+    }
+
     init(kind: InventoryKind, dependencies: PageDependencies) {
         self.kind = kind
         self.dependencies = dependencies
         table = InventoryTableController(identifier: "\(kind.pageIdentifier).table",
-                                         autosaveName: "\(kind.pageIdentifier).table",
+                                         autosaveName: Self.tableAutosaveName(for: kind, fixtureMode: dependencies.fixtureMode),
                                          accessibilityLabel: kind.title)
         super.init(nibName: nil, bundle: nil)
         table.onSelectionChanged = { [weak self] rowID in

@@ -268,6 +268,35 @@ final class AccessibleTableTests: XCTestCase {
         XCTAssertEqual(badge.stringValue, "You")
     }
 
+    func testRightAlignedValuesFillTheCellAndLeftAlignedValuesMeetTheLeadingInset() throws {
+        let (table, _) = makeHostedTable()
+        let model = AccessibleTableModel(table: table, columns: [
+            TableColumnSpec("name", "Name", width: 200),
+            TableColumnSpec("cpu", "CPU", width: 200, alignment: .right)
+        ])
+        // A short value: with intrinsic-width layout it would sit at the leading edge, far from the trailing inset.
+        model.replaceRows([AccessibleTableRow(id: "a", values: ["A", "3"])], in: table)
+        table.layoutSubtreeIfNeeded()
+
+        let nameCell = try XCTUnwrap(table.view(atColumn: 0, row: 0, makeIfNecessary: true) as? NSTableCellView)
+        let cpuCell = try XCTUnwrap(table.view(atColumn: 1, row: 0, makeIfNecessary: true) as? NSTableCellView)
+        nameCell.layoutSubtreeIfNeeded()
+        cpuCell.layoutSubtreeIfNeeded()
+        let nameLabel = try XCTUnwrap(textFields(in: nameCell).first { $0.accessibilityIdentifier() == "a.name" })
+        let cpuLabel = try XCTUnwrap(textFields(in: cpuCell).first { $0.accessibilityIdentifier() == "a.cpu" })
+        let nameFrame = nameLabel.convert(nameLabel.bounds, to: nameCell)
+        let cpuFrame = cpuLabel.convert(cpuLabel.bounds, to: cpuCell)
+
+        // A bezel-less label's frame extends about 2 pt beyond its drawn text on each side, so allow 3 pt.
+        XCTAssertEqual(cpuLabel.alignment, .right)
+        XCTAssertEqual(cpuFrame.maxX, cpuCell.bounds.width - 8, accuracy: 3,
+                       "a right-aligned value must end at the trailing inset, under its right-aligned header")
+        XCTAssertGreaterThanOrEqual(cpuFrame.width, cpuCell.bounds.width - 8 - 8 - 4,
+                                    "a right-aligned value must fill the cell so its text reaches the trailing edge")
+        XCTAssertEqual(nameFrame.minX, 8, accuracy: 3,
+                       "a left-aligned value must start at the leading inset")
+    }
+
     private func makeHostedTable() -> (RecordingTableView, NSScrollView) {
         let table = RecordingTableView(frame: NSRect(x: 0, y: 0, width: 480, height: 200))
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 480, height: 200))

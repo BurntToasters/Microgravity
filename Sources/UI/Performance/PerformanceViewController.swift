@@ -12,22 +12,22 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating, PageT
     private let dependencies: PageDependencies
     private let rail = MetricRailView()
     private let detail = MetricDetailViewController()
-    private let pauseButton = NSButton(title: "Pause", target: nil, action: nil)
+    private let pauseButton = NSButton(title: String(localized: "Pause"), target: nil, action: nil)
     private let refreshPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
     private lazy var pauseItem: NSToolbarItem = {
         let item = NSToolbarItem(itemIdentifier: PerformanceViewController.pauseItemIdentifier)
         item.view = self.pauseButton
-        item.label = "Pause"
-        item.paletteLabel = "Pause Sampling"
-        item.toolTip = "Pause or resume sampling"
+        item.label = String(localized: "Pause")
+        item.paletteLabel = String(localized: "Pause Sampling")
+        item.toolTip = String(localized: "Pause or resume sampling")
         return item
     }()
     private lazy var refreshItem: NSToolbarItem = {
         let item = NSToolbarItem(itemIdentifier: PerformanceViewController.refreshItemIdentifier)
         item.view = self.refreshPopUp
-        item.label = "Refresh Interval"
-        item.paletteLabel = "Refresh Interval"
-        item.toolTip = "How often Microgravity samples the system"
+        item.label = String(localized: "Refresh Interval")
+        item.paletteLabel = String(localized: "Refresh Interval")
+        item.toolTip = String(localized: "How often Microgravity samples the system")
         return item
     }()
 
@@ -47,8 +47,8 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating, PageT
         refreshPopUp.target = self
         refreshPopUp.action = #selector(changeRefreshInterval(_:))
         refreshPopUp.setAccessibilityIdentifier("performance.refresh-interval")
-        refreshPopUp.setAccessibilityLabel("Refresh interval")
-        refreshPopUp.toolTip = "How often Microgravity samples the system"
+        refreshPopUp.setAccessibilityLabel(String(localized: "Refresh interval"))
+        refreshPopUp.toolTip = String(localized: "How often Microgravity samples the system")
         // Settings and the sidebar footer change sampling too; keep the toolbar in step without waiting for a snapshot.
         NotificationCenter.default.addObserver(self, selector: #selector(samplingStateChanged),
                                                name: .samplingStateDidChange, object: nil)
@@ -60,8 +60,8 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating, PageT
         let page = DynamicWindowBackgroundView()
         view = page
 
-        let header = UIComponents.header(title: "Performance", subtitle: "")
-        header.toolTip = "Live resource use. Gaps mark paused or missed samples; unavailable metrics are never drawn as zero."
+        let header = UIComponents.header(title: String(localized: "Performance"), subtitle: "")
+        header.toolTip = String(localized: "Live resource use. Gaps mark paused or missed samples; unavailable metrics are never drawn as zero.")
         rail.translatesAutoresizingMaskIntoConstraints = false
         rail.onSelect = { [weak self] metric in self?.selectMetric(metric) }
         detail.onWindowChange = { [weak self] window in
@@ -140,7 +140,7 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating, PageT
 
     private func syncToolbar() {
         let store = dependencies.monitoringStore
-        let title = store.isPaused ? "Resume" : "Pause"
+        let title = store.isPaused ? String(localized: "Resume") : String(localized: "Pause")
         pauseButton.title = title
         pauseItem.label = title
         if let index = MonitoringInterval.allCases.firstIndex(of: store.interval) {
@@ -179,16 +179,16 @@ struct ThroughputGraphPresentation {
          secondName: String, second: MetricReading, secondHistory: [MetricReading]) {
         firstValueText = "\(firstName): \(UIFormat.metric(first))"
         secondValueText = "\(secondName): \(UIFormat.metric(second))"
-        firstAccessibilityLabel = "Current \(subjectName) \(firstName) throughput"
-        secondAccessibilityLabel = "Current \(subjectName) \(secondName) throughput"
+        firstAccessibilityLabel = String(localized: "Current \(subjectName) \(firstName) throughput")
+        secondAccessibilityLabel = String(localized: "Current \(subjectName) \(secondName) throughput")
         scaleAccessibilityLabel = "\(graphName) graph scale maximum"
 
         let values = (firstHistory + secondHistory).compactMap(\.value).filter { $0.isFinite && $0 >= 0 }
         graphMaximum = Self.niceMaximum(max(values.max() ?? 1, 0.0001))
         scaleText = values.isEmpty
-            ? "Scale maximum: no data"
-            : "Scale maximum: \(UIFormat.bytesPerSecond(graphMaximum))"
-        let current = "Current \(firstName): \(UIFormat.metric(first)); current \(secondName): \(UIFormat.metric(second))"
+            ? String(localized: "Scale maximum: no data")
+            : String(localized: "Scale maximum: \(UIFormat.bytesPerSecond(graphMaximum))")
+        let current = String(localized: "Current \(firstName): \(UIFormat.metric(first)); current \(secondName): \(UIFormat.metric(second))")
         accessibilitySummary = values.isEmpty
             ? "\(graphName) graph. No graph samples have available data. \(current). Scale maximum: no data."
             : "\(graphName) graph. \(current). \(scaleText)."

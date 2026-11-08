@@ -14,7 +14,7 @@ enum UIFormat {
         }
         guard reading.isPartial else { return formatted }
         let detail = reading.detail.flatMap { $0.isEmpty ? nil : $0 }
-        return [formatted, "partial", detail].compactMap { $0 }.joined(separator: " · ")
+        return [formatted, String(localized: "partial"), detail].compactMap { $0 }.joined(separator: " · ")
     }
 
     /// The number and unit only (no partial suffix, no reason). Nil when the reading has no finite value.
@@ -53,13 +53,13 @@ enum UIFormat {
 
     /// Locale-correct percentage for a value on the 0...100 scale (`42.5` becomes "42.5%").
     static func percent(_ value: Double) -> String {
-        guard value.isFinite else { return "Unavailable" }
+        guard value.isFinite else { return String(localized: "Unavailable") }
         return percentFormatter.string(from: NSNumber(value: value / 100)) ?? "\(value)%"
     }
 
     /// Throughput in decimal units (KB = 1000 bytes), matching Activity Monitor.
     static func bytesPerSecond(_ value: Double) -> String {
-        guard value.isFinite else { return "Unavailable" }
+        guard value.isFinite else { return String(localized: "Unavailable") }
         let count = throughputFormatter.string(fromByteCount: boundedInt64(value))
         return "\(count)/s"
     }
@@ -67,16 +67,16 @@ enum UIFormat {
     static func unavailable(_ reason: MetricUnavailableReason?, detail: String? = nil) -> String {
         let text: String
         switch reason {
-        case .warmingUp: text = "Warming up"
-        case .permissionDenied: text = "Permission denied"
-        case .unsupported: text = "Unsupported"
-        case .collectionFailed: text = "Collection failed"
-        case .processExited: text = "Process exited"
-        case .identityChanged: text = "Identity changed"
-        case .counterReset: text = "Counter reset"
-        case .sleepGap: text = "Sample gap"
-        case .notCollected: text = "Not collected"
-        case nil: text = "Unavailable"
+        case .warmingUp: text = String(localized: "Warming up")
+        case .permissionDenied: text = String(localized: "Permission denied")
+        case .unsupported: text = String(localized: "Unsupported")
+        case .collectionFailed: text = String(localized: "Collection failed")
+        case .processExited: text = String(localized: "Process exited")
+        case .identityChanged: text = String(localized: "Identity changed")
+        case .counterReset: text = String(localized: "Counter reset")
+        case .sleepGap: text = String(localized: "Sample gap")
+        case .notCollected: text = String(localized: "Not collected")
+        case nil: text = String(localized: "Unavailable")
         }
         guard let detail, !detail.isEmpty else { return text }
         // The helper's internal error code means nothing to a user; say what it stands for.
@@ -87,8 +87,8 @@ enum UIFormat {
     }
 
     static func availability(_ value: MetricAvailability?) -> String {
-        guard let value else { return "Unavailable · capability not reported" }
-        guard !value.available else { return "Available" }
+        guard let value else { return String(localized: "Unavailable · capability not reported") }
+        guard !value.available else { return String(localized: "Available") }
         return unavailable(value.reason, detail: value.detail)
     }
 
@@ -97,9 +97,9 @@ enum UIFormat {
     }
 
     static func ownerName(_ uid: UInt32?) -> String {
-        guard let uid else { return "Unavailable" }
+        guard let uid else { return String(localized: "Unavailable") }
         if let cached = ownerNameCache[uid] { return cached }
-        let name = uid == getuid() ? NSUserName() : (PasswordDatabase.name(for: uid) ?? "UID \(uid)")
+        let name = uid == getuid() ? NSUserName() : (PasswordDatabase.name(for: uid) ?? String(localized: "UID \(uid)"))
         ownerNameCache[uid] = name
         return name
     }

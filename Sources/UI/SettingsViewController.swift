@@ -7,9 +7,9 @@ private enum AppearanceMode: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .system: return "System"
-        case .light: return "Light"
-        case .dark: return "Dark"
+        case .system: return String(localized: "System")
+        case .light: return String(localized: "Light")
+        case .dark: return String(localized: "Dark")
         }
     }
 }
@@ -34,27 +34,27 @@ private final class FlippedDocumentView: NSView {
 @MainActor
 final class SettingsViewController: NSViewController {
     /// Matches the Performance page's caption: quit is limited to other standard users.
-    private static let helperPolicyCaption = "Lets you quit processes owned by other standard users. System and root processes stay protected."
+    private static let helperPolicyCaption = String(localized: "Lets you quit processes owned by other standard users. System and root processes stay protected.")
 
     private let dependencies: PageDependencies
     private let appearancePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
     private let intervalPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let samplingButton = NSButton(title: "Pause Sampling", target: nil, action: nil)
-    private let samplingState = UIComponents.label("Sampling is active", size: 11, color: .secondaryLabelColor)
-    private let resetHistoryButton = NSButton(title: "Reset App History…", target: nil, action: nil)
+    private let samplingButton = NSButton(title: String(localized: "Pause Sampling"), target: nil, action: nil)
+    private let samplingState = UIComponents.label(String(localized: "Sampling is active"), size: 11, color: .secondaryLabelColor)
+    private let resetHistoryButton = NSButton(title: String(localized: "Reset App History…"), target: nil, action: nil)
     private let helperDot = StatusDotView()
-    private let helperState = UIComponents.label("Checking helper status", size: 12)
-    private let helperButton = NSButton(title: "Set Up Helper…", target: nil, action: nil)
-    private let removeHelperButton = NSButton(title: "Remove Helper", target: nil, action: nil)
-    private let openHelperSettingsButton = NSButton(title: "Open System Settings…", target: nil, action: nil)
+    private let helperState = UIComponents.label(String(localized: "Checking helper status"), size: 12)
+    private let helperButton = NSButton(title: String(localized: "Set Up Helper…"), target: nil, action: nil)
+    private let removeHelperButton = NSButton(title: String(localized: "Remove Helper"), target: nil, action: nil)
+    private let openHelperSettingsButton = NSButton(title: String(localized: "Open System Settings…"), target: nil, action: nil)
     private let loginSwitch = NSSwitch()
     private let loginDot = StatusDotView()
-    private let loginItemState = UIComponents.label("Checking login item status", size: 12)
-    private let openLoginSettingsButton = NSButton(title: "Open Login Items Settings…", target: nil, action: nil)
+    private let loginItemState = UIComponents.label(String(localized: "Checking login item status"), size: 12)
+    private let openLoginSettingsButton = NSButton(title: String(localized: "Open Login Items Settings…"), target: nil, action: nil)
     private let updatesDot = StatusDotView()
-    private let updatesState = UIComponents.label("Checking update status", size: 12)
-    private let updateCheckButton = NSButton(title: "Check for Updates", target: nil, action: nil)
-    private let updateInstallButton = NSButton(title: "Install Update…", target: nil, action: nil)
+    private let updatesState = UIComponents.label(String(localized: "Checking update status"), size: 12)
+    private let updateCheckButton = NSButton(title: String(localized: "Check for Updates"), target: nil, action: nil)
+    private let updateInstallButton = NSButton(title: String(localized: "Install Update…"), target: nil, action: nil)
     private var appActivationObserver: NotificationObserverToken?
 
     init(dependencies: PageDependencies) {
@@ -69,7 +69,7 @@ final class SettingsViewController: NSViewController {
     override func loadView() {
         view = DynamicWindowBackgroundView()
 
-        let header = UIComponents.header(title: "Settings", subtitle: "Appearance, sampling, history, and optional integrations.")
+        let header = UIComponents.header(title: String(localized: "Settings"), subtitle: String(localized: "Appearance, sampling, history, and optional integrations."))
         let sections = [makeAppearanceSection(), makeSamplingSection(), makeIntegrationSection()]
         alignFormGrids()
         let content = NSStackView(views: [header] + sections)
@@ -137,10 +137,10 @@ final class SettingsViewController: NSViewController {
                        items: AppearanceMode.allCases.map { (title: $0.title, identifier: "settings.appearance.\($0.rawValue)") },
                        action: #selector(chooseAppearance(_:)),
                        identifier: "settings.appearance",
-                       label: "Appearance")
+                       label: String(localized: "Appearance"))
         let grid = makeFormGrid()
-        grid.addRow(with: [formLabel("Appearance:"), appearancePopUp])
-        return UIComponents.card(title: "Appearance", subtitle: "Follow macOS or choose a fixed appearance.",
+        grid.addRow(with: [formLabel(String(localized: "Appearance:")), appearancePopUp])
+        return UIComponents.card(title: String(localized: "Appearance"), subtitle: String(localized: "Follow macOS or choose a fixed appearance."),
                                  content: grid)
     }
 
@@ -149,7 +149,7 @@ final class SettingsViewController: NSViewController {
                        items: MonitoringInterval.allCases.map { (title: SamplingControls.longTitle($0), identifier: "settings.refresh.\(Self.intervalIdentifier($0))") },
                        action: #selector(chooseRefreshInterval(_:)),
                        identifier: "settings.refresh",
-                       label: "Refresh interval")
+                       label: String(localized: "Refresh interval"))
 
         samplingButton.target = self
         samplingButton.action = #selector(toggleSampling)
@@ -162,13 +162,13 @@ final class SettingsViewController: NSViewController {
         resetHistoryButton.setAccessibilityIdentifier("settings.history.reset")
 
         let grid = makeFormGrid()
-        grid.addRow(with: [formLabel("Refresh interval:"), intervalPopUp])
-        grid.addRow(with: [formLabel("Sampling:"), samplingRow])
-        let historyRow = grid.addRow(with: [formLabel("History:"), resetHistoryButton])
+        grid.addRow(with: [formLabel(String(localized: "Refresh interval:")), intervalPopUp])
+        grid.addRow(with: [formLabel(String(localized: "Sampling:")), samplingRow])
+        let historyRow = grid.addRow(with: [formLabel(String(localized: "History:")), resetHistoryButton])
         historyRow.topPadding = 12
-        grid.addRow(with: [NSGridCell.emptyContentView, caption("History is kept for 30 days.")])
-        return UIComponents.card(title: "Sampling and history",
-                                 subtitle: "Refresh cadence, pausing, and stored app history.",
+        grid.addRow(with: [NSGridCell.emptyContentView, caption(String(localized: "History is kept for 30 days."))])
+        return UIComponents.card(title: String(localized: "Sampling and history"),
+                                 subtitle: String(localized: "Refresh cadence, pausing, and stored app history."),
                                  content: grid)
     }
 
@@ -187,8 +187,8 @@ final class SettingsViewController: NSViewController {
         loginSwitch.target = self
         loginSwitch.action = #selector(toggleLoginItem(_:))
         loginSwitch.setAccessibilityIdentifier("settings.login-item.toggle")
-        loginSwitch.setAccessibilityLabel("Open at login")
-        loginSwitch.toolTip = "Start Microgravity when you log in"
+        loginSwitch.setAccessibilityLabel(String(localized: "Open at login"))
+        loginSwitch.toolTip = String(localized: "Start Microgravity when you log in")
         loginSwitch.isEnabled = false
         loginItemState.setAccessibilityIdentifier("settings.login-item.state")
         styleAsLinkButton(openLoginSettingsButton, identifier: "settings.login-item.open-settings")
@@ -205,17 +205,17 @@ final class SettingsViewController: NSViewController {
         updatesState.setAccessibilityIdentifier("settings.updates.state")
 
         let grid = makeFormGrid()
-        grid.addRow(with: [formLabel("Privileged helper:"), statusRow(helperDot, helperState, extra: openHelperSettingsButton)])
+        grid.addRow(with: [formLabel(String(localized: "Privileged helper:")), statusRow(helperDot, helperState, extra: openHelperSettingsButton)])
         grid.addRow(with: [NSGridCell.emptyContentView, caption(Self.helperPolicyCaption)])
         grid.addRow(with: [NSGridCell.emptyContentView, buttonRow([helperButton, removeHelperButton])])
-        let loginRow = grid.addRow(with: [formLabel("Open at login:"), loginSwitch])
+        let loginRow = grid.addRow(with: [formLabel(String(localized: "Open at login:")), loginSwitch])
         loginRow.topPadding = 12
         grid.addRow(with: [NSGridCell.emptyContentView, statusRow(loginDot, loginItemState, extra: openLoginSettingsButton)])
-        let updatesRow = grid.addRow(with: [formLabel("Software updates:"), statusRow(updatesDot, updatesState)])
+        let updatesRow = grid.addRow(with: [formLabel(String(localized: "Software updates:")), statusRow(updatesDot, updatesState)])
         updatesRow.topPadding = 12
         grid.addRow(with: [NSGridCell.emptyContentView, buttonRow([updateCheckButton, updateInstallButton])])
-        return UIComponents.card(title: "Optional integrations",
-                                 subtitle: "Optional features that need your approval in macOS.",
+        return UIComponents.card(title: String(localized: "Optional integrations"),
+                                 subtitle: String(localized: "Optional features that need your approval in macOS."),
                                  content: grid)
     }
 
@@ -365,9 +365,9 @@ final class SettingsViewController: NSViewController {
             let response = await SheetAlert.present(
                 on: view.window,
                 style: .warning,
-                messageText: "Reset App History",
-                informativeText: "This clears Microgravity’s stored 30-day aggregate history. It does not change process or operating-system state.",
-                buttons: ["Reset History", "Cancel"],
+                messageText: String(localized: "Reset App History"),
+                informativeText: String(localized: "This clears Microgravity’s stored 30-day aggregate history. It does not change process or operating-system state."),
+                buttons: [String(localized: "Reset History"), String(localized: "Cancel")],
                 defaultButtonIdentifier: "settings.history.reset.confirm",
                 destructiveButtonIndex: 0
             )
@@ -375,7 +375,7 @@ final class SettingsViewController: NSViewController {
             do {
                 try await dependencies.monitoringStore.resetHistory()
             } catch {
-                await showIntegrationError("History could not be reset", message: error.localizedDescription)
+                await showIntegrationError(String(localized: "History could not be reset"), message: error.localizedDescription)
             }
         }
     }
@@ -436,8 +436,8 @@ final class SettingsViewController: NSViewController {
             updateIntegrationControls()
             switch result {
             case .completed: break
-            case .unavailable(let message): await showIntegrationError("Integration unavailable", message: message)
-            case .failed(let message): await showIntegrationError("Integration failed", message: message)
+            case .unavailable(let message): await showIntegrationError(String(localized: "Integration unavailable"), message: message)
+            case .failed(let message): await showIntegrationError(String(localized: "Integration failed"), message: message)
             }
         }
     }
@@ -510,32 +510,32 @@ final class SettingsViewController: NSViewController {
 
     private func describe(_ status: IntegrationAvailability) -> String {
         switch status {
-        case .available: return "Available"
-        case .notConfigured: return "Not configured"
-        case .requiresApproval: return "Requires approval in System Settings"
-        case .unavailable(let reason): return "Unavailable · \(reason)"
-        case .failed(let reason): return "Failed · \(reason)"
+        case .available: return String(localized: "Available")
+        case .notConfigured: return String(localized: "Not configured")
+        case .requiresApproval: return String(localized: "Requires approval in System Settings")
+        case .unavailable(let reason): return String(localized: "Unavailable · \(reason)")
+        case .failed(let reason): return String(localized: "Failed · \(reason)")
         }
     }
 
     private func describe(_ status: LoginItemAvailability) -> String {
         switch status {
-        case .enabled: return "Enabled"
-        case .disabled: return "Disabled"
-        case .requiresApproval: return "Requires approval in System Settings"
-        case .unavailable(let reason): return "Unavailable · \(reason)"
-        case .failed(let reason): return "Failed · \(reason)"
+        case .enabled: return String(localized: "Enabled")
+        case .disabled: return String(localized: "Disabled")
+        case .requiresApproval: return String(localized: "Requires approval in System Settings")
+        case .unavailable(let reason): return String(localized: "Unavailable · \(reason)")
+        case .failed(let reason): return String(localized: "Failed · \(reason)")
         }
     }
 
     private func describe(_ status: UpdateAvailability) -> String {
         switch status {
-        case .idle: return "Not checked"
-        case .checking: return "Checking…"
-        case .current: return "Up to date"
-        case .updateAvailable(let version): return "Update available · \(version)"
-        case .unavailable(let reason): return "Unavailable · \(reason)"
-        case .failed(let reason): return "Failed · \(reason)"
+        case .idle: return String(localized: "Not checked")
+        case .checking: return String(localized: "Checking…")
+        case .current: return String(localized: "Up to date")
+        case .updateAvailable(let version): return String(localized: "Update available · \(version)")
+        case .unavailable(let reason): return String(localized: "Unavailable · \(reason)")
+        case .failed(let reason): return String(localized: "Failed · \(reason)")
         }
     }
 
@@ -554,14 +554,14 @@ final class SettingsViewController: NSViewController {
 
     private func refreshSamplingState() {
         let store = dependencies.monitoringStore
-        samplingButton.title = store.isPaused ? "Resume Sampling" : "Pause Sampling"
+        samplingButton.title = store.isPaused ? String(localized: "Resume Sampling") : String(localized: "Pause Sampling")
         setStatus(samplingState, store.isPaused
-            ? "Paused · the last sample remains visible."
-            : "Sampling every \(SamplingControls.longTitle(store.interval)).")
+            ? String(localized: "Paused · the last sample remains visible.")
+            : String(localized: "Sampling every \(SamplingControls.longTitle(store.interval))."))
     }
 
     private func showIntegrationError(_ title: String, message: String) async {
         _ = await SheetAlert.present(on: view.window, style: .warning, messageText: title,
-                                     informativeText: message, buttons: ["OK"])
+                                     informativeText: message, buttons: [String(localized: "OK")])
     }
 }

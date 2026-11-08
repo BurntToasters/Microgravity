@@ -26,6 +26,12 @@ private final class AdministratorAuthorization: @unchecked Sendable {
 
 actor PrivilegedProcessActionController: ProcessActioning {
     private let local = LocalProcessActionController()
+
+    /// Finder belongs to the current user, so relaunching it never needs the helper.
+    func relaunchFinder(identity: ProcessIdentity) async -> ProcessActionResult {
+        await local.relaunchFinder(identity: identity)
+    }
+
     func terminate(identity: ProcessIdentity, force: Bool) async -> ProcessActionResult {
         let localResult = await local.terminate(identity: identity, force: force)
         guard case let .rejected(reason, _) = localResult.outcome,

@@ -392,7 +392,39 @@ final class UsersDetailsSettingsTests: XCTestCase {
         view.subviews.flatMap { [$0] + allDescendants(of: $0) }
     }
 
-    private func makeProcess(pid: Int32, uid: UInt32) -> ProcessSnapshot {
+    func testUsersIncludeEveryProcessOwnerWithoutDuplicatingSessionUsers() {
+        let me = UserSessionSnapshot(uid: 501, shortName: "me", isCurrentUser: true, loginSessions: ["console"])
+        let users = UserAggregation.users(sessions: [me], processOwners: [0, 88, 501],
+                                          name: { $0 == 0 ? "root" : "_windowserver" })
+        XCTAssertEqual(users.map(\.uid), [501, 0, 88])
+        XCTAssertEqual(users.first(where: { $0.uid == 0 })?.shortName, "root")
+        XCTAssertEqual(users.first(where: { $0.uid == 0 })?.loginSessions, [])
+        XCTAssertFalse(users.first(where: { $0.uid == 88 })?.isCurrentUser ?? true)
+    }
+
+    func testQuitControlsAreDisabledForProcessesTheControllersAlwaysRefuse() {
+        var root = makeProcess(pid: 400, uid: 0, path: "/Applications/Tool.app/Contents/MacOS/Tool")
+        XCTAssertTrue(ProcessesViewController.isProtectedFromQuit(root))
+        root = makeProcess(pid: 401, uid: 501, path: "/System/Library/CoreServices/Agent")
+        XCTAssertTrue(ProcessesViewController.isProtectedFromQuit(root), "protected system location")
+        XCTAssertTrue(ProcessesViewController.isProtectedFromQuit(makeProcess(pid: 402, uid: 501)),
+                      "an unreadable path cannot rule out a system process")
+        XCTAssertFalse(ProcessesViewController.isProtectedFromQuit(
+            makeProcess(pid: 403, uid: 501, path: "/Applications/Notes.app/Contents/MacOS/Notes")))
+        XCTAssertFalse(ProcessesViewController.isProtectedFromQuit(
+            makeProcess(pid: 404, uid: 502, path: "/Users/other/bin/tool")), "another user's process goes to the helper")
+    }
+
+    func testHelperFailureCodesBecomeReadableText() {
+        XCTAssertEqual(NativeAdvancedMetricsCollector.describe(helperError: "helperUnavailable"),
+                       NativeAdvancedMetricsCollector.helperRequiredDetail)
+        XCTAssertEqual(NativeAdvancedMetricsCollector.describe(helperError: "timedOut"),
+                       "The helper did not respond in time.")
+        XCTAssertEqual(NativeAdvancedMetricsCollector.describe(helperError: "somethingNew"), "somethingNew")
+        XCTAssertNil(NativeAdvancedMetricsCollector.describe(helperError: nil))
+    }
+
+    private func makeProcess(pid: Int32, uid: UInt32, path: String? = nil) -> ProcessSnapshot {
         let timestamp = Date(timeIntervalSince1970: 0)
         let identity = ProcessIdentity(pid: pid,
                                        startTime: ProcessStartTime(secondsSinceEpoch: Int64(pid), microseconds: 0))
@@ -401,7 +433,7 @@ final class UsersDetailsSettingsTests: XCTestCase {
         let rate = MetricReading(value: 0, unit: .bytesPerSecond, timestamp: timestamp)
         return ProcessSnapshot(
             id: identity, parentIdentity: nil, childIdentities: [], name: "process-\(pid)",
-            executablePath: nil, ownerUID: uid, isCurrentUser: false, cpuPercent: percent,
+            executablePath: path, ownerUID: uid, isCurrentUser: false, cpuPercent: percent,
             memoryBytes: bytes, diskReadBytesPerSecond: rate, diskWriteBytesPerSecond: rate,
             diskReadTotalBytes: bytes, diskWriteTotalBytes: bytes)
     }

@@ -408,10 +408,35 @@ final class UIStateTests: XCTestCase {
                 historyRow("2026-05-02", name: "Next local day")
             ]
             controller.update(snapshot: copy(base, timestamp: timestamp, applicationHistory: history))
+            // Applications start collapsed; expand them to count their day rows.
+            for row in (0..<outline.numberOfRows).reversed() where outline.level(forRow: row) == 0 {
+                outline.expandItem(outline.item(atRow: row))
+            }
             // Day rows are the children of the application rows (level 1 in the outline).
             let dayRows = (0..<outline.numberOfRows).filter { outline.level(forRow: $0) == 1 }
             XCTAssertEqual(dayRows.count, 2)
         }
+    }
+
+    func testHistoryApplicationsStartCollapsedAndKeepAUserExpansionAcrossRefreshes() throws {
+        let (dependencies, store, _) = makeDependencies()
+        let controller = HistoryViewController(dependencies: dependencies, defaults: isolatedHistoryDefaults())
+        controller.loadViewIfNeeded()
+        let outline = try XCTUnwrap(allViews(in: controller.view).compactMap { $0 as? NSOutlineView }.first)
+        let base = try XCTUnwrap(store.latestSnapshot)
+        let timestamp = localDate("2026-05-01", hour: 12)
+        func update(cpu: Double) {
+            let history = [historyRow("2026-05-01", name: "Editor", cpuSeconds: cpu),
+                           historyRow("2026-04-30", name: "Editor", cpuSeconds: cpu)]
+            controller.update(snapshot: copy(base, timestamp: timestamp, applicationHistory: history))
+        }
+        update(cpu: 1)
+        XCTAssertEqual((0..<outline.numberOfRows).filter { outline.level(forRow: $0) == 1 }.count, 0,
+                       "applications start collapsed")
+        outline.expandItem(outline.item(atRow: 0))
+        update(cpu: 2)
+        XCTAssertEqual((0..<outline.numberOfRows).filter { outline.level(forRow: $0) == 1 }.count, 2,
+                       "a user expansion survives a data refresh")
     }
 
     func testHistoryHidesBackgroundProcessesByDefaultAndRemembersTheToggle() throws {
@@ -628,10 +653,11 @@ final class UIStateTests: XCTestCase {
     }
 
     private func historyRow(_ day: String, name: String,
-                            association: ProcessGroupAssociation = .applicationBundle) -> ApplicationDailyHistorySummary {
+                            association: ProcessGroupAssociation = .applicationBundle,
+                            cpuSeconds: Double = 1) -> ApplicationDailyHistorySummary {
         let application = ApplicationHistoryIdentity(id: name, name: name, executablePath: nil, association: association)
         return ApplicationDailyHistorySummary(dayStart: localDate(day), application: application,
-                                              cpuSeconds: 1, diskReadBytes: nil, diskWriteBytes: nil,
+                                              cpuSeconds: cpuSeconds, diskReadBytes: nil, diskWriteBytes: nil,
                                               networkReceiveBytes: nil, networkTransmitBytes: nil,
                                               sampleCount: 1, gaps: 0, counterResets: 0)
     }

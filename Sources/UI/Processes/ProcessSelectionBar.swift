@@ -13,7 +13,7 @@ final class ProcessSelectionBar: NSView {
     private let summaryField = NSTextField(labelWithString: "")
     private let identityField = NSTextField(labelWithString: ProcessSelectionBar.emptyIdentity)
 
-    static let emptyIdentity = "No process selected"
+    static let emptyIdentity = String(localized: "No process selected")
 
     init() {
         super.init(frame: .zero)
@@ -68,7 +68,7 @@ final class ProcessSelectionBar: NSView {
         iconView.image = nil
         iconView.isHidden = true
         titleField.stringValue = ""
-        summaryField.stringValue = "Select a process to inspect its identity."
+        summaryField.stringValue = String(localized: "Select a process to inspect its identity.")
         identityField.stringValue = Self.emptyIdentity
         identityField.setAccessibilityLabel(Self.emptyIdentity)
     }

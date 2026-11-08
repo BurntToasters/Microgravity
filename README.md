@@ -16,11 +16,11 @@ Microgravity is a native process and system monitor for macOS, built with AppKit
 
 # Features
 
-- **Processes:** An outline of every process, grouped by app or as a flat list, with app icons, heat-mapped resource columns, and Quit and Force Quit for the selected process.
+- **Processes:** An outline of every process, grouped by app or as a flat list, with app icons, heat-mapped resource columns, Quit and Force Quit for the selected process, and Relaunch for Finder.
 - **Performance:** Sparklines and detail graphs for CPU, memory, disk, network, GPU and energy (where supported), per-core activity, swap and a memory pressure timeline.
 - **App History:** Per-app resource use by day, kept locally for up to 30 days.
 - **Startup and Services:** Read-only inventories of login items, launch agents and daemons, with Reveal in Finder.
-- **Users and Details:** CPU and memory per user session, and a searchable per-process table with PID, user, CPU, memory, disk, network and GPU.
+- **Users and Details:** CPU and memory for every account that owns a process, and a searchable per-process table with PID, owner, parent, CPU, memory, disk, network (with the optional helper) and executable path.
 - **Settings:** Appearance, refresh interval, pause and resume sampling, history reset, the optional helper, the login item and updates.
 
 Partial or unavailable measurements are labeled with a reason. Missing values are never shown as zero.

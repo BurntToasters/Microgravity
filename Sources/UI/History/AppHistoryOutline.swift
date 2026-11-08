@@ -25,13 +25,15 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
     private let emptyState: EmptyStateView
     private var source: [AppHistoryGroup] = []
     private var roots: [Node] = []
-    private var collapsedGroupIDs: Set<String> = []
+    /// Applications the user expanded. Everything starts collapsed: one row per application keeps a
+    /// 30-day history of hundreds of applications scannable, and each day list is one click away.
+    private var expandedGroupIDs: Set<String> = []
     private let columnMenu = NSMenu()
 
     init(autosaveName: String? = "history.outline") {
         outline = NSOutlineView()
         outline.setAccessibilityIdentifier("history.table")
-        outline.setAccessibilityLabel("App history by application and day")
+        outline.setAccessibilityLabel(String(localized: "App history by application and day"))
         outline.style = .inset
         outline.usesAlternatingRowBackgroundColors = true
         outline.allowsMultipleSelection = false
@@ -69,7 +71,7 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scrollView = scroll
         emptyState = EmptyStateView.install(in: scroll, symbolName: "clock.arrow.circlepath",
-                                            title: "No app history yet")
+                                            title: String(localized: "No app history yet"))
         super.init()
         outline.dataSource = self
         outline.delegate = self
@@ -108,7 +110,7 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0
             context.allowsImplicitAnimation = false
-            for root in roots where !collapsedGroupIDs.contains(root.row.id) && !root.children.isEmpty {
+            for root in roots where expandedGroupIDs.contains(root.row.id) && !root.children.isEmpty {
                 outline.expandItem(root)
             }
         }
@@ -190,12 +192,12 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
 
     func outlineViewItemDidExpand(_ notification: Notification) {
         guard let node = notification.userInfo?["NSObject"] as? Node, node.isApplication else { return }
-        collapsedGroupIDs.remove(node.row.id)
+        expandedGroupIDs.insert(node.row.id)
     }
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
         guard let node = notification.userInfo?["NSObject"] as? Node, node.isApplication else { return }
-        collapsedGroupIDs.insert(node.row.id)
+        expandedGroupIDs.remove(node.row.id)
     }
 }
 

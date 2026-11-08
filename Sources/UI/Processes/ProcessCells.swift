@@ -133,8 +133,8 @@ final class ProcessRowView: NSTableRowView {
     }
 
     func setDisclosureExpanded(_ expanded: Bool) {
-        disclosureTarget.setAccessibilityLabel(expanded ? "Collapse group" : "Expand group")
-        disclosureTarget.toolTip = expanded ? "Collapse process group" : "Expand process group"
+        disclosureTarget.setAccessibilityLabel(expanded ? String(localized: "Collapse group") : String(localized: "Expand group"))
+        disclosureTarget.toolTip = expanded ? String(localized: "Collapse process group") : String(localized: "Expand process group")
     }
 }
 

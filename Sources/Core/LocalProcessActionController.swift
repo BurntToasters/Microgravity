@@ -14,12 +14,15 @@ public actor LocalProcessActionController: ProcessActioning {
     typealias TargetLookup = @Sendable (Int32) -> ProcessControlTarget?
     typealias SignalSender = @Sendable (Int32, Int32) -> Int32
     typealias AppTerminator = @MainActor @Sendable (Int32) -> Bool?
+    /// Quits and reopens the Finder process with the given PID. Returns a rejection detail on failure.
+    typealias FinderRelauncher = @Sendable (Int32) async -> String?
 
     private let currentUID: UInt32
     private let ownPID: Int32
     private let targetLookup: TargetLookup
     private let signalSender: SignalSender
     private let appTerminator: AppTerminator
+    private let finderRelauncher: FinderRelauncher
 
     public init() {
         currentUID = UInt32(getuid())
@@ -30,15 +33,69 @@ public actor LocalProcessActionController: ProcessActioning {
             guard let application = NSRunningApplication(processIdentifier: pid), application.bundleURL != nil else { return nil }
             return application.terminate()
         }
+        finderRelauncher = { await Self.relaunchFinderApplication(pid: $0) }
     }
 
     init(currentUID: UInt32, ownPID: Int32, targetLookup: @escaping TargetLookup,
-         signalSender: @escaping SignalSender, appTerminator: @escaping AppTerminator = { _ in nil }) {
+         signalSender: @escaping SignalSender, appTerminator: @escaping AppTerminator = { _ in nil },
+         finderRelauncher: @escaping FinderRelauncher = { _ in "Relaunching Finder is not available." }) {
         self.currentUID = currentUID
         self.ownPID = ownPID
         self.targetLookup = targetLookup
         self.signalSender = signalSender
         self.appTerminator = appTerminator
+        self.finderRelauncher = finderRelauncher
+    }
+
+    /// Finder is protected from signals by its system location. Relaunch revalidates the full identity and
+    /// owner, then quits Finder through AppKit and opens it again; no signal is sent by PID.
+    public func relaunchFinder(identity: ProcessIdentity) async -> ProcessActionResult {
+        guard identity.pid > 1 else { return rejected(identity, false, .invalidIdentity) }
+        guard let target = targetLookup(identity.pid) else { return rejected(identity, false, .processExited) }
+        guard target.identity == identity else { return rejected(identity, false, .identityChanged) }
+        guard target.ownerUID == currentUID else { return rejected(identity, false, .differentUser) }
+        if let failure = await finderRelauncher(identity.pid) {
+            return rejected(identity, false, .signalFailed, detail: failure)
+        }
+        return ProcessActionResult(identity: identity, force: false, outcome: .signalSent)
+    }
+
+    /// Asks Finder to quit, force quits it if it has not quit within 5 seconds, and opens it again if the
+    /// system has not already relaunched it. The PID must belong to the Finder bundle in its system location.
+    @MainActor
+    static func relaunchFinderApplication(pid: Int32) async -> String? {
+        guard let finder = NSRunningApplication(processIdentifier: pid),
+              finder.bundleIdentifier == FinderProcess.bundleIdentifier,
+              finder.bundleURL?.standardizedFileURL.path == FinderProcess.applicationPath else {
+            return "The selected process is not Finder."
+        }
+        if !finder.terminate() { _ = finder.forceTerminate() }
+        if !(await waitUntil(seconds: 5) { finder.isTerminated }) {
+            _ = finder.forceTerminate()
+            guard await waitUntil(seconds: 2, { finder.isTerminated }) else { return "Finder did not quit." }
+        }
+        // The system usually reopens Finder itself; open it only if that has not happened.
+        let relaunched = await waitUntil(seconds: 2) {
+            !NSRunningApplication.runningApplications(withBundleIdentifier: FinderProcess.bundleIdentifier).isEmpty
+        }
+        if relaunched { return nil }
+        do {
+            _ = try await NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: FinderProcess.applicationPath),
+                                                             configuration: NSWorkspace.OpenConfiguration())
+            return nil
+        } catch {
+            return "Finder quit but could not be opened again: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private static func waitUntil(seconds: Double, _ condition: () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now + .milliseconds(Int(seconds * 1000))
+        while ContinuousClock.now < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return condition()
     }
 
     public func terminate(identity: ProcessIdentity, force: Bool) async -> ProcessActionResult {

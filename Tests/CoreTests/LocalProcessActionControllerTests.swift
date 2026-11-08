@@ -18,6 +18,48 @@ final class LocalProcessActionControllerTests: XCTestCase {
         XCTAssertTrue(signals.values.isEmpty)
     }
 
+    func testFinderRelaunchRevalidatesIdentityAndOwnerAndNeverSignals() async {
+        let finder = identity(pid: 600, second: 1)
+        let signals = SignalRecorder()
+        let relaunched = SignalRecorder()
+        func controller(_ target: ProcessControlTarget?, failure: String? = nil) -> LocalProcessActionController {
+            LocalProcessActionController(
+                currentUID: 501, ownPID: 20,
+                targetLookup: { _ in target },
+                signalSender: { pid, signal in signals.append(pid: pid, signal: signal); return 0 },
+                finderRelauncher: { pid in relaunched.append(pid: pid, signal: 0); return failure })
+        }
+
+        var result = await controller(.init(identity: finder, ownerUID: 501, isProtected: true))
+            .relaunchFinder(identity: finder)
+        XCTAssertEqual(result.outcome, .signalSent, "Finder is protected from signals but can be relaunched")
+
+        result = await controller(.init(identity: identity(pid: 600, second: 2), ownerUID: 501, isProtected: true))
+            .relaunchFinder(identity: finder)
+        XCTAssertEqual(result.outcome, .rejected(.identityChanged, detail: nil))
+
+        result = await controller(.init(identity: finder, ownerUID: 502, isProtected: true))
+            .relaunchFinder(identity: finder)
+        XCTAssertEqual(result.outcome, .rejected(.differentUser, detail: nil))
+
+        result = await controller(nil).relaunchFinder(identity: finder)
+        XCTAssertEqual(result.outcome, .rejected(.processExited, detail: nil))
+
+        result = await controller(.init(identity: finder, ownerUID: 501, isProtected: true), failure: "Finder did not quit.")
+            .relaunchFinder(identity: finder)
+        XCTAssertEqual(result.outcome, .rejected(.signalFailed, detail: "Finder did not quit."))
+
+        XCTAssertEqual(relaunched.values.count, 2, "only verified Finder identities reach the relauncher")
+        XCTAssertTrue(signals.values.isEmpty, "relaunch never sends a signal by PID")
+    }
+
+    func testFinderIsRecognizedOnlyAtItsSystemLocationForTheCurrentUser() {
+        XCTAssertTrue(FinderProcess.matches(executablePath: FinderProcess.executablePath, ownerUID: 501, currentUID: 501))
+        XCTAssertFalse(FinderProcess.matches(executablePath: FinderProcess.executablePath, ownerUID: 502, currentUID: 501))
+        XCTAssertFalse(FinderProcess.matches(executablePath: "/Users/me/Finder.app/Contents/MacOS/Finder",
+                                             ownerUID: 501, currentUID: 501))
+    }
+
     func testExitedPIDIsReportedWithoutSendingSignal() async {
         let requested = identity(pid: 500, second: 1)
         let signals = SignalRecorder()

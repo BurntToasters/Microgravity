@@ -128,9 +128,9 @@ final class MainWindowController: NSWindowController {
             case .completed:
                 break
             case .unavailable(let message):
-                self.presentUpdateMessage(title: "Updates Unavailable", message: message)
+                self.presentUpdateMessage(title: String(localized: "Updates Unavailable"), message: message)
             case .failed(let message):
-                self.presentUpdateMessage(title: "Update Check Failed", message: message)
+                self.presentUpdateMessage(title: String(localized: "Update Check Failed"), message: message)
             }
         }
     }

@@ -131,7 +131,7 @@ final class IntegrationAdvancedMetricsTests: XCTestCase {
         _ = await collector.collectAdvancedMetrics(at: start)
         try await waitUntil("the first refresh completes") { await collector.refreshCompletionCountForTesting() == 1 }
         var snapshot = await collector.collectAdvancedMetrics(at: start)
-        XCTAssertEqual(snapshot.capabilities[.gpu]?.detail, "helperUnavailable")
+        XCTAssertEqual(snapshot.capabilities[.gpu]?.detail, NativeAdvancedMetricsCollector.helperRequiredDetail)
         var refreshCount = await collector.refreshRequestCountForTesting()
         XCTAssertEqual(refreshCount, 1)
         var sampleCount = await client.sampleCount()
@@ -140,7 +140,7 @@ final class IntegrationAdvancedMetricsTests: XCTestCase {
         for offset in [TimeInterval(5), 30, 59] {
             clock.set(start.addingTimeInterval(offset))
             snapshot = await collector.collectAdvancedMetrics(at: clock.now())
-            XCTAssertEqual(snapshot.capabilities[.gpu]?.detail, "helperUnavailable",
+            XCTAssertEqual(snapshot.capabilities[.gpu]?.detail, NativeAdvancedMetricsCollector.helperRequiredDetail,
                            "the cached helper reason stays accurate past 30 s")
         }
         refreshCount = await collector.refreshRequestCountForTesting()

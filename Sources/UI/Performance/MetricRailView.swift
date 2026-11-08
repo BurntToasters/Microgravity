@@ -34,7 +34,7 @@ final class MetricRailView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         table.dataSource = self
         table.delegate = self
         table.setAccessibilityIdentifier("performance.rail")
-        table.setAccessibilityLabel("Metrics")
+        table.setAccessibilityLabel(String(localized: "Metrics"))
 
         let scroll = NSScrollView()
         scroll.documentView = table

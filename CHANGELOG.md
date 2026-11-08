@@ -21,7 +21,21 @@
 
 ## 0.1.1
 
-- **Interface:** A ❤️ Support Me button at the bottom of the sidebar opens https://rosie.run/support in your default browser.
+- **Processes:** Processes owned by other users and by the system (root) now appear. Quitting other users' processes works through the optional helper. The administrator password prompt no longer freezes the window, and Microgravity explains why it appears.
+- **Processes:** Process names are no longer cut off at 31 characters. Exited (zombie) processes are no longer listed.
+- **Processes:** Quit and Force Quit are disabled, with an explanation, for processes Microgravity never quits: root-owned and protected system processes, PID 1 and Microgravity itself.
+- **Processes:** Finder can be relaunched, as in the system Force Quit window: select Finder and choose Relaunch.
+- **Processes:** Force Quit no longer uses ⇧⌥⌘Q, which is the system Log Out shortcut. Quit and Force Quit ask for confirmation first.
+- **App History:** Days use the local calendar, with Today and Yesterday labels. Pauses, sleep and relaunches no longer mark every value as partial. History is written in batches, which greatly reduces disk writes. Background processes are hidden by default; turn on Show Background Processes to list them. Applications start collapsed, and days follow time-zone changes without a relaunch.
+- **Users and Details:** Permanent "Collection failed" warnings are gone, and banners are quieter. Users lists every account that owns a process, including root and system accounts.
+- **Helper:** Metrics that need the optional helper say so in plain language instead of showing an internal error code.
+- **Energy:** Apple-silicon powermetrics power keys are read. Per-process GPU time has been removed.
+- **Helper:** The helper no longer samples per-task data, and it does not poll when it is not installed.
+- **Network:** VPN interfaces are excluded from system network totals.
+- **Interface:** Settings and sidebar text are consistent, the Help menu is updated, the CPU column has a tooltip, dates are localized, and user LaunchAgents are labeled as launch agents.
+- **Build:** Core tests no longer write to the real history database.
+- **App History:** History is now stored by local day. Older versions of Microgravity cannot read history written by 0.1.1.
+- **Interface:** A Support Microgravity button at the bottom of the sidebar, and Support Microgravity… in the app menu, open https://rosie.run/support in your default browser.
 - **Processes:** Rows change order instantly when values update instead of sliding and fading on every sample. App History no longer re-animates its groups on each refresh. Expanding or collapsing a group yourself still animates.
 - **Processes:** The Name column refits to the window, so a column layout saved from a wider window no longer pushes the CPU, memory, disk and network columns out of view.
 - **Processes:** Idle disk and network rates show "0 KB/s" instead of "Zero KB/s".

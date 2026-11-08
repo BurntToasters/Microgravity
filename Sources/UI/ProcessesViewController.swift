@@ -19,7 +19,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
 
     private static let columnVisibilityKey = "process.columns.visibility"
     private static let autosaveName = "process.outline"
-    private static let systemProtectedMessage = "System processes are protected and can't be quit from Microgravity."
+    private static let systemProtectedMessage = String(localized: "System processes are protected and can't be quit from Microgravity.")
     /// Longest diff applied row by row; longer changes at one level reload that level instead.
     private static let incrementalOperationLimit = 40
     private static let startTimeFormatter: DateFormatter = {
@@ -37,8 +37,8 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     private let selectionBar = ProcessSelectionBar()
 
     private let searchItem = NSSearchToolbarItem(itemIdentifier: ToolbarItemID.search)
-    private let quitButton = NSButton(title: "Quit", target: nil, action: nil)
-    private let forceQuitButton = NSButton(title: "Force Quit…", target: nil, action: nil)
+    private let quitButton = NSButton(title: String(localized: "Quit"), target: nil, action: nil)
+    private let forceQuitButton = NSButton(title: String(localized: "Force Quit…"), target: nil, action: nil)
     private let quitItem = NSToolbarItem(itemIdentifier: ToolbarItemID.quit)
     private let forceQuitItem = NSToolbarItem(itemIdentifier: ToolbarItemID.forceQuit)
     private let groupingItem = NSMenuToolbarItem(itemIdentifier: ToolbarItemID.grouping)
@@ -93,8 +93,8 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         view = DynamicWindowBackgroundView()
 
         let header = UIComponents.header(
-            title: "Processes",
-            subtitle: "Live applications and background tasks grouped by their parent or app bundle."
+            title: String(localized: "Processes"),
+            subtitle: String(localized: "Live applications and background tasks grouped by their parent or app bundle.")
         )
         let headerRow = NSStackView(views: [header, NSView()])
         headerRow.orientation = .horizontal
@@ -133,6 +133,21 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
 
     private var lastFittedWidth: CGFloat = 0
 
+    /// Validation renames the Process menu's Quit item to "Relaunch Finder"; other pages do not validate it,
+    /// so restore its title when this page leaves the window.
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        Self.menuItems(for: #selector(quitSelectedProcess(_:)), in: NSApp.mainMenu)
+            .forEach { $0.title = String(localized: "Quit Process") }
+    }
+
+    private static func menuItems(for action: Selector, in menu: NSMenu?) -> [NSMenuItem] {
+        guard let menu else { return [] }
+        return menu.items.flatMap { item in
+            (item.action == action ? [item] : []) + menuItems(for: action, in: item.submenu)
+        }
+    }
+
     override func viewDidLayout() {
         super.viewDidLayout()
         fitNameColumn(force: false)
@@ -162,7 +177,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
 
     private func configureOutline() {
         outlineView.setAccessibilityIdentifier("process.table")
-        outlineView.setAccessibilityLabel("Processes")
+        outlineView.setAccessibilityLabel(String(localized: "Processes"))
         outlineView.dataSource = self
         outlineView.delegate = self
         outlineView.style = .inset
@@ -187,7 +202,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             tableColumn.headerCell.alignment = column == .name || column == .user ? .left : .right
             if column == .cpu {
                 // Process CPU is a share of the whole machine, unlike Activity Monitor's per-core percentages.
-                tableColumn.headerToolTip = "Share of total CPU capacity across all cores. 100% means every core is busy."
+                tableColumn.headerToolTip = String(localized: "Share of total CPU capacity across all cores. 100% means every core is busy.")
             }
             tableColumn.sortDescriptorPrototype = NSSortDescriptor(key: column.rawValue, ascending: true)
             tableColumn.headerCell.setAccessibilityIdentifier(column.rawValue)
@@ -235,13 +250,13 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     }
 
     private func configureToolbarItems() {
-        searchItem.label = "Search"
-        searchItem.paletteLabel = "Search Processes"
-        searchItem.toolTip = "Search by name, path, PID or user (⌘F)"
+        searchItem.label = String(localized: "Search")
+        searchItem.paletteLabel = String(localized: "Search Processes")
+        searchItem.toolTip = String(localized: "Search by name, path, PID or user (⌘F)")
         searchItem.preferredWidthForSearchField = 220
-        searchItem.searchField.placeholderString = "Search processes"
+        searchItem.searchField.placeholderString = String(localized: "Search processes")
         searchItem.searchField.setAccessibilityIdentifier("process.search")
-        searchItem.searchField.setAccessibilityLabel("Search processes")
+        searchItem.searchField.setAccessibilityLabel(String(localized: "Search processes"))
         searchItem.searchField.delegate = self
         (searchItem.searchField.cell as? NSSearchFieldCell)?.sendsSearchStringImmediately = true
 
@@ -250,9 +265,9 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         quitButton.action = #selector(quitSelectedProcess(_:))
         quitButton.setAccessibilityIdentifier("process.action.quit")
         quitButton.isEnabled = false
-        quitItem.label = "Quit"
-        quitItem.paletteLabel = "Quit Process"
-        quitItem.toolTip = "Quit the selected process (⌘⌥Q)"
+        quitItem.label = String(localized: "Quit")
+        quitItem.paletteLabel = String(localized: "Quit Process")
+        quitItem.toolTip = String(localized: "Quit the selected process (⌘⌥Q)")
         quitItem.view = quitButton
 
         forceQuitButton.bezelStyle = .toolbar
@@ -260,24 +275,24 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         forceQuitButton.action = #selector(forceQuitSelectedProcess(_:))
         forceQuitButton.setAccessibilityIdentifier("process.action.force-quit")
         forceQuitButton.isEnabled = false
-        forceQuitItem.label = "Force Quit…"
-        forceQuitItem.paletteLabel = "Force Quit Process"
-        forceQuitItem.toolTip = "Force quit the selected process. Its child processes are not targeted."
+        forceQuitItem.label = String(localized: "Force Quit…")
+        forceQuitItem.paletteLabel = String(localized: "Force Quit Process")
+        forceQuitItem.toolTip = String(localized: "Force quit the selected process. Its child processes are not targeted.")
         forceQuitItem.view = forceQuitButton
 
-        let byApp = NSMenuItem(title: "Group by App", action: #selector(setProcessGrouping(_:)), keyEquivalent: "")
+        let byApp = NSMenuItem(title: String(localized: "Group by App"), action: #selector(setProcessGrouping(_:)), keyEquivalent: "")
         byApp.tag = 0
         byApp.target = self
-        let flat = NSMenuItem(title: "Flat List", action: #selector(setProcessGrouping(_:)), keyEquivalent: "")
+        let flat = NSMenuItem(title: String(localized: "Flat List"), action: #selector(setProcessGrouping(_:)), keyEquivalent: "")
         flat.tag = 1
         flat.target = self
         groupingMenu.addItem(byApp)
         groupingMenu.addItem(flat)
         groupingMenu.autoenablesItems = false
-        groupingItem.label = "Grouping"
-        groupingItem.paletteLabel = "Grouping"
-        groupingItem.toolTip = "Group processes by app, or list them flat"
-        groupingItem.image = NSImage(systemSymbolName: "rectangle.3.group", accessibilityDescription: "Grouping")
+        groupingItem.label = String(localized: "Grouping")
+        groupingItem.paletteLabel = String(localized: "Grouping")
+        groupingItem.toolTip = String(localized: "Group processes by app, or list them flat")
+        groupingItem.image = NSImage(systemSymbolName: "rectangle.3.group", accessibilityDescription: String(localized: "Grouping"))
         groupingItem.menu = groupingMenu
         groupingItem.showsIndicator = true
         updateGroupingMenu()
@@ -589,7 +604,21 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         return rowsByID[selectedID]?.executablePath ?? selectedProcess?.executablePath
     }
 
-    private var hasValidSelection: Bool { selectedProcess != nil }
+    private var hasValidSelection: Bool {
+        guard let selectedProcess else { return false }
+        return !Self.isProtectedFromQuit(selectedProcess)
+    }
+
+    /// True when the selection is the current user's Finder, which offers Relaunch instead of Quit.
+    private var selectionIsFinder: Bool {
+        selectedProcess.map(Self.isRelaunchableFinder) ?? false
+    }
+
+    /// The current user's Finder. Like the system Force Quit window, Microgravity relaunches it rather than quitting it.
+    static func isRelaunchableFinder(_ process: ProcessSnapshot) -> Bool {
+        FinderProcess.matches(executablePath: process.executablePath, ownerUID: process.ownerUID,
+                              currentUID: UInt32(getuid()))
+    }
 
     private func updateSelectionDetails() {
         guard let selectedID, let process = processByIdentity[selectedID.identity] else {
@@ -607,12 +636,29 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             : AppIconProvider.genericExecutableIcon()
         selectionBar.show(
             title: title,
-            summary: "PID \(process.id.pid) · \(owner) · \(path ?? "Path unavailable")",
-            identity: "Started \(started)",
-            identityAccessibilityLabel: "PID \(process.id.pid), started \(started)",
+            summary: String(localized: "PID \(process.id.pid) · \(owner) · \(path ?? String(localized: "Path unavailable"))"),
+            identity: String(localized: "Started \(started)"),
+            identityAccessibilityLabel: String(localized: "PID \(process.id.pid), started \(started)"),
             icon: icon
         )
-        setActionsEnabled(true)
+        if Self.isRelaunchableFinder(process) {
+            setActionsEnabled(quit: true, forceQuit: false, quitTitle: String(localized: "Relaunch"))
+            quitButton.toolTip = String(localized: "Quit Finder and open it again")
+            forceQuitButton.toolTip = String(localized: "Finder can be relaunched but not force quit.")
+            return
+        }
+        let protected = Self.isProtectedFromQuit(process)
+        setActionsEnabled(!protected)
+        let reason = protected ? Self.systemProtectedMessage : nil
+        quitButton.toolTip = reason
+        forceQuitButton.toolTip = reason
+    }
+
+    /// Root-owned, PID 1, Microgravity itself and protected system locations are always refused by the
+    /// action controllers, so their Quit controls stay disabled instead of offering an action that fails.
+    static func isProtectedFromQuit(_ process: ProcessSnapshot) -> Bool {
+        process.ownerUID == nil || process.ownerUID == 0 || process.id.pid <= 1 || process.id.pid == getpid()
+            || HelperTerminationPolicy.isProtected(executablePath: process.executablePath, systemFlag: false)
     }
 
     /// The process start time as a `Date`, for the localized selection-bar label.
@@ -621,10 +667,16 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     }
 
     private func setActionsEnabled(_ enabled: Bool) {
-        quitButton.isEnabled = enabled
-        forceQuitButton.isEnabled = enabled
-        quitItem.isEnabled = enabled
-        forceQuitItem.isEnabled = enabled
+        setActionsEnabled(quit: enabled, forceQuit: enabled, quitTitle: String(localized: "Quit"))
+    }
+
+    private func setActionsEnabled(quit: Bool, forceQuit: Bool, quitTitle: String) {
+        quitButton.title = quitTitle
+        quitItem.label = quitTitle
+        quitButton.isEnabled = quit
+        forceQuitButton.isEnabled = forceQuit
+        quitItem.isEnabled = quit
+        forceQuitItem.isEnabled = forceQuit
     }
 
     private func clearSelection() {
@@ -846,7 +898,13 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
 
     func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
         let action = item.action
-        if action == #selector(quitSelectedProcess(_:)) || action == #selector(forceQuitSelectedProcess(_:)) {
+        if action == #selector(quitSelectedProcess(_:)) {
+            // The Process menu and context menu say what Quit does for Finder.
+            (item as? NSMenuItem)?.title = selectionIsFinder
+                ? String(localized: "Relaunch Finder") : String(localized: "Quit Process")
+            return hasValidSelection || selectionIsFinder
+        }
+        if action == #selector(forceQuitSelectedProcess(_:)) {
             return hasValidSelection
         }
         if action == #selector(revealSelectedProcess(_:)) || action == #selector(copySelectedPath(_:)) {
@@ -855,14 +913,50 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         return true
     }
 
+    /// Confirms, then quits and reopens Finder, like Relaunch in the system Force Quit window.
+    private func requestFinderRelaunch(_ identity: ProcessIdentity) {
+        Task { [weak self] in
+            guard let self else { return }
+            let response = await SheetAlert.present(
+                on: view.window,
+                style: .warning,
+                messageText: String(localized: "Relaunch Finder?"),
+                informativeText: String(localized: "Finder quits and opens again. Its open windows close and may reopen."),
+                buttons: [String(localized: "Relaunch"), String(localized: "Cancel")],
+                defaultButtonIdentifier: "process.relaunch-finder.confirm"
+            )
+            guard response == .alertFirstButtonReturn else { return }
+            let result = await dependencies.processActions.relaunchFinder(identity: identity)
+            if case .rejected(let reason, let detail) = result.outcome {
+                let isStale = reason == .processExited || reason == .identityChanged
+                if isStale { clearSelection() }
+                await dependencies.monitoringStore.refreshNow()
+                await SheetAlert.present(
+                    on: view.window,
+                    style: .informational,
+                    messageText: String(localized: "Finder was not relaunched"),
+                    informativeText: Self.rejectionMessage(reason, detail: detail, targetIsSystemOwned: false),
+                    buttons: [String(localized: "OK")]
+                )
+                return
+            }
+            clearSelection()
+            await dependencies.monitoringStore.refreshNow()
+        }
+    }
+
     private func requestTermination(force: Bool) {
         guard let selectedID, let process = processByIdentity[selectedID.identity] else {
-            presentNotice(title: "Process No Longer Available",
-                          message: "The selected process is no longer available.")
+            presentNotice(title: String(localized: "Process No Longer Available"),
+                          message: String(localized: "The selected process is no longer available."))
             clearSelection()
             return
         }
         let identity = selectedID.identity
+        if !force, Self.isRelaunchableFinder(process) {
+            requestFinderRelaunch(identity)
+            return
+        }
         let name = process.name
         let targetIsSystemOwned = process.ownerUID == 0
         Task { [weak self] in
@@ -873,9 +967,9 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
                 response = await SheetAlert.present(
                     on: view.window,
                     style: .warning,
-                    messageText: "Confirm Force Quit",
-                    informativeText: "Force quit \(name) (process \(identity.pid)) only. Its child processes are not targeted.",
-                    buttons: ["Force Quit", "Cancel"],
+                    messageText: String(localized: "Confirm Force Quit"),
+                    informativeText: String(localized: "Force quit \(name) (process \(identity.pid)) only. Its child processes are not targeted."),
+                    buttons: [String(localized: "Force Quit"), String(localized: "Cancel")],
                     defaultButtonIdentifier: "process.force-quit.confirm",
                     destructiveButtonIndex: 0
                 )
@@ -883,8 +977,8 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
                 response = await SheetAlert.present(
                     on: view.window,
                     style: .warning,
-                    messageText: "Quit “\(name)”?",
-                    buttons: ["Quit", "Cancel"],
+                    messageText: String(localized: "Quit “\(name)”?"),
+                    buttons: [String(localized: "Quit"), String(localized: "Cancel")],
                     defaultButtonIdentifier: "process.quit.confirm",
                     destructiveButtonIndex: 0
                 )
@@ -902,9 +996,9 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
                 await SheetAlert.present(
                     on: view.window,
                     style: .informational,
-                    messageText: isStale ? "Process No Longer Available" : "Process action not completed",
+                    messageText: isStale ? String(localized: "Process No Longer Available") : String(localized: "Process action not completed"),
                     informativeText: message,
-                    buttons: ["OK"]
+                    buttons: [String(localized: "OK")]
                 )
             }
         }
@@ -918,14 +1012,14 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         }
         let base: String
         switch reason {
-        case .invalidIdentity, .identityChanged, .processExited: base = "The selected process changed or exited. No process was terminated."
-        case .currentProcess: base = "Microgravity cannot terminate itself."
-        case .pidOne: base = "The system’s launch process is protected."
-        case .protectedProcess: base = "This process is protected."
-        case .differentUser: base = "This process belongs to another user."
-        case .permissionDenied: base = "Permission was denied."
-        case .helperUnavailable: base = "The required helper is unavailable."
-        case .signalFailed: base = "The operating system could not send the signal."
+        case .invalidIdentity, .identityChanged, .processExited: base = String(localized: "The selected process changed or exited. No process was terminated.")
+        case .currentProcess: base = String(localized: "Microgravity cannot terminate itself.")
+        case .pidOne: base = String(localized: "The system’s launch process is protected.")
+        case .protectedProcess: base = String(localized: "This process is protected.")
+        case .differentUser: base = String(localized: "This process belongs to another user.")
+        case .permissionDenied: base = String(localized: "Permission was denied.")
+        case .helperUnavailable: base = String(localized: "The required helper is unavailable.")
+        case .signalFailed: base = String(localized: "The operating system could not send the signal.")
         }
         if let detail, !detail.isEmpty { return "\(base) \(detail)" }
         return base
@@ -935,7 +1029,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         Task { [weak self] in
             guard let self else { return }
             await SheetAlert.present(on: view.window, style: .informational, messageText: title,
-                                     informativeText: message, buttons: ["OK"])
+                                     informativeText: message, buttons: [String(localized: "OK")])
         }
     }
 
@@ -953,13 +1047,13 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         if outlineView.selectedRow != row {
             outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         }
-        menu.addItem(contextItem("Quit Process", #selector(quitSelectedProcess(_:))))
-        menu.addItem(contextItem("Force Quit…", #selector(forceQuitSelectedProcess(_:))))
+        menu.addItem(contextItem(String(localized: "Quit Process"), #selector(quitSelectedProcess(_:))))
+        menu.addItem(contextItem(String(localized: "Force Quit…"), #selector(forceQuitSelectedProcess(_:))))
         menu.addItem(.separator())
-        menu.addItem(contextItem("Reveal in Finder", #selector(revealSelectedProcess(_:))))
-        menu.addItem(contextItem("Copy Path", #selector(copySelectedPath(_:))))
+        menu.addItem(contextItem(String(localized: "Reveal in Finder"), #selector(revealSelectedProcess(_:))))
+        menu.addItem(contextItem(String(localized: "Copy Path"), #selector(copySelectedPath(_:))))
         menu.addItem(.separator())
-        menu.addItem(contextItem("Show in Details", #selector(showSelectedProcessInDetails(_:))))
+        menu.addItem(contextItem(String(localized: "Show in Details"), #selector(showSelectedProcessInDetails(_:))))
     }
 
     private func contextItem(_ title: String, _ action: Selector) -> NSMenuItem {

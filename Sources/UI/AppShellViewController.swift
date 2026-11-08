@@ -13,14 +13,14 @@ enum DashboardPage: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .processes: return "Processes"
-        case .performance: return "Performance"
-        case .history: return "App History"
-        case .startup: return "Startup"
-        case .users: return "Users"
-        case .details: return "Details"
-        case .services: return "Services"
-        case .settings: return "Settings"
+        case .processes: return String(localized: "Processes")
+        case .performance: return String(localized: "Performance")
+        case .history: return String(localized: "App History")
+        case .startup: return String(localized: "Startup")
+        case .users: return String(localized: "Users")
+        case .details: return String(localized: "Details")
+        case .services: return String(localized: "Services")
+        case .settings: return String(localized: "Settings")
         }
     }
 

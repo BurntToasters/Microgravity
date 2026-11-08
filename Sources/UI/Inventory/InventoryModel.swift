@@ -10,11 +10,11 @@ enum InventoryColumn: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .name: return "Name"
-        case .kind: return "Kind"
-        case .state: return "Status"
-        case .owner: return "Owner"
-        case .path: return "Known path"
+        case .name: return String(localized: "Name")
+        case .kind: return String(localized: "Kind")
+        case .state: return String(localized: "Status")
+        case .owner: return String(localized: "Owner")
+        case .path: return String(localized: "Known path")
         }
     }
 
@@ -43,19 +43,19 @@ enum InventoryStatusTone: Equatable {
 enum InventoryLabels {
     static func kind(_ kind: DiscoveredEntryKind) -> String {
         switch kind {
-        case .loginItem: return "Login Item"
-        case .launchAgent: return "Launch Agent"
-        case .launchDaemon: return "Launch Daemon"
-        case .service: return "Service"
+        case .loginItem: return String(localized: "Login Item")
+        case .launchAgent: return String(localized: "Launch Agent")
+        case .launchDaemon: return String(localized: "Launch Daemon")
+        case .service: return String(localized: "Service")
         }
     }
 
     static func status(_ state: DiscoveredEntryState) -> (label: String, tone: InventoryStatusTone) {
         switch state {
-        case .running: return ("Running", .positive)
-        case .loaded: return ("Loaded", .positive)
-        case .stopped: return ("Stopped", .caution)
-        case .unknown: return ("Unknown", .neutral)
+        case .running: return (String(localized: "Running"), .positive)
+        case .loaded: return (String(localized: "Loaded"), .positive)
+        case .stopped: return (String(localized: "Stopped"), .caution)
+        case .unknown: return (String(localized: "Unknown"), .neutral)
         }
     }
 }
@@ -80,7 +80,7 @@ struct InventoryRow: Equatable {
         case .kind: return kind
         case .state: return status
         case .owner: return owner
-        case .path: return entry.path ?? "Path unavailable"
+        case .path: return entry.path ?? String(localized: "Path unavailable")
         }
     }
 

@@ -187,7 +187,9 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
                     : MetricAvailability(available: true)
             }
         } else {
-            for kind in Self.networkKinds { capabilities[kind] = MetricAvailability(available: false, reason: .collectionFailed, detail: net.error ?? "Network sample unavailable or invalid") }
+            for kind in Self.networkKinds {
+                capabilities[kind] = Self.failureAvailability(net.error, fallback: "Network sample unavailable or invalid")
+            }
         }
         var system: [MetricKind: MetricReading] = [:]
         if power.error == nil, let data = power.output, abs(responseTime.timeIntervalSince(power.capturedAt)) <= Self.maximumSampleAge {
@@ -206,7 +208,7 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
             }
         } else {
             for kind in [MetricKind.gpu, .energy] {
-                capabilities[kind] = MetricAvailability(available: false, reason: .collectionFailed, detail: power.error ?? "Power sample unavailable or stale")
+                capabilities[kind] = Self.failureAvailability(power.error, fallback: "Power sample unavailable or stale")
             }
         }
         capabilities[.processGPUTime] = Self.processGPUTimeAvailability
@@ -216,9 +218,36 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
         lastCompleted = now()
     }
 
+    /// A missing helper is an optional feature that is not set up, not a failed collection.
+    private static func failureAvailability(_ code: String?, fallback: String) -> MetricAvailability {
+        MetricAvailability(available: false,
+                           reason: code == HelperSamplingClient.unavailableError ? .notCollected : .collectionFailed,
+                           detail: describe(helperError: code) ?? fallback)
+    }
+
+    /// Shown when a metric needs the optional helper and the helper is not installed, approved or signed.
+    static let helperRequiredDetail = "Requires the optional privileged helper (Settings › Optional integrations)."
+
+    /// Turns a helper or XPC failure code into text a person can act on. Unknown codes pass through.
+    static func describe(helperError code: String?) -> String? {
+        guard let code else { return nil }
+        switch code {
+        case HelperSamplingClient.unavailableError: return helperRequiredDetail
+        case "rateLimited", "busy": return "The helper is busy; the next sample will retry."
+        case "timedOut": return "The helper did not respond in time."
+        case "disconnected", "connectionInterrupted", "connectionInvalidated", "connectionFailed":
+            return "Microgravity could not reach the helper."
+        case "incompatibleVersion", "incompatibleResponse", "protocolUnavailable":
+            return "The helper is out of date. Remove it and set it up again in Settings."
+        case "launchFailed", "commandFailed", "noData", "outputLimit", "readFailed":
+            return "The helper's measurement command failed."
+        default: return code
+        }
+    }
+
     private func recordHelperUnavailable() {
-        let unavailable = MetricAvailability(available: false, reason: .collectionFailed,
-                                             detail: HelperSamplingClient.unavailableError)
+        let unavailable = MetricAvailability(available: false, reason: .notCollected,
+                                             detail: Self.helperRequiredDetail)
         var capabilities = Dictionary(uniqueKeysWithValues: Self.sampledKinds.map { ($0, unavailable) })
         capabilities[.processGPUTime] = Self.processGPUTimeAvailability
         cache = AdvancedMetricsSnapshot(capabilities: capabilities)

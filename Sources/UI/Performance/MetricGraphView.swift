@@ -49,7 +49,7 @@ final class MetricGraphView: NSView {
     }
 
     /// Tooltip for a sleep-gap marker. Nothing is said about pausing: a gap can come from sleep or from a missed sample.
-    nonisolated static let sampleGapToolTip = "Sample gap"
+    nonisolated static let sampleGapToolTip = String(localized: "Sample gap")
 
     let style: Style
     private(set) var series: [MetricGraphSeries] = []

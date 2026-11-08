@@ -35,8 +35,10 @@ struct HistoryDayCalendar: Sendable {
 
     /// The gregorian calendar for the zone in effect now. It is rebuilt only when the zone changes.
     mutating func current() -> Calendar {
-        let zone = fixedTimeZone ?? TimeZone.current
-        if zone != timeZone {
+        // `TimeZone.current` is cached by Foundation after first use; the autoupdating zone follows a
+        // system time-zone change (travel, manual change) while the app keeps running.
+        let zone = fixedTimeZone ?? TimeZone(identifier: TimeZone.autoupdatingCurrent.identifier) ?? TimeZone.current
+        if zone.identifier != timeZone.identifier {
             timeZone = zone
             calendar = Self.makeCalendar(zone)
         }

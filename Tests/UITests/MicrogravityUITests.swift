@@ -263,6 +263,10 @@ final class MicrogravityUITests: XCTestCase {
 
         element("navigation.item.history", in: app).click()
         XCTAssertTrue(element("history.range.30-days", in: app).waitForExistence(timeout: 3))
+        // Applications start collapsed; expand the editor to reach its day rows.
+        let editorRow = app.outlineRows.containing(.any, identifier: "history.total.fixture-editor.application").firstMatch
+        XCTAssertTrue(editorRow.waitForExistence(timeout: 3))
+        editorRow.disclosureTriangles.firstMatch.click()
         let gap = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier BEGINSWITH %@", "history.gap.")
         ).firstMatch

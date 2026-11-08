@@ -80,14 +80,14 @@ enum ProcessColumn: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .name: return "Name"
-        case .pid: return "PID"
-        case .user: return "User"
-        case .cpu: return "CPU"
-        case .memory: return "Memory"
-        case .disk: return "Disk R / W"
-        case .network: return "Network"
-        case .gpu: return "GPU"
+        case .name: return String(localized: "Name")
+        case .pid: return String(localized: "PID")
+        case .user: return String(localized: "User")
+        case .cpu: return String(localized: "CPU")
+        case .memory: return String(localized: "Memory")
+        case .disk: return String(localized: "Disk R / W")
+        case .network: return String(localized: "Network")
+        case .gpu: return String(localized: "GPU")
         }
     }
 
@@ -312,12 +312,12 @@ enum ProcessRowModel {
         } else {
             badge = .none
         }
-        let tips = [read.toolTip.map { "Read: \($0)" }, write.toolTip.map { "Write: \($0)" }].compactMap { $0 }
+        let tips = [read.toolTip.map { String(localized: "Read: \($0)") }, write.toolTip.map { String(localized: "Write: \($0)") }].compactMap { $0 }
         return MetricCellPresentation(
-            valueText: "R \(read.valueText) · W \(write.valueText)",
+            valueText: String(localized: "R \(read.valueText) · W \(write.valueText)"),
             badge: badge,
             toolTip: tips.isEmpty ? nil : tips.joined(separator: "\n"),
-            accessibilityDescription: "Read \(read.accessibilityDescription), write \(write.accessibilityDescription)"
+            accessibilityDescription: String(localized: "Read \(read.accessibilityDescription), write \(write.accessibilityDescription)")
         )
     }
 

@@ -635,4 +635,26 @@ public struct ProcessActionResult: Codable, Equatable, Sendable {
 
 public protocol ProcessActioning: Sendable {
     func terminate(identity: ProcessIdentity, force: Bool) async -> ProcessActionResult
+    /// Quits the current user's Finder and opens it again, like Relaunch in the system Force Quit window.
+    /// Finder lives in a protected system location, so it is never signaled by PID; this is its only quit path.
+    func relaunchFinder(identity: ProcessIdentity) async -> ProcessActionResult
+}
+
+extension ProcessActioning {
+    public func relaunchFinder(identity: ProcessIdentity) async -> ProcessActionResult {
+        ProcessActionResult(identity: identity, force: false,
+                            outcome: .rejected(.protectedProcess, detail: "Relaunching Finder is not available."))
+    }
+}
+
+/// Finder is identified by its bundle and its fixed system location, never by name alone.
+public enum FinderProcess {
+    public static let bundleIdentifier = "com.apple.finder"
+    public static let executablePath = "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder"
+    public static let applicationPath = "/System/Library/CoreServices/Finder.app"
+
+    /// True for the current user's Finder process.
+    public static func matches(executablePath: String?, ownerUID: UInt32?, currentUID: UInt32) -> Bool {
+        executablePath == Self.executablePath && ownerUID == currentUID
+    }
 }

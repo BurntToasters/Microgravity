@@ -11,7 +11,7 @@ final class HistoryViewController: NSViewController, SnapshotUpdating, PageToolb
     private let defaults: UserDefaults
     private let outlineController: AppHistoryOutlineController
     private let banner = StatusBannerView(style: .info)
-    private let backgroundButton = NSButton(checkboxWithTitle: "Show Background Processes", target: nil, action: nil)
+    private let backgroundButton = NSButton(checkboxWithTitle: String(localized: "Show Background Processes"), target: nil, action: nil)
     private var resetItem: NSToolbarItem?
     private var backgroundItem: NSToolbarItem?
     private var lastSnapshot: MonitoringSnapshot?
@@ -47,15 +47,15 @@ final class HistoryViewController: NSViewController, SnapshotUpdating, PageToolb
         if identifier == Self.backgroundItemIdentifier { return backgroundToolbarItem(identifier) }
         guard identifier == Self.resetItemIdentifier else { return nil }
         if let resetItem { return resetItem }
-        let button = NSButton(title: "Reset History…", target: self, action: #selector(confirmReset))
+        let button = NSButton(title: String(localized: "Reset History…"), target: self, action: #selector(confirmReset))
         button.bezelStyle = .toolbar
         button.setAccessibilityIdentifier("history.action.reset")
         let item = NSToolbarItem(itemIdentifier: identifier)
-        item.label = "Reset History"
-        item.paletteLabel = "Reset History"
-        item.toolTip = "Clear the stored 30-day app history. Process and system state are not changed."
+        item.label = String(localized: "Reset History")
+        item.paletteLabel = String(localized: "Reset History")
+        item.toolTip = String(localized: "Clear the stored 30-day app history. Process and system state are not changed.")
         item.view = button
-        let menuItem = NSMenuItem(title: "Reset History…", action: #selector(confirmReset), keyEquivalent: "")
+        let menuItem = NSMenuItem(title: String(localized: "Reset History…"), action: #selector(confirmReset), keyEquivalent: "")
         menuItem.target = self
         item.menuFormRepresentation = menuItem
         resetItem = item
@@ -69,11 +69,11 @@ final class HistoryViewController: NSViewController, SnapshotUpdating, PageToolb
         backgroundButton.state = showsBackgroundProcesses ? .on : .off
         backgroundButton.setAccessibilityIdentifier("history.action.show-background")
         let item = NSToolbarItem(itemIdentifier: identifier)
-        item.label = "Show Background Processes"
-        item.paletteLabel = "Show Background Processes"
-        item.toolTip = "Include background daemons and services, not only applications you open."
+        item.label = String(localized: "Show Background Processes")
+        item.paletteLabel = String(localized: "Show Background Processes")
+        item.toolTip = String(localized: "Include background daemons and services, not only applications you open.")
         item.view = backgroundButton
-        let menuItem = NSMenuItem(title: "Show Background Processes", action: #selector(toggleBackgroundProcesses(_:)),
+        let menuItem = NSMenuItem(title: String(localized: "Show Background Processes"), action: #selector(toggleBackgroundProcesses(_:)),
                                   keyEquivalent: "")
         menuItem.target = self
         menuItem.state = backgroundButton.state
@@ -88,10 +88,10 @@ final class HistoryViewController: NSViewController, SnapshotUpdating, PageToolb
         view = DynamicWindowBackgroundView()
 
         let header = UIComponents.header(
-            title: "App History",
-            subtitle: "Per-app CPU, disk, and network totals. Gaps and counter resets stay visible."
+            title: String(localized: "App History"),
+            subtitle: String(localized: "Per-app CPU, disk, and network totals. Gaps and counter resets stay visible.")
         )
-        let range = UIComponents.label("Last 30 days", size: 12, weight: .semibold, color: .secondaryLabelColor)
+        let range = UIComponents.label(String(localized: "Last 30 days"), size: 12, weight: .semibold, color: .secondaryLabelColor)
         range.setAccessibilityIdentifier("history.range.30-days")
         let headerRow = NSStackView(views: [header, NSView(), range])
         headerRow.orientation = .horizontal
@@ -163,9 +163,9 @@ final class HistoryViewController: NSViewController, SnapshotUpdating, PageToolb
             let response = await SheetAlert.present(
                 on: window,
                 style: .warning,
-                messageText: "Reset App History",
-                informativeText: "This clears Microgravity’s stored 30-day aggregate history. It does not change process or operating-system state.",
-                buttons: ["Reset History", "Cancel"],
+                messageText: String(localized: "Reset App History"),
+                informativeText: String(localized: "This clears Microgravity’s stored 30-day aggregate history. It does not change process or operating-system state."),
+                buttons: [String(localized: "Reset History"), String(localized: "Cancel")],
                 defaultButtonIdentifier: "history.reset.confirm",
                 destructiveButtonIndex: 0
             )
@@ -182,9 +182,9 @@ final class HistoryViewController: NSViewController, SnapshotUpdating, PageToolb
         await SheetAlert.present(
             on: window,
             style: .warning,
-            messageText: "History could not be reset",
+            messageText: String(localized: "History could not be reset"),
             informativeText: message,
-            buttons: ["OK"]
+            buttons: [String(localized: "OK")]
         )
     }
 }

@@ -127,7 +127,7 @@ final class AccessibleTableModel: NSObject, NSTableViewDataSource, NSTableViewDe
     private let columnMenu = NSMenu()
     private var emptyState: EmptyStateView?
     private var emptyStateConfiguration = EmptyStateConfiguration(
-        symbolName: "tray", title: "Nothing to show", caption: nil
+        symbolName: "tray", title: String(localized: "Nothing to show"), caption: nil
     )
     var onSelectionChanged: ((String?) -> Void)?
 

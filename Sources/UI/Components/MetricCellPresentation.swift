@@ -46,8 +46,8 @@ struct MetricCellPresentation: Equatable {
         if reading.isPartial {
             valueText = number
             badge = .partial
-            toolTip = "Partial value. \(detail ?? "Some contributors were not collected.")"
-            accessibilityDescription = [number, "partial", detail].compactMap { $0 }.joined(separator: ", ")
+            toolTip = String(localized: "Partial value. \(detail ?? String(localized: "Some contributors were not collected."))")
+            accessibilityDescription = [number, String(localized: "partial"), detail].compactMap { $0 }.joined(separator: ", ")
         } else {
             valueText = number
             badge = .none
@@ -71,7 +71,7 @@ struct MetricCellPresentation: Equatable {
             valueText: "—",
             badge: .unavailable,
             toolTip: reasonText,
-            accessibilityDescription: reasonText.hasPrefix("Unavailable") ? reasonText : "Unavailable, \(reasonText)"
+            accessibilityDescription: reasonText.hasPrefix(String(localized: "Unavailable")) ? reasonText : String(localized: "Unavailable, \(reasonText)")
         )
     }
 

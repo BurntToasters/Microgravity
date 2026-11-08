@@ -17,14 +17,14 @@ enum SheetAlert {
                         style: NSAlert.Style = .warning,
                         messageText: String,
                         informativeText: String? = nil,
-                        buttons: [String] = ["OK"],
+                        buttons: [String] = [String(localized: "OK")],
                         defaultButtonIdentifier: String? = nil,
                         destructiveButtonIndex: Int? = nil) async -> NSApplication.ModalResponse {
         let alert = NSAlert()
         alert.alertStyle = style
         alert.messageText = messageText
         if let informativeText { alert.informativeText = informativeText }
-        for title in buttons.isEmpty ? ["OK"] : buttons {
+        for title in buttons.isEmpty ? [String(localized: "OK")] : buttons {
             alert.addButton(withTitle: title)
         }
         if let defaultButtonIdentifier, let defaultButton = alert.buttons.first {

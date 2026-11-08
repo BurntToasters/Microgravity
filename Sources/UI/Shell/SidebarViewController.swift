@@ -26,8 +26,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     private static let roots: [Node] = [
-        Node(group: "Monitor", pages: [.processes, .details, .performance, .history, .users]),
-        Node(group: "Inventory", pages: [.startup, .services]),
+        Node(group: String(localized: "Monitor"), pages: [.processes, .details, .performance, .history, .users]),
+        Node(group: String(localized: "Inventory"), pages: [.startup, .services]),
         Node(page: .settings)
     ]
 
@@ -37,7 +37,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     private let outlineView = NSOutlineView()
     private let footer: SidebarStatusFooter
     private let openURL: (URL) -> Void
-    let supportButton = NSButton(title: "Support Microgravity", target: nil, action: nil)
+    let supportButton = NSButton(title: String(localized: "Support Microgravity"), target: nil, action: nil)
 
     /// `openURL` opens a link in the user's default browser; tests replace it.
     init(monitoringStore: any MonitoringStore, openURL: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }) {
@@ -68,7 +68,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.dataSource = self
         outlineView.delegate = self
         outlineView.setAccessibilityIdentifier("navigation.sidebar")
-        outlineView.setAccessibilityLabel("Sections")
+        outlineView.setAccessibilityLabel(String(localized: "Sections"))
         outlineView.reloadData()
         for root in Self.roots where root.isGroup {
             outlineView.expandItem(root)
@@ -90,10 +90,10 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         supportButton.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
         supportButton.image = NSImage(systemSymbolName: "heart", accessibilityDescription: nil)
         supportButton.imagePosition = .imageLeading
-        supportButton.toolTip = "Open \(Self.supportURL.absoluteString) in your browser"
+        supportButton.toolTip = String(localized: "Open \(Self.supportURL.absoluteString) in your browser")
         supportButton.setAccessibilityIdentifier("sidebar.support")
-        supportButton.setAccessibilityLabel("Support Microgravity")
-        supportButton.setAccessibilityHelp("Opens the support page in your default browser.")
+        supportButton.setAccessibilityLabel(String(localized: "Support Microgravity"))
+        supportButton.setAccessibilityHelp(String(localized: "Opens the support page in your default browser."))
         supportButton.translatesAutoresizingMaskIntoConstraints = false
 
         footer.translatesAutoresizingMaskIntoConstraints = false
@@ -228,7 +228,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 final class SidebarStatusFooter: NSView {
     private let monitoringStore: any MonitoringStore
     private let samplingLine = NSTextField(labelWithString: "")
-    private let freshnessLine = NSTextField(labelWithString: "Waiting for the first sample")
+    private let freshnessLine = NSTextField(labelWithString: String(localized: "Waiting for the first sample"))
     private var refreshTimer: Timer?
     /// False while the window is hidden, minimized or fully covered. The timer does not run then.
     private var isWindowVisible = true
@@ -300,14 +300,14 @@ final class SidebarStatusFooter: NSView {
     func refresh(snapshot: MonitoringSnapshot? = nil) {
         let paused = monitoringStore.isPaused
         samplingLine.stringValue = paused
-            ? "Paused"
-            : "Sampling every \(SamplingControls.longTitle(monitoringStore.interval))"
+            ? String(localized: "Paused")
+            : String(localized: "Sampling every \(SamplingControls.longTitle(monitoringStore.interval))")
         samplingLine.setAccessibilityLabel(samplingLine.stringValue)
         if let snapshot = snapshot ?? monitoringStore.latestSnapshot {
             let time = UIFormat.time(snapshot.timestamp)
-            freshnessLine.stringValue = paused ? "Last sample \(time)" : "Updated \(time)"
+            freshnessLine.stringValue = paused ? String(localized: "Last sample \(time)") : String(localized: "Updated \(time)")
         } else {
-            freshnessLine.stringValue = "Waiting for the first sample"
+            freshnessLine.stringValue = String(localized: "Waiting for the first sample")
         }
         freshnessLine.setAccessibilityLabel(freshnessLine.stringValue)
     }

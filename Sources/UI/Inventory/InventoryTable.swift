@@ -52,7 +52,7 @@ final class InventoryTableController: NSObject, NSTableViewDataSource, NSTableVi
         scroll.borderType = .noBorder
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scrollView = scroll
-        emptyState = EmptyStateView.install(in: scroll, symbolName: "tray", title: "Nothing to show")
+        emptyState = EmptyStateView.install(in: scroll, symbolName: "tray", title: String(localized: "Nothing to show"))
         super.init()
         table.dataSource = self
         table.delegate = self

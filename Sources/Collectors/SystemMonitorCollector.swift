@@ -475,7 +475,9 @@ public actor SystemMonitorCollector: MonitoringCollecting {
 
         for entry in table.entries {
             let rawPID = entry.kp_proc.p_pid
-            guard rawPID > 0 else { continue }
+            // Zombies have exited and hold no task or resources; their reads fail, which would surface
+            // as collection failures and history gaps for a process that is already gone.
+            guard rawPID > 0, Int32(entry.kp_proc.p_stat) != SZOMB else { continue }
             let identity = Self.identity(of: entry)
             let parentPID = entry.kp_eproc.e_ppid
             let ownerUID = UInt32(entry.kp_eproc.e_ucred.cr_uid)

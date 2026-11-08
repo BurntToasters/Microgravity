@@ -17,7 +17,7 @@ final class MetricDetailViewController: NSViewController {
     private let titleLabel = NSTextField(labelWithString: "")
     private let subtitleLabel = NSTextField(labelWithString: "")
     private let bigValueLabel = NSTextField(labelWithString: "")
-    private let cpuModeControl = NSSegmentedControl(labels: ["Overall", "Logical Processors"],
+    private let cpuModeControl = NSSegmentedControl(labels: [String(localized: "Overall"), String(localized: "Logical Processors")],
                                                     trackingMode: .selectOne, target: nil, action: nil)
     private let windowPicker = NSSegmentedControl(labels: PerformanceWindow.allCases.map(\.title),
                                                   trackingMode: .selectOne, target: nil, action: nil)
@@ -28,6 +28,8 @@ final class MetricDetailViewController: NSViewController {
     private let captionLabel = NSTextField(wrappingLabelWithString: "")
     private let statsGrid = MetricStatsGridView()
     private let interfaceSection = NSStackView()
+    private var interfaceRowNames: [String]?
+    private var interfaceRowViews: [InterfaceRowView] = []
     private let memorySection = NSStackView()
     private let pressureBlock = NSStackView()
     private let pressureChip = StateChipView()
@@ -61,12 +63,12 @@ final class MetricDetailViewController: NSViewController {
         cpuModeControl.target = self
         cpuModeControl.action = #selector(cpuModePicked(_:))
         cpuModeControl.setAccessibilityIdentifier("performance.cpu.mode")
-        cpuModeControl.setAccessibilityLabel("CPU view")
+        cpuModeControl.setAccessibilityLabel(String(localized: "CPU view"))
         windowPicker.segmentStyle = .rounded
         windowPicker.target = self
         windowPicker.action = #selector(windowPicked(_:))
         windowPicker.setAccessibilityIdentifier("performance.window")
-        windowPicker.setAccessibilityLabel("Graph time window")
+        windowPicker.setAccessibilityLabel(String(localized: "Graph time window"))
 
         stateLabel.font = .systemFont(ofSize: 13, weight: .medium)
         stateLabel.textColor = .labelColor
@@ -109,7 +111,7 @@ final class MetricDetailViewController: NSViewController {
         interfaceSection.orientation = .vertical
         interfaceSection.alignment = .leading
         interfaceSection.spacing = 6
-        let interfaceTitle = Self.sectionTitle("Interfaces")
+        let interfaceTitle = Self.sectionTitle(String(localized: "Interfaces"))
         interfaceSection.addArrangedSubview(interfaceTitle)
         Self.fillWidth(interfaceTitle, in: interfaceSection)
 
@@ -216,12 +218,12 @@ final class MetricDetailViewController: NSViewController {
         pressureBlock.spacing = 6
         pressureBlock.setAccessibilityElement(true)
         pressureBlock.setAccessibilityRole(.group)
-        pressureBlock.setAccessibilityLabel("Memory pressure")
+        pressureBlock.setAccessibilityLabel(String(localized: "Memory pressure"))
         pressureBlock.setAccessibilityIdentifier("performance.graph.memory-pressure")
         pressureChip.label.setAccessibilityIdentifier("performance.memory-pressure.state")
         pressureStrip.setAccessibilityIdentifier("performance.memory-pressure.graph")
-        let title = Self.sectionTitle("Memory pressure")
-        let caption = NSTextField(wrappingLabelWithString: "Normal, warning, and critical samples over the graph window.")
+        let title = Self.sectionTitle(String(localized: "Memory pressure"))
+        let caption = NSTextField(wrappingLabelWithString: String(localized: "Normal, warning, and critical samples over the graph window."))
         caption.font = .systemFont(ofSize: 10)
         caption.textColor = .secondaryLabelColor
         caption.maximumNumberOfLines = 0
@@ -238,7 +240,7 @@ final class MetricDetailViewController: NSViewController {
         swapBlock.spacing = 6
         swapBlock.setAccessibilityElement(true)
         swapBlock.setAccessibilityRole(.group)
-        swapBlock.setAccessibilityLabel("Swap")
+        swapBlock.setAccessibilityLabel(String(localized: "Swap"))
         swapBlock.setAccessibilityIdentifier("performance.graph.swap")
         swapValueLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
         swapValueLabel.textColor = .labelColor
@@ -246,9 +248,9 @@ final class MetricDetailViewController: NSViewController {
         swapValueLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         swapValueLabel.setAccessibilityIdentifier("performance.swap.value")
         swapGraph.setAccessibilityIdentifier("performance.swap.graph")
-        swapGraph.setAccessibilityLabel("Swap used over time")
-        swapBar.setAccessibilityLabel("Swap used against total")
-        swapBlock.addArrangedSubview(Self.sectionTitle("Swap"))
+        swapGraph.setAccessibilityLabel(String(localized: "Swap used over time"))
+        swapBar.setAccessibilityLabel(String(localized: "Swap used against total"))
+        swapBlock.addArrangedSubview(Self.sectionTitle(String(localized: "Swap")))
         swapBlock.addArrangedSubview(swapValueLabel)
         Self.addFullWidth(swapBar, to: swapBlock)
         Self.addFullWidth(swapGraph, to: swapBlock)
@@ -261,7 +263,7 @@ final class MetricDetailViewController: NSViewController {
         pressureChip.toolTip = memory.pressureText
         pressureBlock.setAccessibilityValue(memory.pressureText)
         pressureStrip.update(samples: memory.pressureSamples, span: timeSpan)
-        pressureStrip.setAccessibilityLabel("Memory pressure history, \(memory.pressureText)")
+        pressureStrip.setAccessibilityLabel(String(localized: "Memory pressure history, \(memory.pressureText)"))
 
         swapValueLabel.stringValue = memory.swapValue
         swapValueLabel.setAccessibilityLabel(memory.swapValue)
@@ -271,62 +273,33 @@ final class MetricDetailViewController: NSViewController {
                          mapping: .time(timeSpan))
     }
 
+    /// Interface rows are reused while the interface list keeps its order; only their text changes each sample,
+    /// so the section does not rebuild its views (and VoiceOver keeps its place) on every refresh.
     private func updateInterfaces(_ rows: [NetworkInterfaceRow]) {
+        let names = rows.map(\.name)
+        if names == interfaceRowNames, interfaceRowViews.count == rows.count {
+            for (view, row) in zip(interfaceRowViews, rows) { view.apply(row) }
+            return
+        }
         for view in interfaceSection.arrangedSubviews.dropFirst() {
             interfaceSection.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
+        interfaceRowNames = names
+        interfaceRowViews = []
         if rows.isEmpty {
-            let empty = Self.caption("No network interfaces reported.")
+            let empty = Self.caption(String(localized: "No network interfaces reported."))
             interfaceSection.addArrangedSubview(empty)
             Self.fillWidth(empty, in: interfaceSection)
             return
         }
         for row in rows {
-            let view = makeInterfaceRow(row)
+            let view = InterfaceRowView()
+            view.apply(row)
             interfaceSection.addArrangedSubview(view)
             Self.fillWidth(view, in: interfaceSection)
+            interfaceRowViews.append(view)
         }
-    }
-
-    private func makeInterfaceRow(_ row: NetworkInterfaceRow) -> NSView {
-        let name = NSTextField(labelWithString: row.name)
-        name.font = .systemFont(ofSize: 12, weight: .semibold)
-        name.textColor = .labelColor
-        name.lineBreakMode = .byTruncatingTail
-        let membership = Self.caption(row.membership)
-        let left = NSStackView(views: [name, membership])
-        left.orientation = .vertical
-        left.alignment = .width
-        left.spacing = 2
-
-        let rates = NSTextField(labelWithString: row.rates)
-        rates.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-        rates.textColor = .labelColor
-        rates.alignment = .right
-        rates.lineBreakMode = .byTruncatingTail
-        let totals = Self.caption(row.totals)
-        totals.alignment = .right
-        let right = NSStackView(views: [rates, totals])
-        right.orientation = .vertical
-        right.alignment = .width
-        right.spacing = 2
-
-        let container = NSStackView(views: [left, Self.spacer(), right])
-        container.orientation = .horizontal
-        container.alignment = .centerY
-        container.spacing = 8
-        for view in [left, right, container] as [NSView] {
-            view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            view.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        }
-        for label in [name, membership, rates, totals] {
-            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        }
-        container.setAccessibilityElement(true)
-        container.setAccessibilityLabel("\(row.name), \(row.rates), \(row.totals), \(row.membership)")
-        container.setAccessibilityIdentifier("performance.network.interface.\(row.name)")
-        return container
     }
 
     // MARK: Actions
@@ -586,5 +559,63 @@ private final class PerformanceCardView: NSView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         needsDisplay = true
+    }
+}
+
+/// One network interface: name and membership on the left, rates and totals on the right.
+@MainActor
+private final class InterfaceRowView: NSStackView {
+    private let name = NSTextField(labelWithString: "")
+    private let membership = NSTextField(labelWithString: "")
+    private let rates = NSTextField(labelWithString: "")
+    private let totals = NSTextField(labelWithString: "")
+
+    init() {
+        super.init(frame: .zero)
+        name.font = .systemFont(ofSize: 12, weight: .semibold)
+        name.textColor = .labelColor
+        rates.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        rates.textColor = .labelColor
+        rates.alignment = .right
+        for caption in [membership, totals] {
+            caption.font = .systemFont(ofSize: 11)
+            caption.textColor = .secondaryLabelColor
+        }
+        totals.alignment = .right
+        for label in [name, membership, rates, totals] {
+            label.lineBreakMode = .byTruncatingTail
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
+        let left = NSStackView(views: [name, membership])
+        left.orientation = .vertical
+        left.alignment = .width
+        left.spacing = 2
+        let right = NSStackView(views: [rates, totals])
+        right.orientation = .vertical
+        right.alignment = .width
+        right.spacing = 2
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        setViews([left, spacer, right], in: .leading)
+        orientation = .horizontal
+        alignment = .centerY
+        spacing = 8
+        for view in [left, right, self] as [NSView] {
+            view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        }
+        setAccessibilityElement(true)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func apply(_ row: NetworkInterfaceRow) {
+        name.stringValue = row.name
+        membership.stringValue = row.membership
+        rates.stringValue = row.rates
+        totals.stringValue = row.totals
+        setAccessibilityLabel("\(row.name), \(row.rates), \(row.totals), \(row.membership)")
+        setAccessibilityIdentifier("performance.network.interface.\(row.name)")
     }
 }

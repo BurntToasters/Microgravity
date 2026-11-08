@@ -12,13 +12,13 @@ enum AppHistoryColumn: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .application: return "Application"
-        case .cpu: return "CPU time"
-        case .diskRead: return "Disk read"
-        case .diskWrite: return "Disk write"
-        case .networkReceive: return "Network received"
-        case .networkTransmit: return "Network sent"
-        case .coverage: return "Samples / gaps / resets"
+        case .application: return String(localized: "Application")
+        case .cpu: return String(localized: "CPU time")
+        case .diskRead: return String(localized: "Disk read")
+        case .diskWrite: return String(localized: "Disk write")
+        case .networkReceive: return String(localized: "Network received")
+        case .networkTransmit: return String(localized: "Network sent")
+        case .coverage: return String(localized: "Samples / gaps / resets")
         }
     }
 
@@ -137,7 +137,7 @@ enum AppHistoryBuilder {
     static func summarize(_ summaries: [ApplicationDailyHistorySummary], through timestamp: Date,
                           showsBackgroundProcesses: Bool) -> Summary {
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
+        calendar.timeZone = .autoupdatingCurrent
         let today = calendar.startOfDay(for: timestamp)
         let cutoff = calendar.date(byAdding: .day, value: -(windowDays - 1), to: today) ?? today
         let window = summaries.filter { $0.dayStart >= cutoff && $0.dayStart <= today }
@@ -228,10 +228,10 @@ enum AppHistoryBuilder {
 
     /// "Today", "Yesterday", or a localized medium date. Judged on the local calendar, relative to `today`.
     static func dayTitle(_ dayStart: Date, today: Date, calendar: Calendar) -> String {
-        if calendar.isDate(dayStart, inSameDayAs: today) { return "Today" }
+        if calendar.isDate(dayStart, inSameDayAs: today) { return String(localized: "Today") }
         if let yesterday = calendar.date(byAdding: .day, value: -1, to: today),
            calendar.isDate(dayStart, inSameDayAs: yesterday) {
-            return "Yesterday"
+            return String(localized: "Yesterday")
         }
         return dayTitleFormatter.string(from: dayStart)
     }
@@ -241,8 +241,8 @@ enum AppHistoryBuilder {
     static func totalText(_ values: [Double?], unit: MetricUnit, gapCount: Int) -> AppHistoryCellText {
         let present = values.compactMap { $0 }.filter { $0.isFinite }
         guard !present.isEmpty else {
-            return AppHistoryCellText(display: "Unavailable",
-                                      detail: gapCount > 0 ? "No measured value; \(gapCount) gap(s)" : nil)
+            return AppHistoryCellText(display: String(localized: "Unavailable"),
+                                      detail: gapCount > 0 ? String(localized: "No measured value; \(gapCount) gap(s)") : nil)
         }
         let formatted = UIFormat.metric(MetricReading(value: present.reduce(0, +), unit: unit, timestamp: .distantPast))
         let missingDays = values.filter { $0 == nil }.count
@@ -254,21 +254,21 @@ enum AppHistoryBuilder {
         if gapCount > 0 { reasons.append("\(gapCount) gap(s)") }
         return AppHistoryCellText(
             display: "≥ \(formatted)",
-            detail: "Measured \(formatted); partial — \(reasons.joined(separator: ", ")); actual total may be higher"
+            detail: String(localized: "Measured \(formatted); partial — \(reasons.joined(separator: ", ")); actual total may be higher")
         )
     }
 
     /// One day of an application. Gaps on the day make the value a partial lower bound, shown with "≥".
     static func dailyText(_ value: Double?, unit: MetricUnit, gaps: Int) -> AppHistoryCellText {
         guard let value, value.isFinite else {
-            return AppHistoryCellText(display: gaps > 0 ? "Missing" : "Unavailable",
-                                      detail: gaps > 0 ? "No measured value; \(gaps) gap(s)" : nil)
+            return AppHistoryCellText(display: gaps > 0 ? String(localized: "Missing") : String(localized: "Unavailable"),
+                                      detail: gaps > 0 ? String(localized: "No measured value; \(gaps) gap(s)") : nil)
         }
         let formatted = UIFormat.metric(MetricReading(value: value, unit: unit, timestamp: .distantPast))
         guard gaps > 0 else { return AppHistoryCellText(display: formatted, detail: nil) }
         return AppHistoryCellText(
             display: "≥ \(formatted)",
-            detail: "Measured \(formatted); partial — \(gaps) gap(s) on this day; actual value may be higher"
+            detail: String(localized: "Measured \(formatted); partial — \(gaps) gap(s) on this day; actual value may be higher")
         )
     }
 
@@ -287,6 +287,7 @@ enum AppHistoryBuilder {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
+        formatter.timeZone = .autoupdatingCurrent
         return formatter
     }()
 
@@ -295,6 +296,7 @@ enum AppHistoryBuilder {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .none
+        formatter.timeZone = .autoupdatingCurrent
         return formatter
     }()
 }
@@ -336,7 +338,7 @@ enum AppHistoryStatus {
     static func banner(availability: MetricAvailability?, applicationCount: Int, hiddenBackgroundCount: Int = 0,
                        gaps: Int, counterResets: Int, timestamp: Date) -> Banner {
         if let availability, !availability.available {
-            return Banner(text: "App history is unavailable · "
+            return Banner(text: String(localized: "App history is unavailable · ")
                             + UIFormat.unavailable(availability.reason, detail: availability.detail),
                           style: .error)
         }
@@ -344,33 +346,33 @@ enum AppHistoryStatus {
             var problems: [String] = []
             if gaps > 0 { problems.append("\(gaps) gap(s)") }
             if counterResets > 0 { problems.append("\(counterResets) counter reset(s)") }
-            return Banner(text: "Some values are partial: \(problems.joined(separator: " and ")) in the last \(AppHistoryBuilder.windowDays) days. Affected values are marked ≥.",
+            return Banner(text: String(localized: "Some values are partial: \(problems.joined(separator: " and ")) in the last \(AppHistoryBuilder.windowDays) days. Affected values are marked ≥."),
                           style: .info)
         }
         guard applicationCount > 0 else {
             if hiddenBackgroundCount > 0 {
-                return Banner(text: "No applications in history. \(hiddenBackgroundCount) background \(hiddenBackgroundCount == 1 ? "process" : "processes") hidden.",
+                return Banner(text: String(localized: "No applications in history. \(hiddenBackgroundCount) background \(hiddenBackgroundCount == 1 ? String(localized: "process") : String(localized: "processes")) hidden."),
                               style: .info)
             }
-            return Banner(text: "No application history recorded yet.", style: .info)
+            return Banner(text: String(localized: "No application history recorded yet."), style: .info)
         }
-        var text = "\(applicationCount) applications"
+        var text = String(localized: "\(applicationCount) applications")
         if hiddenBackgroundCount > 0 {
-            text += " · \(hiddenBackgroundCount) background \(hiddenBackgroundCount == 1 ? "process" : "processes") hidden"
+            text += String(localized: " · \(hiddenBackgroundCount) background \(hiddenBackgroundCount == 1 ? String(localized: "process") : String(localized: "processes")) hidden")
         }
-        return Banner(text: text + " · updated \(UIFormat.time(timestamp))", style: .info)
+        return Banner(text: text + String(localized: " · updated \(UIFormat.time(timestamp))"), style: .info)
     }
 
     static func emptyState(availability: MetricAvailability?, hiddenBackgroundCount: Int = 0) -> (title: String, caption: String) {
         if let availability, !availability.available {
-            return ("App history is unavailable",
+            return (String(localized: "App history is unavailable"),
                     UIFormat.unavailable(availability.reason, detail: availability.detail))
         }
         if hiddenBackgroundCount > 0 {
-            return ("No application history shown",
-                    "Only background processes have history. Turn on Show Background Processes to list them.")
+            return (String(localized: "No application history shown"),
+                    String(localized: "Only background processes have history. Turn on Show Background Processes to list them."))
         }
-        return ("No app history yet",
-                "Totals appear after Microgravity records its first samples. History is kept for \(AppHistoryBuilder.windowDays) days.")
+        return (String(localized: "No app history yet"),
+                String(localized: "Totals appear after Microgravity records its first samples. History is kept for \(AppHistoryBuilder.windowDays) days."))
     }
 }

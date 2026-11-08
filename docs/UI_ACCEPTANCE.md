@@ -46,7 +46,8 @@ argument alone cannot switch a production build to fixture data.
   process and its available actions.
 - Details is a flat process inventory showing PID, owner, parent PID, executable
   path, CPU, memory, disk, available network and GPU columns. Unsupported fields
-  are labeled unavailable; they are never presented as zero.
+  are labeled unavailable; they are never presented as zero. Numeric columns
+  right-align their headers and trail-align their values.
 - Quit asks the core to act on the selected stable identity. Force Quit requires
   confirmation in a window sheet. The core must revalidate that identity at
   action time; if the PID was reused or the target exited, the UI reports that
@@ -91,7 +92,10 @@ and the Settings caption must match it.
   configured refresh interval is 0.5, 1, 2, or 5 seconds.
 - App History is one outline of applications and days. It displays at most 30
   days of measured application totals. Missing samples are shown as gaps, not
-  interpolated as zero. Reset is explicit and confirmed in a window sheet;
+  interpolated as zero. A partial total (a lower bound because samples are
+  missing) displays as `≥ <value>`; its tooltip and accessibility label give the
+  full measurement detail. An unavailable total displays "Unavailable", never
+  zero. Numeric sorting uses the underlying value. Reset is explicit and confirmed in a window sheet;
   history reset does not clear process or operating-system state.
 - Pre-release builds recorded per-app CPU seconds in the wrong unit. Histories
   from those builds must be reset before their CPU values are relied on.
@@ -111,7 +115,8 @@ and the Settings caption must match it.
 
 ## Settings and integrations
 
-- Settings is a System Settings–style form. It exposes System/Light/Dark
+- Settings is a System Settings–style form, top-anchored with natural card
+  heights. It exposes System/Light/Dark
   appearance, the four refresh intervals, pause/resume, confirmed history reset,
   and the helper, login-item, and update integration states.
 - Helper setup and removal, login-item control, and updates are routed through an
@@ -122,7 +127,8 @@ and the Settings caption must match it.
 ## Failure-first test cases
 
 The XCTest UI suite launches with `--ui-test-fixtures`; production launches use
-the live data provider only. UI tests must cover these failure scenarios before
+the live data provider only. Fixture launches do not read or write Details,
+Startup, or Services table column autosave in the real app preferences domain. UI tests must cover these failure scenarios before
 the corresponding surface is considered complete:
 
 1. PID reuse or process exit between selection and Force Quit: confirmation is
@@ -145,16 +151,28 @@ The deterministic fixture suite captures an XCTest screenshot attachment for
 each principal navigation page. Attachments belong to the `.xcresult` bundle
 produced by the native test scheme.
 
-The latest signed suite executed 22 UI tests: 21 passed and 1 failed, with no
-skips. The visual minimum-size test measured 1280 × 820 instead of the required
-960 × 600; three resize-related assertions failed. It produced 24 default-size
-images (2,560 × 1,640 pixels) across eight pages and three appearances, but no
-minimum-size images. Manager review found the Settings Dark helper explanation
-truncated. The partial History CPU lower bound also still needs to be readable;
-numeric sorting tests pass, but that does not prove the formatted value is
-legible. The latest 229-test composite hard gate failed (Core 207, UI 21 passed,
-UI 1 failed), so the earlier 224-test pass on the preceding patch is not current
-release evidence. An external host audit of the accepted cleanup patch found
-zero nonempty fixture domains and zero fixture autosave keys. Manual all-page
-visual review, VoiceOver, live controlled-process sheet checks, and hosted CI
-validation remain incomplete.
+The latest signed composite run (`npm run test:all`) executed 23 UI tests with 0
+failures and 0 skipped. Visual coverage:
+
+- `testVisualAcceptanceCapturesAllPagesAtBothSizesAndAppearances` captures 8
+  pages in System, Light, and Dark appearances at the default size (1280 × 820)
+  and the minimum size (960 × 600): 48 captures. Default captures measured
+  1280 × 820 points and minimum captures measured 960 × 600 points at display
+  scale 2.00. The minimum size is reached by relaunching the fixture with the
+  DEBUG, fixture-only `--ui-test-window-content-size=960x600` flag, which goes
+  through the production content-size path. The manifest records measured window
+  frames.
+- `testHistoryGapVisualCapturesAtDefaultAndMinimumSizes` captures the
+  `--ui-test-history-gap` App History state at both sizes.
+- The manager reviewed all captures. Known open visual issues are listed in
+  [implementation status](IMPLEMENTATION_STATUS.md#known-gaps). Automated
+  appearance selection does not establish full visual acceptance.
+
+Window drag-resize is not automated. XCUITest drags do not change window frames
+on the VM host used for these runs. Minimum-size and geometry behavior is covered
+by Core `WindowTests`. A manual drag-resize check is still required.
+
+An external host Preferences audit after the final run found zero nonempty
+`Microgravity.UITests.*` domains and zero UI-fixture keys in the app preferences.
+Manual all-page visual review, VoiceOver, live controlled-process sheet checks,
+and hosted CI validation remain incomplete.

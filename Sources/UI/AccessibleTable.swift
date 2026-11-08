@@ -137,6 +137,14 @@ final class AccessibleTableModel: NSObject, NSTableViewDataSource, NSTableViewDe
 
     /// Replaces the rows, diffing against the current rows. Selection is kept by row ID.
     func replaceRows(_ rows: [AccessibleTableRow], in table: NSTableView) {
+        // Values and sort keys are read by column index, so a row built in a different order than the
+        // column specs silently shows and sorts the wrong data. Catch that in debug builds.
+        for row in rows {
+            assert(row.values.count == columns.count,
+                   "Row \(row.id) has \(row.values.count) values for \(columns.count) columns")
+            assert(row.sortKeys.count == columns.count,
+                   "Row \(row.id) has \(row.sortKeys.count) sort keys for \(columns.count) columns")
+        }
         let selectedID = selectedRowID(in: table)
         sourceRows = rows
         applyRows(sortedRows(sourceRows, descriptors: table.sortDescriptors), in: table)
@@ -381,6 +389,9 @@ private final class AccessibleTableCellView: NSTableCellView {
                    isNumeric: Bool, icon: NSImage?, showsIconSlot: Bool, badge: String?) {
         label.stringValue = value
         label.alignment = alignment
+        // Right-aligned values fill the cell so trailing text alignment reaches the trailing inset, matching
+        // the header. Other cells keep the label at intrinsic width so the first-column badge sits after the name.
+        stack.distribution = alignment == .right ? .fill : .gravityAreas
         label.font = isNumeric
             ? .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
             : .systemFont(ofSize: 12)

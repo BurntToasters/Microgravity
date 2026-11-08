@@ -1,8 +1,11 @@
 # Implementation status
 
-Status for Microgravity 0.1.0, checked 2026-11-07 on macOS 27.2 (arm64), Xcode
-27.2 (27B52), Node.js 26.13.0. Results are for changes on top of commit
-`af1359c`. Re-run the full release gates before tagging.
+Status for Microgravity 0.1.0, checked 2026-11-07 on macOS 27.2 build 26B123
+(arm64 virtual machine), Xcode 27.2 (27B52), Node.js 26.13.0. Results are for
+commit `ec836a6` plus the uncommitted `gate/0.1.0` changes. They were run from
+an isolated worktree outside `~/Documents` whose changed-file bytes matched the
+canonical tree. Re-run the full release gates from a clean canonical checkout
+before tagging.
 
 Intended behavior is in [UI acceptance](UI_ACCEPTANCE.md). Collector, history,
 and process-action regressions are in [core failure cases](FAILURE_CASES_CORE.md).
@@ -14,52 +17,56 @@ The release procedure and the 0.1.0 UI gate are in [RELEASING.md](RELEASING.md).
 | --- | --- | --- |
 | Workspace validation | `npm run validate` | pass |
 | Project and version sync | `npm run project:sync -- --check`, `npm run sync-version -- --check` | pass |
-| Node tests | `npm run test:node` | 32 passed, 0 failed |
-| Core XCTest | Core command in [RELEASING.md](RELEASING.md) | 207 passed in latest composite run; 0 skipped |
-| Debug build | `npm run build:debug` | pass after app cleanup change; strict Debug build |
-| Release smoke | `npm run build:release-smoke` | pass after app cleanup change (unsigned universal Release compile) |
-| Bundle icon check | `validateWorkspace({ bundle })` against the Debug app | pass in verification checkout |
+| Node tests | `npm run test:node` | 32 passed, 0 failed, 0 skipped |
+| Core XCTest | signed composite run (`npm run test:all`) | 220 executed; 0 failed; 0 skipped |
+| Debug build | `npm run build:debug` | pass; strict Debug build |
+| Release smoke | `npm run build:release-smoke` | pass (unsigned universal Release compile) |
+| Bundle icon check | `validateWorkspace({ bundle })` against the Debug app | pass in an earlier verification checkout; not re-run for this change set |
 | Strict concurrency diagnostics | strict Debug build | pass |
-| Runtime diagnostics | final composite XCTest audit | 22 runtime warnings remain. Helper validation now runs in the background and the focused Core trace warning is resolved; a separate UI Security callback warning remains. |
-| Signed UI XCTest | signed command in [RELEASING.md](RELEASING.md) | 22 executed: 21 passed, 1 failed; 0 skipped. Three assertions failed in the minimum-size visual test. |
-| Composite `npm run test:all` | manager verification checkout based on `af1359c` | 229 executed (Core 207 + UI 22): 228 passed, 1 failed, 0 skipped. Result bundle: `/private/tmp/microgravity-final-audit-6nwsxljc/final-test-all.xcresult` |
-| Fixture preferences | external host Preferences audit after suite | 0 nonempty `Microgravity.UITests.*` domains and 0 fixture autosave keys |
-| Screenshot review | latest visual XCTest attachments | 24 default-size PNGs at 2,560 × 1,640 pixels; no minimum-size images. Manifest: `/private/tmp/microgravity-final-audit-6nwsxljc/attachments/manifest.json`; measurements: `/private/tmp/microgravity-final-audit-6nwsxljc/default-captures.json`. Settings Dark inspection found truncated helper text; History CPU partial lower-bound readability remains unresolved. Not a full visual pass. |
-| Manual UI checklist | [RELEASING.md](RELEASING.md) | pending: all-page visual review at both sizes, VoiceOver, and manual controlled-process Force Quit / Reset History sheet checks |
-| Hosted CI | `.github/workflows/ci.yml` | not run; `macos-26` availability confirmed by GitHub docs below |
+| Runtime diagnostics | signed composite run, unified log attribution | 23 occurrences of "This method should not be called on the main thread as it may lead to UI unresponsiveness." One per UI test that launches the app; 0 from Core tests. Not attributed to Microgravity source frames. Unresolved and not suppressed; not a zero-diagnostics pass. See Known gaps. |
+| Signed UI XCTest | signed composite run (UI part of `npm run test:all`) | 23 executed; 0 failed; 0 skipped |
+| Composite `npm run test:all` | `MICROGRAVITY_UI_SIGNING_IDENTITY='Apple Development' MICROGRAVITY_UI_TEAM_ID=FYJZP8B2KG npm run test:all` | exit 0; Passed; 243 executed (Core 220 + UI 23); 0 failed; 0 skipped; 0 expected failures. Reported `dirty worktree; no reusable release proof recorded`. Local result bundle: `DerivedData/Evidence/gate-2026-11-07/final-test-all.xcresult` (gitignored, not committed). |
+| Fixture preferences | host Preferences audit after the final suite | 0 nonempty `Microgravity.UITests.*` domains; 0 UI-fixture keys in `run.rosie.microgravity.plist`. Two `NSWindow Frame WindowTests-<UUID>` keys from an older Core run on a 2560 × 1297 display remain; not touched. |
+| Visual matrix | `testVisualAcceptanceCapturesAllPagesAtBothSizesAndAppearances` (signed composite run) | 48 captures: 8 pages (Processes, Performance, App History, Startup, Users, Details, Services, Settings) × 3 appearances (System, Light, Dark) × 2 sizes. All 24 default captures measured 1280 × 820 pt (2560 × 1640 px). All 24 minimum captures measured 960 × 600 pt (1920 × 1200 px). Display scale 2.00. Appearance was selected through the Settings Appearance pop-up and verified. The runner's effective appearance was darkAqua, so System matches Dark on this host. Minimum size is reached by relaunching with the DEBUG, fixture-only `--ui-test-window-content-size=960x600` flag, which uses the production content-size path. Frames are measured, not faked. Manifest: `DerivedData/Evidence/gate-2026-11-07/capture-manifest.csv`. |
+| History gap captures | `testHistoryGapVisualCapturesAtDefaultAndMinimumSizes` | 2 captures (default and minimum) of the `--ui-test-history-gap` App History state |
+| Capture review | manager review of all captures | All 48 matrix captures and 2 history-gap captures reviewed (contact sheets and full-resolution crops). Known open visual issues are listed under Known gaps. Not a human release review. |
+| Manual UI checklist | [RELEASING.md](RELEASING.md) | pending: see Known gaps, item 2 |
+| Hosted CI | `.github/workflows/ci.yml` | not run. Blocked: the repository owner's GitHub Actions minutes are exhausted for this month. Not a failure. `macos-26` availability is confirmed by GitHub docs below. |
 
-An earlier signed gate passed 224 tests on the app-cleanup patch. That result is
-superseded for the current visual-coverage patch: the latest manager composite
-run executed 229 tests, with 228 passing and the visual minimum-size test
-failing. Its window remained at 1,280 × 820 instead of resizing to 960 × 600;
-three assertions failed in that one test. The run produced 24 default-size
-screenshots (all 2,560 × 1,640 pixels) and no minimum-size images. The Settings
-Dark capture inspected by the manager truncates the helper explanation, and the
-History CPU partial lower bound still needs to remain readable. Do not treat
-the older 224-test result or these partial captures as release evidence.
+Changes verified in this run. Each has Core regression tests:
 
-The current run also confirms that fixture refresh, full-identity selection,
-native group expansion persistence, numeric history sorting, and app-owned
-test-defaults cleanup tests pass. An external host Preferences audit of the
-accepted cleanup patch found zero nonempty fixture domains and zero fixture
-autosave keys. The source worktree is dirty and the latest composite gate failed,
-so there is no reusable release proof. Automation Mode was not sampled during
-the tests. The final composite audit recorded 22 runtime warnings; helper
-validation now runs in the background and the focused Core trace warning is
-resolved, but a separate UI Security callback warning remains.
+- Settings helper caption ("Lets you quit processes owned by other standard
+  users. System and root processes stay protected.") wraps instead of
+  truncating.
+- App History partial totals show a compact `≥ <value>` (for example
+  `≥ 108.0 s`). The full text (`Measured 108.0 s; partial — 1 gap(s); actual
+  total may be higher`) is in the tooltip and accessibility label. Unavailable
+  still shows "Unavailable", never zero. Numeric sorting is unchanged.
+- Details showed values from the wrong columns in six columns (CPU showed the
+  executable path, and Executable path showed GPU). Those columns also sorted by
+  the wrong keys. Row values now follow the column order, and a DEBUG assertion
+  checks that value and sort-key counts match the columns.
+- Right-aligned numeric columns (Users, Details, and the App History outline)
+  now trail-align their values under right-aligned headers.
+- Settings is top-anchored with natural card heights. It was bottom-anchored,
+  which opened scrolled to the bottom at 960 × 600.
+- Fixture launches no longer read or write Details, Startup, or Services table
+  column autosave in the real app preferences domain.
 
-Earlier accessibility output reported a 12,784 pt Processes outline. A later
-automated matrix produced 24 default-size captures across eight pages and three
-appearances, but no minimum-size captures because the resize interaction did
-not change the measured window frame. Only selected captures were inspected;
-the Settings Dark helper line truncates. Automated appearance selection does
-not establish full visual acceptance.
+Drag-resize is not automated. On this VM host, XCUITest-synthesized drags never
+changed window frames. Nine edge and corner resize drags and a title-bar move
+all left the frame at 1280 × 820. The earlier minimum-size failure came from
+this environment limit, not from an app resize bug. Window minimum and geometry
+are covered by Core `WindowTests`: content minimum 960 × 600, resizable style,
+exact minimum and custom 1100 × 700 frames stable across sidebar selection,
+the showPage menu action, and appearance changes, re-expansion from minimum,
+and the fixture size-flag parser. A manual drag-resize check is still needed.
 
-Four app-only screenshots from an earlier signed test run are committed under
-[`screenshots/`](screenshots/): Processes, Performance, and Settings in Light
-and Dark appearance. They show fixture states. The latest default-size matrix
-attachments are in the result bundle above; it did not produce minimum-size
-images. No manual VoiceOver or live controlled-process sheet review is claimed.
+Four app-only screenshots are committed under [`screenshots/`](screenshots/).
+Processes and Performance (dark) are from an earlier signed test run. The
+Settings images (Light and Dark) are the default-size captures from the final
+visual matrix run, downscaled to 2080 px wide. All four show fixture states. No
+manual VoiceOver or live controlled-process sheet review is claimed.
 
 ## Implemented
 
@@ -107,14 +114,15 @@ UI (AppKit):
 - Performance has a metric rail with sparklines, a detail graph with grid, axis
   labels, gap markers, a time-window picker, per-core activity, a swap capacity
   bar, and a memory pressure timeline.
-- App History is one application-to-day outline.
+- App History is one application-to-day outline. Partial totals display as
+  `≥ <value>`, with the full measurement detail in the tooltip.
 - Startup and Services are read-only, with status, kind labels, a coverage
   banner, Reveal in Finder, and Open Login Items Settings.
 - Users shows a current-user badge beside the name in the User column; sorting
   uses the bare name. Details accepts cross-page selection by full process
   identity.
 - Settings is a form for appearance, interval, pause, history reset, helper,
-  login item, and updates.
+  login item, and updates. Its helper caption wraps.
 - Force Quit and Reset History confirmations are window sheets.
 - App icon: `Info.plist` declares `CFBundleIconName` as `microgravity`, and the
   app target sets `ASSETCATALOG_COMPILER_APPICON_NAME` to `microgravity`. The
@@ -124,23 +132,49 @@ UI (AppKit):
 
 ## Known gaps
 
-1. **Release proof.** The latest 229-test composite gate failed one UI test in
-   a temporary verification checkout based on `af1359c`; the source worktree is
-   dirty. Run `release:prepare` only after the full gate passes from a clean
-   canonical checkout; see
-   [RELEASING.md](RELEASING.md#ui-tests-and-the-hard-release-gate).
-2. **Manual UI review.** The automated matrix captured 24 default-size images
-   and zero minimum-size images. The window resize stayed at 1,280 × 820; the
-   Settings Dark helper text was visibly truncated, and History's partial CPU
-   lower bound still needs readable display. All-page review, VoiceOver, and
-   controlled-process Force Quit / Reset History sheet behavior remain pending.
-3. **CI.** GitHub lists `macos-26` as a hosted runner, including arm64, and
-   announced its general availability on 2026-02-26 ([runner documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job), [announcement](https://github.blog/changelog/2026-02-26-macos-26-is-now-generally-available-for-github-hosted-runners/)). The workflow itself has not run from this tree.
-4. **Not verified:** Developer ID signing, notarization and stapling, Sparkle
+1. **Release proof.** The signed composite gate exited 0 (243 tests, 0 failed,
+   0 skipped), but `test:all` reported a dirty worktree. No reusable release
+   proof exists. Run `release:prepare` only after the full gate passes from a
+   clean canonical checkout; see
+   [RELEASING.md](RELEASING.md#ui-tests-and-the-hard-release-gate). Run the gates
+   from a checkout outside `~/Documents`. From a checkout there, XCTest can hang
+   before connecting, because the unsigned test host triggers a macOS Documents
+   privacy prompt while loading Sparkle.framework.
+2. **Manual UI review.** Pending: VoiceOver spot check; keyboard shortcuts, menu,
+   toolbar, and sidebar toggle; manual drag-resize to 960 × 600 and back; live
+   Force Quit and Reset History sheets on a tester-created throwaway process and
+   disposable history; last-window-close and reopen frame restore on a real
+   launch; icon in the Dock, About panel, and Force Quit dialog; live helper
+   setup, removal, and protected-process rejection; live login item; and
+   long-running live metrics and history.
+3. **Known open visual issues** (non-blocking, cosmetic):
+   a. On first open of Settings, the Appearance row (label and pop-up) is
+   leading-aligned in its card. After the value changes, it is trailing-aligned
+   like the other rows.
+   b. Details "Disk R / W" values middle-truncate at the default column width.
+   The column is resizable. The full value is in the accessibility label.
+   c. Wide tables (Processes, App History, Details, inventory) scroll
+   horizontally inside the table at minimum width. The page body does not.
+4. **Runtime warnings (unresolved).** The main-thread warning above appears once
+   per UI test that launches the app, at the runner's first accessibility
+   snapshot. Attribution from controlled split tests and unified log: AppKit
+   LSSharedFileList recent-items population on the main thread, then
+   LaunchServices walking registered app records (many stale DerivedData
+   `Microgravity.app` copies), then Security `SecKeyVerifySignature` and
+   `SecTrustEvaluateIfNecessary`, then a `com.apple.runtime-issues:Security`
+   fault. No Microgravity source frame is involved, and helper signature
+   validation is not involved (fixture mode uses `UnavailableSystemIntegrationAPI`).
+   Control runs: a UI test without app launch, 0 warnings; a Finder query only,
+   0; a TextEdit launch and query, 0. The cause is external to app code. It is
+   not suppressed, and this is not a zero-diagnostics pass. Unregistering stale
+   app copies from LaunchServices may mitigate it. That was not applied.
+5. **CI.** GitHub lists `macos-26` as a hosted runner, including arm64, and
+   announced its general availability on 2026-02-26 ([runner documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job), [announcement](https://github.blog/changelog/2026-02-26-macos-26-is-now-generally-available-for-github-hosted-runners/)). The workflow has not run for this tree. Hosted CI is blocked because the repository owner's GitHub Actions minutes are exhausted for this month.
+6. **Not verified:** Developer ID signing, notarization and stapling, Sparkle
    update delivery from a real appcast, privileged helper authorization against
    the live daemon, live advanced-metric sampling, the icon in the Dock and About
    panel, and long-running performance and memory behavior.
-5. **Pre-release history.** Builds before this release recorded per-app CPU
+7. **Pre-release history.** Builds before this release recorded per-app CPU
    seconds in the wrong unit. Reset App History before relying on those values.
 
 A successful compile or a focused automated test does not establish any of the

@@ -130,7 +130,7 @@ final class UIStateTests: XCTestCase {
         let replacement = copyProcess(original, identity: replacementIdentity)
         let snapshot = copy(base, timestamp: base.timestamp,
                             processes: base.processes.map { $0.id == original.id ? replacement : $0 })
-        let details = DetailsViewController()
+        let details = DetailsViewController(autosaveName: nil)
         details.loadViewIfNeeded()
         details.update(snapshot: snapshot)
         let table = try XCTUnwrap(view(withIdentifier: "details.table", in: details.view) as? NSTableView)
@@ -378,6 +378,37 @@ final class UIStateTests: XCTestCase {
             let dayRows = (0..<outline.numberOfRows).filter { outline.level(forRow: $0) == 1 }
             XCTAssertEqual(dayRows.count, 2)
         }
+    }
+
+    func testFixtureModeSkipsAutosaveForDetailsAndInventoryTables() throws {
+        let root = RootViewController(dependencies: makeFixtureAppDependencies())
+        root.loadViewIfNeeded()
+        for (page, identifier) in [(DashboardPage.details, "details.table"),
+                                   (.startup, "startup.table"),
+                                   (.services, "services.table")] {
+            root.select(page)
+            let table = try XCTUnwrap(view(withIdentifier: identifier, in: root.view) as? NSTableView,
+                                      "\(identifier) should be on screen after selecting \(page)")
+            XCTAssertNil(table.autosaveName, "\(identifier) must not autosave in fixture mode")
+            XCTAssertFalse(table.autosaveTableColumns, "\(identifier) must not restore columns in fixture mode")
+        }
+    }
+
+    func testInventoryAutosaveNamesKeepProductionNamesOutsideFixtureMode() {
+        XCTAssertEqual(InventoryViewController.tableAutosaveName(for: .startup, fixtureMode: false), "startup.table")
+        XCTAssertEqual(InventoryViewController.tableAutosaveName(for: .services, fixtureMode: false), "services.table")
+        XCTAssertNil(InventoryViewController.tableAutosaveName(for: .startup, fixtureMode: true))
+        XCTAssertNil(InventoryViewController.tableAutosaveName(for: .services, fixtureMode: true))
+    }
+
+    private func makeFixtureAppDependencies() -> AppDependencies {
+        let configuration = FixtureConfiguration(arguments: [])
+        return AppDependencies(
+            monitoringStore: FixtureMonitoringStore(configuration: configuration),
+            processActions: FixtureProcessActioner(configuration: configuration),
+            integrations: UnavailableSystemIntegrationAPI(),
+            fixtureMode: true
+        )
     }
 
     private func makeDependencies() -> (PageDependencies, FixtureMonitoringStore, FakeSystemIntegrationAPI) {

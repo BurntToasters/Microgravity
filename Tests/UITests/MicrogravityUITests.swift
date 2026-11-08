@@ -452,14 +452,6 @@ final class MicrogravityUITests: XCTestCase {
     }
 
     func testVisualAcceptanceCapturesAllPagesAtBothSizesAndAppearances() {
-        let app = launchFixture(arguments: ["--ui-test-visual-captures"])
-        let window = app.windows.matching(identifier: "ui-test.visual-window").firstMatch
-        XCTAssertTrue(window.waitForExistence(timeout: 5))
-        guard window.frame.size == CGSize(width: 1280, height: 820) else {
-            XCTFail("A clean fixture launch must open at 1280x820 points; measured window frame \(window.frame).")
-            return
-        }
-
         let pages: [(name: String, navigation: String, content: String)] = [
             ("Processes", "navigation.item.processes", "process.table"),
             ("Performance", "navigation.item.performance", "performance.graph.cpu-total"),
@@ -471,59 +463,106 @@ final class MicrogravityUITests: XCTestCase {
             ("Settings", "navigation.item.settings", "settings.appearance")
         ]
         let appearances = ["system", "light", "dark"]
-        let sizes: [(name: String, width: Int, height: Int)] = [
-            ("default", 1280, 820),
-            ("minimum", 960, 600)
+        // The minimum size is reached by relaunching with the DEBUG fixture size flag, not by resizing the window.
+        let sizes: [(name: String, width: Int, height: Int, launchArguments: [String])] = [
+            ("default", 1280, 820, []),
+            ("minimum", 960, 600, ["--ui-test-window-content-size=960x600"])
         ]
-        var manifest = ["page,requestedAppearance,selectedAppearance,windowFramePoints,screenshotPixels,screenshotAttachment"]
+        var manifest = ["page,requestedAppearance,selectedAppearance,runnerEffectiveAppearance,displayScale,windowFramePoints,screenshotPixels,attachmentName"]
+        defer {
+            // Attached even on failure so a partial matrix shows which rows were captured.
+            let attachment = XCTAttachment(data: Data(manifest.joined(separator: "\n").utf8),
+                                           uniformTypeIdentifier: "public.plain-text")
+            attachment.name = "Visual acceptance capture manifest"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
 
         for size in sizes {
-            if size.name == "minimum" {
-                resizeWindow(window, toWindowSize: CGSize(width: size.width, height: size.height))
-            }
+            let expectedSize = CGSize(width: size.width, height: size.height)
+            let app = launchFixture(arguments: ["--ui-test-visual-captures"] + size.launchArguments)
+            let window = app.windows.matching(identifier: "ui-test.visual-window").firstMatch
+            XCTAssertTrue(window.waitForExistence(timeout: 5))
+            guard expectWindowFrame(window, size: expectedSize, context: "Clean \(size.name) launch") else { return }
 
             for requestedAppearance in appearances {
                 element("navigation.item.settings", in: app).click()
-                guard window.frame.size == CGSize(width: size.width, height: size.height) else {
-                    XCTFail("Opening Settings changed window frame to \(window.frame); expected \(size.width)x\(size.height).")
-                    return
-                }
-                choosePopUpItem("settings.appearance.\(requestedAppearance)",
-                                in: "settings.appearance", app: app)
-                guard window.frame.size == CGSize(width: size.width, height: size.height) else {
-                    XCTFail("Selecting \(requestedAppearance) appearance changed window frame to \(window.frame); expected \(size.width)x\(size.height).")
-                    return
-                }
+                guard expectWindowFrame(window, size: expectedSize,
+                                        context: "Opening Settings at \(size.name)") else { return }
+
+                choosePopUpItem("settings.appearance.\(requestedAppearance)", in: "settings.appearance", app: app)
                 let appearancePicker = app.popUpButtons.matching(identifier: "settings.appearance").firstMatch
-                let selectedAppearance = appearancePicker.value as? String
-                let expectedAppearance = requestedAppearance.capitalized
-                guard selectedAppearance?.localizedCaseInsensitiveContains(expectedAppearance) == true else {
-                    XCTFail("Expected native Appearance menu to select \(expectedAppearance); measured \(String(describing: selectedAppearance)).")
+                guard let selectedAppearance = selectedPopUpValue(appearancePicker, containing: requestedAppearance.capitalized),
+                      selectedAppearance.localizedCaseInsensitiveContains(requestedAppearance) else {
+                    XCTFail("Expected native Appearance pop-up to select \(requestedAppearance.capitalized) at \(size.name); measured \(String(describing: appearancePicker.value)).")
                     return
                 }
+                guard expectWindowFrame(window, size: expectedSize,
+                                        context: "Selecting \(requestedAppearance) appearance at \(size.name)") else { return }
 
                 for page in pages {
                     element(page.navigation, in: app).click()
-                    XCTAssertTrue(element(page.content, in: app).waitForExistence(timeout: 5), page.name)
-                    let frame = window.frame
-                    guard frame.size == CGSize(width: size.width, height: size.height) else {
-                        XCTFail("Expected \(page.name) window at \(size.width)x\(size.height) points; measured frame \(frame).")
+                    guard element(page.content, in: app).waitForExistence(timeout: 5) else {
+                        XCTFail("\(page.name) content \(page.content) did not appear at \(size.name) \(requestedAppearance).")
                         return
                     }
+                    let frame = window.frame
+                    guard expectWindowFrame(window, size: expectedSize,
+                                            context: "\(page.name) at \(size.name) \(requestedAppearance)") else { return }
 
                     let attachmentName = "Visual-\(size.name)-\(requestedAppearance)-\(page.name)-\(size.width)x\(size.height)"
-                    let pixelSize = attachScreenshot(window, named: attachmentName)
-                    manifest.append("\(page.name),\(requestedAppearance),\(selectedAppearance ?? "unknown"),\(Int(frame.width.rounded()))x\(Int(frame.height.rounded())),\(pixelSize.width)x\(pixelSize.height),\(attachmentName)")
+                    guard let pixels = attachWindowScreenshot(window, named: attachmentName) else { return }
+                    let displayScale = Double(pixels.width) / Double(frame.width)
+                    manifest.append([
+                        page.name,
+                        requestedAppearance,
+                        selectedAppearance,
+                        runnerEffectiveAppearanceName,
+                        String(format: "%.2f", displayScale),
+                        "\(Int(frame.width))x\(Int(frame.height))",
+                        "\(pixels.width)x\(pixels.height)",
+                        attachmentName
+                    ].joined(separator: ","))
                 }
+            }
+
+            guard quitGracefully(app) else {
+                XCTFail("Fixture app must quit before the next size launches; it was still running after Cmd-Q.")
+                return
             }
         }
 
         XCTAssertEqual(manifest.count - 1, 48)
-        let attachment = XCTAttachment(data: Data(manifest.joined(separator: "\n").utf8),
-                                       uniformTypeIdentifier: "public.plain-text")
-        attachment.name = "Visual acceptance capture manifest"
-        attachment.lifetime = .keepAlways
-        add(attachment)
+    }
+
+    func testHistoryGapVisualCapturesAtDefaultAndMinimumSizes() {
+        let sizes: [(name: String, width: Int, height: Int, launchArguments: [String])] = [
+            ("default", 1280, 820, []),
+            ("minimum", 960, 600, ["--ui-test-window-content-size=960x600"])
+        ]
+
+        for size in sizes {
+            let expectedSize = CGSize(width: size.width, height: size.height)
+            let app = launchFixture(arguments: ["--ui-test-history-gap"] + size.launchArguments)
+            let window = app.windows.firstMatch
+            XCTAssertTrue(window.waitForExistence(timeout: 5))
+            guard expectWindowFrame(window, size: expectedSize, context: "Clean \(size.name) history launch") else { return }
+
+            element("navigation.item.history", in: app).click()
+            guard app.staticTexts["history.total.fixture-editor.cpu"].waitForExistence(timeout: 5) else {
+                XCTFail("App History did not show the fixture-editor CPU total at \(size.name) size.")
+                return
+            }
+            guard expectWindowFrame(window, size: expectedSize, context: "App History at \(size.name)") else { return }
+
+            let attachmentName = "Visual-history-gap-\(size.name)-\(size.width)x\(size.height)"
+            guard attachWindowScreenshot(window, named: attachmentName) != nil else { return }
+
+            guard quitGracefully(app) else {
+                XCTFail("Fixture app must quit before the next size launches; it was still running after Cmd-Q.")
+                return
+            }
+        }
     }
 
     func testClosingLastWindowTerminatesTheApplication() {
@@ -603,30 +642,39 @@ final class MicrogravityUITests: XCTestCase {
 
     private func terminateLaunchedApplications() {
         for app in launchedApplications.reversed() where app.state != .notRunning {
-            app.activate()
-            app.typeKey("q", modifierFlags: .command)
-            XCTAssertTrue(app.wait(for: .notRunning, timeout: 10),
-                          "Fixture app must quit cleanly and clear its test preferences.")
+            XCTAssertTrue(quitGracefully(app), "Fixture app must quit cleanly and clear its test preferences.")
         }
     }
 
-    private func resizeWindow(_ window: XCUIElement, toWindowSize size: CGSize) {
-        let initialFrame = window.frame
-        guard initialFrame.size == CGSize(width: 1280, height: 820) else {
-            XCTFail("Resize must start from a measured 1280x820 window frame; measured \(initialFrame).")
-            return
-        }
+    /// Quits through Cmd-Q so the app's fixture-preference cleanup runs. Returns false if it is still running.
+    private func quitGracefully(_ app: XCUIApplication) -> Bool {
+        app.activate()
+        app.typeKey("q", modifierFlags: .command)
+        return app.wait(for: .notRunning, timeout: 10)
+    }
 
-        let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.999, dy: 0.999))
-        let destination = start.withOffset(CGVector(dx: size.width - 1280, dy: size.height - 820))
-        start.press(forDuration: 0.1, thenDragTo: destination)
-        let expected = size
-        let resized = expectation(for: NSPredicate { object, _ in
-            guard let window = object as? XCUIElement else { return false }
-            return window.frame.size == expected
-        }, evaluatedWith: window)
-        wait(for: [resized], timeout: 5)
-        XCTAssertEqual(window.frame.size, expected)
+    /// Returns false and records the measured frame when the window is not exactly `size` points.
+    private func expectWindowFrame(_ window: XCUIElement, size: CGSize, context: String) -> Bool {
+        guard window.frame.size == size else {
+            XCTFail("\(context): expected window \(Int(size.width))x\(Int(size.height)) points; measured frame \(window.frame).")
+            return false
+        }
+        return true
+    }
+
+    /// Waits briefly for the native pop-up to report `title` and returns its measured value.
+    private func selectedPopUpValue(_ popUp: XCUIElement, containing title: String) -> String? {
+        let selected = expectation(for: NSPredicate(format: "value CONTAINS[c] %@", title), evaluatedWith: popUp)
+        _ = XCTWaiter().wait(for: [selected], timeout: 3)
+        return popUp.value as? String
+    }
+
+    /// The UI test runner's own appearance, recorded per row. It is not the app's Appearance setting.
+    private var runnerEffectiveAppearanceName: String {
+        let match = NSApplication.shared.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
+        if match == .darkAqua { return "darkAqua" }
+        if match == .aqua { return "aqua" }
+        return "unknown"
     }
 
     /// Opens a pop-up and checks that each item identifier is offered. Settings pop-up items are menu items, not views.
@@ -657,15 +705,16 @@ final class MicrogravityUITests: XCTestCase {
         add(attachment)
     }
 
-    private func attachScreenshot(_ window: XCUIElement, named name: String) -> (width: Int, height: Int) {
+    /// Attaches the window image under exactly `name` and returns its PNG pixel size.
+    private func attachWindowScreenshot(_ window: XCUIElement, named name: String) -> (width: Int, height: Int)? {
         let screenshot = window.screenshot()
         let attachment = XCTAttachment(screenshot: screenshot)
-        attachment.name = "UI - \(name)"
+        attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
         guard let bitmap = NSBitmapImageRep(data: screenshot.pngRepresentation) else {
             XCTFail("Could not decode PNG for \(name).")
-            return (0, 0)
+            return nil
         }
         return (bitmap.pixelsWide, bitmap.pixelsHigh)
     }

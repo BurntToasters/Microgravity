@@ -24,6 +24,12 @@ private final class NotificationObserverToken: @unchecked Sendable {
     deinit { NotificationCenter.default.removeObserver(token) }
 }
 
+/// Plain flipped container so the form is anchored at the top and the scroll view starts at the header.
+@MainActor
+private final class FlippedDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 /// System Settings 14 style form: right-aligned labels in column 0, controls in column 1, one card per section.
 @MainActor
 final class SettingsViewController: NSViewController {
@@ -75,15 +81,13 @@ final class SettingsViewController: NSViewController {
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
-        let document = NSView()
+        let document = FlippedDocumentView()
         document.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = document
         document.addSubview(content)
         scroll.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(scroll)
         let clip = scroll.contentView
-        let bottom = content.bottomAnchor.constraint(equalTo: clip.bottomAnchor)
-        bottom.priority = .defaultLow
         let width = content.widthAnchor.constraint(equalTo: clip.widthAnchor, constant: -2 * PageLayout.horizontalInset)
         width.priority = .defaultLow
         NSLayoutConstraint.activate([
@@ -92,14 +96,14 @@ final class SettingsViewController: NSViewController {
             scroll.topAnchor.constraint(equalTo: view.topAnchor, constant: PageLayout.topInset),
             scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -PageLayout.bottomInset),
             document.widthAnchor.constraint(equalTo: clip.widthAnchor),
+            document.topAnchor.constraint(equalTo: clip.topAnchor),
             content.topAnchor.constraint(equalTo: document.topAnchor),
             content.centerXAnchor.constraint(equalTo: document.centerXAnchor),
             content.widthAnchor.constraint(lessThanOrEqualToConstant: 720),
             content.leadingAnchor.constraint(greaterThanOrEqualTo: document.leadingAnchor, constant: PageLayout.horizontalInset),
             content.trailingAnchor.constraint(lessThanOrEqualTo: document.trailingAnchor, constant: -PageLayout.horizontalInset),
             content.bottomAnchor.constraint(equalTo: document.bottomAnchor),
-            width,
-            bottom
+            width
         ])
         refreshSamplingState()
         synchronizeAppearanceControl()
@@ -240,8 +244,13 @@ final class SettingsViewController: NSViewController {
 
     private func caption(_ text: String) -> NSTextField {
         let field = UIComponents.label(text, size: 11, color: .secondaryLabelColor)
-        field.maximumNumberOfLines = 2
+        // The shared label truncates, and truncation forces a single line. Captions wrap instead.
+        field.lineBreakMode = .byWordWrapping
+        field.usesSingleLineMode = false
+        field.maximumNumberOfLines = 0
         field.preferredMaxLayoutWidth = 480
+        // Wrapping must not widen the form: the grid may compress the caption to its column.
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return field
     }
 

@@ -151,6 +151,7 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
         cell.identifier = reuseIdentifier
         cell.configure(
             text: node.row.values[column.index],
+            detail: node.row.detail(column),
             accessibilityID: "\(node.row.id).\(column.rawValue)",
             column: column,
             icon: column == .application ? node.icon : nil
@@ -177,7 +178,6 @@ private final class AppHistoryCellView: NSTableCellView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        label.font = .systemFont(ofSize: 12)
         label.lineBreakMode = .byTruncatingMiddle
         label.maximumNumberOfLines = 1
         label.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -197,8 +197,8 @@ private final class AppHistoryCellView: NSTableCellView {
         NSLayoutConstraint.activate([
             iconView.widthAnchor.constraint(equalToConstant: AppIconProvider.pointSize),
             iconView.heightAnchor.constraint(equalToConstant: AppIconProvider.pointSize),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: AppHistoryColumn.cellLeadingInset),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -AppHistoryColumn.cellTrailingInset),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
         textField = label
@@ -206,12 +206,16 @@ private final class AppHistoryCellView: NSTableCellView {
 
     required init?(coder: NSCoder) { nil }
 
-    func configure(text: String, accessibilityID: String, column: AppHistoryColumn, icon: NSImage?) {
+    /// `detail` is the tooltip and accessibility label for partial values; nil clears both.
+    func configure(text: String, detail: String?, accessibilityID: String, column: AppHistoryColumn, icon: NSImage?) {
         label.stringValue = text
         label.alignment = column.isNumeric ? .right : .left
-        label.font = column.isNumeric
-            ? .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-            : .systemFont(ofSize: 12)
+        // Numeric values fill the cell so right alignment reaches the trailing inset under the right-aligned header.
+        stack.distribution = column.isNumeric ? .fill : .gravityAreas
+        label.font = column.cellFont
+        label.toolTip = detail
+        toolTip = detail
+        label.setAccessibilityLabel(detail)
         label.setAccessibilityIdentifier(accessibilityID)
         iconView.image = icon
         iconView.isHidden = icon == nil

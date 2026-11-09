@@ -313,7 +313,8 @@ private extension MonitoringSnapshot {
             diskWriteBytesPerSecond: gap(system.diskWriteBytesPerSecond),
             networkReceiveBytesPerSecond: gap(system.networkReceiveBytesPerSecond),
             networkTransmitBytesPerSecond: gap(system.networkTransmitBytesPerSecond),
-            networkInterfaces: system.networkInterfaces)
+            networkInterfaces: system.networkInterfaces,
+            processorTopology: system.processorTopology)
         let nextGroups = processGroups.map { group in
             ProcessGroupSnapshot(
                 id: group.id, title: group.title, ownerUID: group.ownerUID,

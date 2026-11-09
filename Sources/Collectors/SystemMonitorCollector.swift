@@ -116,6 +116,9 @@ public actor SystemMonitorCollector: MonitoringCollecting {
 
     private static let bundleMetadataCacheLimit = 256
 
+    /// Core classes do not change while the app runs, so the device tree is read once per process.
+    private static let hostProcessorTopology: ProcessorTopology? = ProcessorTopologyReader.read()
+
     private let advancedCollector: (any AdvancedMetricsCollecting)?
     private let memoryPressureLevelReader: @Sendable () -> Int32?
     private var systemCounters = CounterDeltaTracker<CounterKey>()
@@ -216,7 +219,8 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             diskWriteBytesPerSecond: disk.writeRate,
             networkReceiveBytesPerSecond: network.receiveRate,
             networkTransmitBytesPerSecond: network.transmitRate,
-            networkInterfaces: network.interfaces)
+            networkInterfaces: network.interfaces,
+            processorTopology: Self.hostProcessorTopology)
 
         let capabilities: [MetricKind: MetricAvailability] = [
             .totalCPU: Self.availability(for: cpu.total),

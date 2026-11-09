@@ -437,6 +437,223 @@ final class PerformanceViewControllerTests: XCTestCase {
         XCTAssertEqual(controller.cpuMode, .logicalProcessors)
     }
 
+    func testLogicalProcessorGridSitsBelowModeControlAndKeepsTilesInsideAtTwoWindowSizes() throws {
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let base = CoreTestFixtures.snapshot(timestamp: timestamp)
+        let cores = (0..<18).map { CoreTestFixtures.reading(Double($0 * 5), unit: .percent, timestamp: timestamp) }
+        let original = base.system
+        let system = SystemMetricsSnapshot(
+            capacityCores: 18, cpuPercent: original.cpuPercent, perCoreCPUPercent: cores,
+            memoryUsedBytes: original.memoryUsedBytes, memoryAvailableBytes: original.memoryAvailableBytes,
+            memoryTotalBytes: original.memoryTotalBytes, memoryPressure: original.memoryPressure,
+            swapUsedBytes: original.swapUsedBytes, swapTotalBytes: original.swapTotalBytes,
+            diskReadBytesPerSecond: original.diskReadBytesPerSecond, diskWriteBytesPerSecond: original.diskWriteBytesPerSecond,
+            networkReceiveBytesPerSecond: original.networkReceiveBytesPerSecond,
+            networkTransmitBytesPerSecond: original.networkTransmitBytesPerSecond,
+            networkInterfaces: [])
+        let snapshot = MonitoringSnapshot(timestamp: timestamp, system: system, processes: [], processGroups: [],
+                                          startupItems: [], services: [], users: [], discoveryCoverage: [:],
+                                          capabilities: [:])
+
+        for size in [NSSize(width: 960, height: 600), NSSize(width: 1280, height: 820)] {
+            let store = MutablePerformanceMonitoringStore()
+            store.replace(snapshot: snapshot, samples: [MonitoringGraphSample(snapshot: snapshot)])
+            let controller = makeController(store: store)
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .resizable],
+                                  backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = controller.view
+            controller.view.setFrameSize(size)
+            controller.update(snapshot: snapshot)
+            controller.setCPUMode(.logicalProcessors)
+            controller.view.layoutSubtreeIfNeeded()
+
+            let control = try XCTUnwrap(view(withIdentifier: "performance.cpu.mode", in: controller.view))
+            let grid = try XCTUnwrap(view(withIdentifier: "performance.graph.cpu-cores", in: controller.view))
+            XCTAssertFalse(grid.isHidden, "\(size)")
+            let gridRect = grid.convert(grid.bounds, to: nil)
+            let controlRect = control.convert(control.bounds, to: nil)
+            XCTAssertLessThanOrEqual(gridRect.maxY, controlRect.minY + 0.5,
+                                     "the processor grid must sit below the CPU mode control at \(size)")
+            XCTAssertGreaterThan(gridRect.height, 0, "\(size)")
+            XCTAssertEqual(grid.frame.height, grid.intrinsicContentSize.height, accuracy: 0.5,
+                           "the grid's height must match its tile rows at \(size)")
+            let caption = try XCTUnwrap(view(withIdentifier: "performance.detail.caption", in: controller.view))
+            XCTAssertLessThanOrEqual(caption.convert(caption.bounds, to: nil).maxY, gridRect.minY + 0.5,
+                                     "the caption must sit below the processor grid at \(size)")
+
+            for index in 0..<18 {
+                let graph = try XCTUnwrap(view(withIdentifier: "performance.cpu-core.\(index)", in: controller.view))
+                let tile = try XCTUnwrap(graph.superview)
+                XCTAssertTrue(grid.bounds.insetBy(dx: -0.5, dy: -0.5).contains(tile.frame),
+                              "tile \(index) \(tile.frame) must sit inside the grid \(grid.bounds) at \(size)")
+            }
+        }
+    }
+
+    // MARK: Processor sections
+
+    func testProcessorSectionsFollowTopologyFastestFirstWithAveragesAndCPUIndexes() {
+        let colors = SectionColorDefaults()
+        defer { colors.restore() }
+        // Efficiency is listed first in the topology; the presenter still puts the faster Performance class first.
+        let snapshot = sectionSnapshot(
+            perCore: [50, nil, 70, 90, 10, 20, 30, 40],
+            kinds: [ProcessorCoreKind(name: "Efficiency", rank: 1, logicalCPUs: [0, 1, 2, 3]),
+                    ProcessorCoreKind(name: "Performance", rank: 0, logicalCPUs: [4, 5, 6, 7])])
+        let model = sectionDetail(snapshot)
+
+        XCTAssertEqual(model.coreSections.map(\.slug), ["performance", "efficiency"])
+        XCTAssertEqual(model.coreSections[0].title, "Performance · 4 cores · \(UIFormat.percent(25))")
+        // The missing CPU 1 reading is left out of the average, not counted as zero: (50 + 70 + 90) / 3.
+        XCTAssertEqual(model.coreSections[1].title, "Efficiency · 4 cores · \(UIFormat.percent(70))")
+        XCTAssertEqual(model.coreSections[0].cores.map(\.index), [4, 5, 6, 7])
+        XCTAssertEqual(model.coreSections[1].cores.map(\.index), [0, 1, 2, 3])
+        XCTAssertEqual(model.cores.map(\.index), [4, 5, 6, 7, 0, 1, 2, 3])
+        XCTAssertEqual(model.coreSections[0].cores.first?.kindName, "Performance")
+        XCTAssertEqual(model.coreSections[1].cores.first?.kindName, "Efficiency")
+        XCTAssertEqual(model.coreSections[1].cores[1].valueText, UIFormat.unavailable(.warmingUp))
+    }
+
+    func testProcessorSectionColorsFollowCustomizedRolesInHeadersAndTiles() {
+        let colors = SectionColorDefaults()
+        defer { colors.restore() }
+        let snapshot = sectionSnapshot(perCore: [10, 20, 30, 40, 50, 60, 70, 80],
+                                       kinds: [ProcessorCoreKind(name: "Performance", rank: 0, logicalCPUs: [4, 5, 6, 7]),
+                                               ProcessorCoreKind(name: "Efficiency", rank: 1, logicalCPUs: [0, 1, 2, 3])])
+        let defaultModel = sectionDetail(snapshot)
+        assertSameSRGB(defaultModel.coreSections[0].color, ColorPreferences.color(for: .performanceCores))
+        assertSameSRGB(defaultModel.coreSections[1].cores[0].series.color, ColorPreferences.color(for: .efficiencyCores))
+
+        let custom = NSColor(srgbRed: 0.9, green: 0.1, blue: 0.2, alpha: 1)
+        ColorPreferences.setColor(custom, for: .performanceCores)
+        let model = sectionDetail(snapshot)
+        assertSameSRGB(model.coreSections[0].color, custom)
+        for tile in model.coreSections[0].cores {
+            assertSameSRGB(tile.series.color, custom)
+        }
+        // The efficiency class keeps its own role color.
+        assertSameSRGB(model.coreSections[1].color, ColorPreferences.color(for: .efficiencyCores))
+    }
+
+    func testUnknownProcessorClassNamesGetRolesByPosition() {
+        XCTAssertEqual(PerformancePresenter.colorRole(forKindNamed: "Mid", position: 0, count: 2), .performanceCores)
+        XCTAssertEqual(PerformancePresenter.colorRole(forKindNamed: "Mid", position: 1, count: 2), .efficiencyCores)
+        XCTAssertEqual(PerformancePresenter.colorRole(forKindNamed: "Mid", position: 0, count: 3), .superCores)
+        XCTAssertEqual(PerformancePresenter.colorRole(forKindNamed: "Mid", position: 1, count: 3), .performanceCores)
+        XCTAssertEqual(PerformancePresenter.colorRole(forKindNamed: "Mid", position: 2, count: 3), .efficiencyCores)
+        XCTAssertEqual(PerformancePresenter.colorRole(forKindNamed: "Super", position: 1, count: 2), .superCores)
+    }
+
+    func testUnknownProcessorClassKeepsItsNameInTheTitleAndSlug() {
+        let colors = SectionColorDefaults()
+        defer { colors.restore() }
+        let snapshot = sectionSnapshot(perCore: [10, 20], kinds: [ProcessorCoreKind(name: "Mid Tier", rank: 0, logicalCPUs: [0, 1])])
+        let model = sectionDetail(snapshot)
+        XCTAssertEqual(model.coreSections.map(\.slug), ["mid-tier"])
+        XCTAssertEqual(model.coreSections.first?.title, "Mid Tier · 2 cores · \(UIFormat.percent(15))")
+    }
+
+    func testAllUnavailableProcessorClassReadsUnavailableNeverZero() {
+        let colors = SectionColorDefaults()
+        defer { colors.restore() }
+        let snapshot = sectionSnapshot(
+            perCore: [nil, nil, 40, 60],
+            kinds: [ProcessorCoreKind(name: "Performance", rank: 0, logicalCPUs: [2, 3]),
+                    ProcessorCoreKind(name: "Efficiency", rank: 1, logicalCPUs: [0, 1])])
+        let model = sectionDetail(snapshot)
+        XCTAssertEqual(model.coreSections[1].title, "Efficiency · 2 cores · Unavailable")
+        XCTAssertEqual(model.coreSections[1].cores.map(\.valueText), [UIFormat.unavailable(.warmingUp), UIFormat.unavailable(.warmingUp)])
+        XCTAssertEqual(PerformancePresenter.averageText([nil, nil]), "Unavailable")
+        XCTAssertFalse(model.coreSections[1].title?.contains("0%") ?? false, "a missing class must not read as 0%")
+    }
+
+    func testUngroupedCoresWithoutTopologyAreOneUntitledSectionInTheCPUColor() {
+        let colors = SectionColorDefaults()
+        defer { colors.restore() }
+        let snapshot = sectionSnapshot(perCore: [10, 20, 30, 40], kinds: nil)
+        let model = sectionDetail(snapshot)
+
+        XCTAssertEqual(model.coreSections.count, 1)
+        XCTAssertNil(model.coreSections[0].title)
+        XCTAssertNil(model.coreSections[0].slug)
+        XCTAssertEqual(model.coreSections[0].cores.map(\.index), [0, 1, 2, 3])
+        XCTAssertTrue(model.coreSections[0].cores.allSatisfy { $0.kindName == nil })
+        assertSameSRGB(model.coreSections[0].color, PerformanceMetric.cpu.color)
+        assertSameSRGB(model.coreSections[0].cores[2].series.color, PerformanceMetric.cpu.color)
+    }
+
+    func testTopologyThatDoesNotListEveryProcessorExactlyOnceFallsBackToOneList() {
+        let colors = SectionColorDefaults()
+        defer { colors.restore() }
+        let snapshot = sectionSnapshot(
+            perCore: [10, 20, 30, 40],
+            kinds: [ProcessorCoreKind(name: "Performance", rank: 0, logicalCPUs: [0, 1]),
+                    ProcessorCoreKind(name: "Efficiency", rank: 1, logicalCPUs: [1, 2])])
+        let model = sectionDetail(snapshot)
+        XCTAssertEqual(model.coreSections.count, 1)
+        XCTAssertNil(model.coreSections[0].title)
+        XCTAssertEqual(model.cores.count, 4)
+    }
+
+    func testCPUStatsNameOneCountPerProcessorClassWithTopology() {
+        let colors = SectionColorDefaults()
+        defer { colors.restore() }
+        let grouped = sectionDetail(sectionSnapshot(
+            perCore: Array(repeating: 10, count: 8),
+            kinds: [ProcessorCoreKind(name: "Performance", rank: 0, logicalCPUs: [4, 5, 6, 7]),
+                    ProcessorCoreKind(name: "Efficiency", rank: 1, logicalCPUs: [0, 1, 2, 3])]))
+        XCTAssertEqual(grouped.stats.map(\.label), ["Performance cores", "Efficiency cores", "Processes", "Uptime"])
+        XCTAssertEqual(grouped.stats.prefix(2).map(\.value), ["4", "4"])
+
+        let ungrouped = sectionDetail(sectionSnapshot(perCore: Array(repeating: 10, count: 8), kinds: nil))
+        XCTAssertEqual(ungrouped.stats.map(\.label), ["Logical processors", "Processes", "Uptime"])
+        XCTAssertEqual(ungrouped.stats.first?.value, "8")
+    }
+
+    /// The fixture topology (Performance 4 to 7, Efficiency 0 to 3) in the real Logical Processors mode at 1280 by 820.
+    func testFixtureLogicalProcessorModeShowsBothProcessorSectionHeadersAboveTheirTiles() throws {
+        let fixture = FixtureMonitoringStore(configuration: FixtureConfiguration(arguments: []))
+        let snapshot = try XCTUnwrap(fixture.latestSnapshot)
+        let dependencies = PageDependencies(monitoringStore: fixture, processActions: UnusedProcessActioner(),
+                                            integrations: UnavailableSystemIntegrationAPI(), fixtureMode: true)
+        let controller = PerformanceViewController(dependencies: dependencies)
+        controller.loadViewIfNeeded()
+        let size = NSSize(width: 1280, height: 820)
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .resizable],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = controller.view
+        controller.view.setFrameSize(size)
+        controller.update(snapshot: snapshot)
+        controller.setCPUMode(.logicalProcessors)
+        controller.view.layoutSubtreeIfNeeded()
+
+        let perfHeader = try XCTUnwrap(view(withIdentifier: "performance.cpu-cores.section.performance", in: controller.view) as? NSTextField)
+        let effHeader = try XCTUnwrap(view(withIdentifier: "performance.cpu-cores.section.efficiency", in: controller.view) as? NSTextField)
+        let perfValues = [4, 5, 6, 7].compactMap { snapshot.system.perCoreCPUPercent[$0].value }
+        let effValues = [0, 1, 2, 3].compactMap { snapshot.system.perCoreCPUPercent[$0].value }
+        XCTAssertEqual(perfHeader.stringValue, "Performance · 4 cores · \(UIFormat.percent(perfValues.reduce(0, +) / 4))")
+        XCTAssertEqual(effHeader.stringValue, "Efficiency · 4 cores · \(UIFormat.percent(effValues.reduce(0, +) / 4))")
+        XCTAssertFalse(perfHeader.isHidden)
+        XCTAssertFalse(effHeader.isHidden)
+
+        let perfRect = perfHeader.convert(perfHeader.bounds, to: nil)
+        let effRect = effHeader.convert(effHeader.bounds, to: nil)
+        // Window coordinates: higher y is higher on screen. Performance comes first, so its header is above Efficiency's.
+        XCTAssertGreaterThan(perfRect.minY, effRect.maxY, "the Performance header must sit above the Efficiency header")
+        for index in 4...7 {
+            let tile = try XCTUnwrap(view(withIdentifier: "performance.cpu-core.\(index)", in: controller.view)?.superview)
+            XCTAssertGreaterThanOrEqual(perfRect.minY, tile.convert(tile.bounds, to: nil).maxY - 0.5,
+                                        "the Performance header must sit above CPU \(index)")
+        }
+        for index in 0...3 {
+            let tile = try XCTUnwrap(view(withIdentifier: "performance.cpu-core.\(index)", in: controller.view)?.superview)
+            XCTAssertGreaterThanOrEqual(effRect.minY, tile.convert(tile.bounds, to: nil).maxY - 0.5,
+                                        "the Efficiency header must sit above CPU \(index)")
+        }
+    }
+
     func testPauseToolbarItemKeepsIdentifierAndTogglesSampling() throws {
         let store = MutablePerformanceMonitoringStore()
         let controller = makeController(store: store)
@@ -734,6 +951,46 @@ final class PerformanceViewControllerTests: XCTestCase {
         XCTAssertTrue(header?.toolTip?.hasPrefix("Live resource use. Gaps mark paused") == true, header?.toolTip ?? "no tooltip")
     }
 
+    private func sectionSnapshot(perCore: [Double?], kinds: [ProcessorCoreKind]?) -> MonitoringSnapshot {
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let original = CoreTestFixtures.snapshot(timestamp: timestamp).system
+        let cores = perCore.map { value in
+            value.map { CoreTestFixtures.reading($0, unit: .percent, timestamp: timestamp) }
+                ?? MetricReading(unavailable: .percent, timestamp: timestamp, reason: .warmingUp)
+        }
+        let system = SystemMetricsSnapshot(
+            capacityCores: cores.count, cpuPercent: original.cpuPercent, perCoreCPUPercent: cores,
+            memoryUsedBytes: original.memoryUsedBytes, memoryAvailableBytes: original.memoryAvailableBytes,
+            memoryTotalBytes: original.memoryTotalBytes, memoryPressure: original.memoryPressure,
+            swapUsedBytes: original.swapUsedBytes, swapTotalBytes: original.swapTotalBytes,
+            diskReadBytesPerSecond: original.diskReadBytesPerSecond, diskWriteBytesPerSecond: original.diskWriteBytesPerSecond,
+            networkReceiveBytesPerSecond: original.networkReceiveBytesPerSecond,
+            networkTransmitBytesPerSecond: original.networkTransmitBytesPerSecond,
+            networkInterfaces: [],
+            processorTopology: kinds.map { ProcessorTopology(kinds: $0) })
+        return MonitoringSnapshot(timestamp: timestamp, system: system, processes: [], processGroups: [],
+                                  startupItems: [], services: [], users: [], discoveryCoverage: [:],
+                                  capabilities: [:])
+    }
+
+    private func sectionDetail(_ snapshot: MonitoringSnapshot) -> MetricDetailModel {
+        PerformancePresenter.detail(metric: .cpu, snapshot: snapshot,
+                                    samples: [MonitoringGraphSample(snapshot: snapshot)],
+                                    window: .oneMinute, cpuMode: .logicalProcessors)
+    }
+
+    /// Compares sRGB components, so colors match by value rather than by object identity.
+    private func assertSameSRGB(_ actual: NSColor, _ expected: NSColor,
+                                file: StaticString = #filePath, line: UInt = #line) {
+        guard let lhs = actual.usingColorSpace(.sRGB), let rhs = expected.usingColorSpace(.sRGB) else {
+            XCTFail("colors must convert to sRGB", file: file, line: line)
+            return
+        }
+        XCTAssertEqual(lhs.redComponent, rhs.redComponent, accuracy: 0.01, file: file, line: line)
+        XCTAssertEqual(lhs.greenComponent, rhs.greenComponent, accuracy: 0.01, file: file, line: line)
+        XCTAssertEqual(lhs.blueComponent, rhs.blueComponent, accuracy: 0.01, file: file, line: line)
+    }
+
     private func legendNames(in legend: NSView) -> [String] {
         allViews(in: legend).compactMap { ($0 as? NSTextField)?.stringValue }
     }
@@ -744,6 +1001,23 @@ final class PerformanceViewControllerTests: XCTestCase {
 
     private func allViews(in root: NSView) -> [NSView] {
         [root] + root.subviews.flatMap(allViews(in:))
+    }
+}
+
+/// Points `ColorPreferences` at a throwaway defaults suite for one test and puts the previous domain back on `restore()`.
+@MainActor
+private final class SectionColorDefaults {
+    private let suite = "PerformanceSectionTests-\(UUID().uuidString)"
+    private let priorOverride: UserDefaults?
+
+    init() {
+        priorOverride = ColorPreferences.defaultsOverride
+        ColorPreferences.defaultsOverride = UserDefaults(suiteName: suite)
+    }
+
+    func restore() {
+        ColorPreferences.defaultsOverride = priorOverride
+        UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
     }
 }
 

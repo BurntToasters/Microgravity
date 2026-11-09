@@ -153,6 +153,57 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(window.contentMinSize, NSSize(width: 960, height: 600))
     }
 
+    /// Collapsing or expanding the sidebar must only narrow or widen the page, never move or resize the window.
+    func testSidebarToggleKeepsWindowFrameAndWidensThePageOnEveryPage() {
+        for size in [MainWindowController.defaultContentSize, MainWindowController.minimumContentSize] {
+            for page in DashboardPage.allCases {
+                assertSidebarToggleKeepsWindowFrame(page: page, contentSize: size)
+            }
+        }
+    }
+
+    /// Each page gets a fresh window so one page's resize cannot leak into the next check.
+    private func assertSidebarToggleKeepsWindowFrame(page: DashboardPage, contentSize: NSSize) {
+        let controller = MainWindowController(dependencies: makeDependencies(), frameAutosaveName: nil,
+                                              initialContentSize: contentSize)
+        let window = try! XCTUnwrap(controller.window)
+        defer { window.close() }
+        controller.showWindow(nil)
+        controller.root.select(page)
+        settle(window)
+        let splitController = try! XCTUnwrap(controller.root.children.compactMap { $0 as? NSSplitViewController }.first)
+        let sidebarItem = splitController.splitViewItems[0]
+        let label = "\(page) at \(contentSize.width)x\(contentSize.height)"
+        let expandedFrame = window.frame
+        let expandedPageWidth = pageWidth(controller)
+        let sidebarWidth = sidebarWidth(controller)
+
+        // Set directly: the animated toggle does not finish inside the test run loop.
+        sidebarItem.isCollapsed = true
+        settle(window)
+        XCTAssertTrue(sidebarItem.isCollapsed, "\(label): sidebar should collapse")
+        XCTAssertEqual(window.frame, expandedFrame, "\(label): collapsing the sidebar moved or resized the window")
+        XCTAssertEqual(pageWidth(controller) - expandedPageWidth, sidebarWidth, accuracy: 1,
+                       "\(label): collapsing should widen the page by the sidebar width")
+
+        sidebarItem.isCollapsed = false
+        settle(window)
+        XCTAssertFalse(sidebarItem.isCollapsed, "\(label): sidebar should expand")
+        XCTAssertEqual(window.frame, expandedFrame, "\(label): expanding the sidebar moved or resized the window")
+        XCTAssertEqual(pageWidth(controller), expandedPageWidth, accuracy: 1,
+                       "\(label): expanding should narrow the page back")
+    }
+
+    private func pageWidth(_ controller: MainWindowController) -> CGFloat {
+        guard let page = controller.root.currentPageController?.view else { return 0 }
+        return page.convert(page.bounds, to: nil).width
+    }
+
+    private func sidebarWidth(_ controller: MainWindowController) -> CGFloat {
+        let sidebar = controller.root.sidebar.view
+        return sidebar.convert(sidebar.bounds, to: nil).width
+    }
+
     /// The sidebar reads top to bottom in `DashboardPage` order, so View-menu ⌘1…⌘8 match what the user sees.
     func testSidebarListsPagesInTheViewMenuShortcutOrder() {
         let controller = MainWindowController(dependencies: makeDependencies(), frameAutosaveName: nil)

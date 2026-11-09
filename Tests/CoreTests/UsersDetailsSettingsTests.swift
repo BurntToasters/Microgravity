@@ -126,7 +126,7 @@ final class UsersDetailsSettingsTests: XCTestCase {
             let content = try XCTUnwrap(header.superview?.superview as? NSStackView)
             // The version footer sits after the cards in the same stack but is not a card.
             let cards = Array(content.arrangedSubviews.dropFirst()).filter { $0.accessibilityIdentifier() != "settings.version" }
-            XCTAssertEqual(cards.count, 3, "Settings must show three section cards at \(label).")
+            XCTAssertEqual(cards.count, 5, "Settings must show five section cards (Appearance, Colors, Sampling, Integrations, Reset) at \(label).")
             for card in cards {
                 XCTAssertEqual(card.frame.height, card.fittingSize.height, accuracy: 1,
                                "A Settings card must not stretch past its content at \(label).")

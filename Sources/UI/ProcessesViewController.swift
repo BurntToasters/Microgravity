@@ -93,6 +93,12 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             as? [String: Bool] ?? [:]
         grouping = Self.restoredGrouping(from: self.defaults)
         super.init(nibName: nil, bundle: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(colorPreferencesChanged),
+                                               name: .colorPreferencesDidChange, object: nil)
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -557,6 +563,18 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         if !rowIndexes.isEmpty {
             outlineView.reloadData(forRowIndexes: rowIndexes, columnIndexes: columnIndexes)
         }
+    }
+
+    /// Heat colors are set when a cell is configured, so the visible cells in the columns that follow a metric color
+    /// are reloaded in place. Row identity does not change, so the selection stays put and nothing animates.
+    @objc private func colorPreferencesChanged() {
+        let rows = IndexSet(integersIn: 0..<outlineView.numberOfRows)
+        let columns = IndexSet([ProcessColumn.cpu, .memory, .disk, .network].compactMap { column -> Int? in
+            let index = outlineView.column(withIdentifier: NSUserInterfaceItemIdentifier(column.rawValue))
+            return index >= 0 ? index : nil
+        })
+        guard !rows.isEmpty, !columns.isEmpty else { return }
+        withoutAnimation { outlineView.reloadData(forRowIndexes: rows, columnIndexes: columns) }
     }
 
     /// Keeps the selection on the same row identity. A row that is no longer visible clears it.

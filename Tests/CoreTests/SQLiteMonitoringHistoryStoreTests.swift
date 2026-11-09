@@ -725,6 +725,37 @@ final class SQLiteMonitoringHistoryStoreTests: XCTestCase {
         }
     }
 
+    func testCommitWritesEveryApplicationBaselineInOneTransaction() async throws {
+        let databaseURL = try temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: databaseURL.deletingLastPathComponent()) }
+        let history = makeHistory(databaseURL)
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let groups = (0..<3).map { index in
+            appGroup(id: "bundle:com.example.commit\(index)|/Applications/Commit\(index).app",
+                     name: "Commit \(index)",
+                     process: ProcessIdentity(pid: pid_t(2000 + index),
+                                              startTime: .init(secondsSinceEpoch: 1_800_000_000, microseconds: 0)))
+        }
+
+        try await history.record(snapshot: snapshotWithGroups(groups, at: start))
+        try await history.record(snapshot: snapshotWithGroups(groups, at: start.addingTimeInterval(1)))
+        // Each application baseline is bound and stepped in one loop during the commit. This must not fail
+        // after the first row, which is the case for every app after the first.
+        try await history.flush()
+
+        let reopened = makeHistory(databaseURL)
+        let persisted = try await reopened.applicationSummaries(lastDays: 30,
+                                                                through: start.addingTimeInterval(1))
+        XCTAssertEqual(persisted.count, groups.count)
+        for group in groups {
+            let summary = persisted.first { $0.application.id == group.historyIdentity.id }
+            XCTAssertEqual(summary?.sampleCount, 2)
+            XCTAssertEqual(summary?.cpuSeconds ?? 0, 2, accuracy: 0.0001)
+        }
+        XCTAssertEqual(applicationSampleStateCount(at: databaseURL), groups.count,
+                       "every application's baseline must be saved for the next launch")
+    }
+
     func testHistoryStorageFailureSurfacesAsAnError() async throws {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("microgravity-history-is-directory-\(UUID().uuidString)", isDirectory: true)
@@ -768,6 +799,18 @@ final class SQLiteMonitoringHistoryStoreTests: XCTestCase {
                                           -1, &statement, nil), SQLITE_OK)
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, Int64(dayStart.timeIntervalSince1970))
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        return Int(sqlite3_column_int64(statement, 0))
+    }
+
+    private func applicationSampleStateCount(at databaseURL: URL) -> Int {
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        defer { sqlite3_close(database) }
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(database, "SELECT COUNT(*) FROM application_sample_state", -1,
+                                          &statement, nil), SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
         return Int(sqlite3_column_int64(statement, 0))
     }

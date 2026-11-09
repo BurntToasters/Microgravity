@@ -294,7 +294,11 @@ final class FixtureMonitoringStore: MonitoringStore {
                 transmitBytesPerSecond: reading(4_000, .bytesPerSecond, timestamp),
                 receiveTotalBytes: reading(9_000_000, .bytes, timestamp),
                 transmitTotalBytes: reading(3_000_000, .bytes, timestamp)
-            )]
+            )],
+            processorTopology: ProcessorTopology(kinds: [
+                ProcessorCoreKind(name: "Performance", rank: 0, logicalCPUs: [4, 5, 6, 7]),
+                ProcessorCoreKind(name: "Efficiency", rank: 1, logicalCPUs: [0, 1, 2, 3]),
+            ])
         )
 
         // History days are local midnights, as the history store keys them.

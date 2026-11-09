@@ -95,6 +95,9 @@ and the Settings caption must match it.
 
 ## Performance and history
 
+- When the Mac reports more than one processor type and the device tree agrees,
+  Logical Processors groups the per-core graphs by type, fastest first, each with
+  a header such as "Super · 6 cores · 14%". Otherwise it shows one ungrouped grid.
 - Performance shows timestamped CPU total and per-core activity, memory pressure
   and swap, disk and network throughput, and GPU/energy only when supported. A
   metric rail with sparklines selects the detail graph. Graphs have a fill, grid
@@ -156,6 +159,15 @@ and the Settings caption must match it.
   and the helper, login-item, and update integration states. The page ends with
   a centered version line, "Microgravity <version> (<build>)", read from the app
   bundle.
+- A Colors card sets the CPU, Memory, Disk, Network, GPU and Energy colors and
+  one color per processor type (Super, Performance, Efficiency). Graphs, rail
+  sparklines, the Processes heat map and the Logical Processors sections follow
+  the choice immediately. Each color has its own Reset button, and Restore
+  Default Colors resets them all.
+- A Reset card offers "Reset All Settings…". It asks for confirmation ("Reset
+  and Restart" or "Cancel"), then clears every Microgravity preference, including
+  window and table layout, and relaunches. App history, the helper and login
+  items are kept. Cancel changes nothing.
 - Helper setup and removal, login-item control, and updates are routed through an
   integration protocol. Controls display unavailable, failure, and approval states
   rather than implying success.

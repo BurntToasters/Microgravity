@@ -69,6 +69,43 @@ final class CoreModelTests: XCTestCase {
         XCTAssertEqual(legacyDecoded.memoryTotalBytes, system.memoryTotalBytes)
     }
 
+    func testSystemMetricsSnapshotDecodesDataWithoutProcessorTopology() throws {
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let base = CoreTestFixtures.system(timestamp: timestamp)
+        let topology = ProcessorTopology(kinds: [
+            ProcessorCoreKind(name: "Performance", rank: 0, logicalCPUs: [2, 3]),
+            ProcessorCoreKind(name: "Efficiency", rank: 1, logicalCPUs: [0, 1]),
+        ])
+        let withTopology = SystemMetricsSnapshot(
+            capacityCores: base.capacityCores, cpuPercent: base.cpuPercent,
+            perCoreCPUPercent: base.perCoreCPUPercent,
+            memoryUsedBytes: base.memoryUsedBytes, memoryAvailableBytes: base.memoryAvailableBytes,
+            memoryTotalBytes: base.memoryTotalBytes, memoryPressure: base.memoryPressure,
+            swapUsedBytes: base.swapUsedBytes, swapTotalBytes: base.swapTotalBytes,
+            diskReadBytesPerSecond: base.diskReadBytesPerSecond,
+            diskWriteBytesPerSecond: base.diskWriteBytesPerSecond,
+            networkReceiveBytesPerSecond: base.networkReceiveBytesPerSecond,
+            networkTransmitBytesPerSecond: base.networkTransmitBytesPerSecond,
+            networkInterfaces: base.networkInterfaces,
+            processorTopology: topology)
+        XCTAssertNil(base.processorTopology)
+
+        // Round trip keeps the topology.
+        let encoded = try JSONEncoder().encode(withTopology)
+        let decoded = try JSONDecoder().decode(SystemMetricsSnapshot.self, from: encoded)
+        XCTAssertEqual(decoded.processorTopology, topology)
+
+        // Data written before the topology existed has no key and must still decode with nil.
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "processorTopology")
+        let legacy = try JSONSerialization.data(withJSONObject: object)
+        let legacyDecoded = try JSONDecoder().decode(SystemMetricsSnapshot.self, from: legacy)
+
+        XCTAssertNil(legacyDecoded.processorTopology)
+        XCTAssertEqual(legacyDecoded.memoryUsedBytes, withTopology.memoryUsedBytes)
+        XCTAssertEqual(legacyDecoded.perCoreCPUPercent.count, withTopology.perCoreCPUPercent.count)
+    }
+
     func testPartialMetricReadingCodableRoundTrip() throws {
         let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
         let reading = MetricReading(value: 12.5, unit: .bytesPerSecond, timestamp: timestamp,

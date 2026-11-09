@@ -39,7 +39,9 @@ final class MetricDetailViewController: NSViewController {
     private let pressureStrip = MemoryPressureStripView()
     private let swapBlock = NSStackView()
     private let swapValueLabel = NSTextField(labelWithString: "")
-    private let swapBar = CapacityBarView(tint: .systemPurple)
+    private var swapBar = CapacityBarView(tint: ColorPreferences.color(for: .memory))
+    /// Hex of the tint the swap bar was built with. The bar takes its tint at init, so it is rebuilt only when this changes.
+    private var swapBarTintKey: String?
     private let swapGraph = MetricGraphView(style: .sparkline)
 
     override func loadView() {
@@ -100,6 +102,10 @@ final class MetricDetailViewController: NSViewController {
         graph.heightAnchor.constraint(equalToConstant: 240).isActive = true
         graph.setAccessibilityElement(true)
         coreGrid.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        // The grid's height is exactly its tile rows, so the stack must neither stretch nor squeeze it: a squeezed
+        // grid would clip or overlap its last row of tiles and the caption below.
+        coreGrid.setContentHuggingPriority(.required, for: .vertical)
+        coreGrid.setContentCompressionResistancePriority(.required, for: .vertical)
         coreGrid.setAccessibilityIdentifier("performance.graph.cpu-cores")
         legendRow.orientation = .horizontal
         legendRow.alignment = .centerY
@@ -201,7 +207,7 @@ final class MetricDetailViewController: NSViewController {
         updateLegend(model.series)
 
         coreGrid.isHidden = !showsCores
-        coreGrid.update(cores: model.cores, mapping: .time(model.timeSpan))
+        coreGrid.update(sections: model.coreSections, mapping: .time(model.timeSpan))
 
         captionLabel.isHidden = model.caption == nil
         captionLabel.stringValue = model.caption ?? ""
@@ -214,10 +220,28 @@ final class MetricDetailViewController: NSViewController {
         if model.metric == .network { updateInterfaces(model.interfaces) }
 
         memorySection.isHidden = model.memory == nil
+        refreshSwapBarTint()
         if let memory = model.memory { updateMemory(memory, timeSpan: model.timeSpan) }
     }
 
     // MARK: Sections
+
+    /// Rebuilds the swap bar in place when the memory color changes. Otherwise the bar keeps its view and state.
+    private func refreshSwapBarTint() {
+        let tint = ColorPreferences.color(for: .memory)
+        let key = ColorPreferences.hexString(for: tint) ?? ""
+        guard key != swapBarTintKey else { return }
+        swapBarTintKey = key
+        let bar = CapacityBarView(tint: tint)
+        bar.setAccessibilityLabel(String(localized: "Swap used against total"))
+        if let index = swapBlock.arrangedSubviews.firstIndex(of: swapBar) {
+            swapBlock.removeArrangedSubview(swapBar)
+            swapBar.removeFromSuperview()
+            swapBlock.insertArrangedSubview(bar, at: index)
+            Self.fillWidth(bar, in: swapBlock)
+        }
+        swapBar = bar
+    }
 
     private func buildPressureBlock() {
         pressureBlock.orientation = .vertical
@@ -483,6 +507,9 @@ private final class MetricStatsGridView: NSView {
     private var cells: [MetricStatCellView] = []
     private var gridView: NSGridView?
     private var columns = 0
+    /// Keeps every cell the same width. Using this instead of fixed column widths keeps the grid's minimum width
+    /// independent of its current width, so the window does not shrink to the card when the sidebar collapses.
+    private var equalWidthConstraints: [NSLayoutConstraint] = []
 
     init() {
         super.init(frame: .zero)
@@ -516,17 +543,6 @@ private final class MetricStatsGridView: NSView {
         guard !cells.isEmpty else { return }
         let desired = columnCount(for: bounds.width)
         if desired != columns { rebuildGrid(columns: desired) }
-        applyColumnWidths()
-    }
-
-    /// Fixes each column to an equal share of the width, so the grid never grows past the card.
-    private func applyColumnWidths() {
-        guard let grid = gridView, columns > 0, bounds.width > 0 else { return }
-        let spacing = grid.columnSpacing * CGFloat(columns - 1)
-        let width = floor((bounds.width - spacing) / CGFloat(columns))
-        for index in 0..<columns {
-            grid.column(at: index).width = width
-        }
     }
 
     private func columnCount(for width: CGFloat) -> Int {
@@ -538,6 +554,8 @@ private final class MetricStatsGridView: NSView {
     private func rebuildGrid(columns count: Int) {
         gridView?.removeFromSuperview()
         gridView = nil
+        NSLayoutConstraint.deactivate(equalWidthConstraints)
+        equalWidthConstraints = []
         columns = count
         guard !cells.isEmpty, count > 0 else { return }
 
@@ -565,8 +583,11 @@ private final class MetricStatsGridView: NSView {
             grid.topAnchor.constraint(equalTo: topAnchor),
             grid.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
+        if let first = cells.first {
+            equalWidthConstraints = cells.dropFirst().map { $0.widthAnchor.constraint(equalTo: first.widthAnchor) }
+            NSLayoutConstraint.activate(equalWidthConstraints)
+        }
         gridView = grid
-        applyColumnWidths()
     }
 }
 

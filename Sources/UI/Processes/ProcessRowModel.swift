@@ -94,13 +94,15 @@ enum ProcessColumn: String, CaseIterable {
     /// Name always stays visible; every other column can be hidden from the header menu.
     var isHideable: Bool { self != .name }
 
-    /// Hue of the heat fill in this column's metric cells. Matches the Performance metric colors where one exists.
+    /// Hue of the heat fill in this column's metric cells. CPU, Memory, Disk and Network follow the user's metric
+    /// colors; the other columns keep the warning orange.
     @MainActor var heatColor: NSColor {
         switch self {
-        case .cpu: return .systemBlue
-        case .memory: return .systemPurple
-        case .disk: return .systemGreen
-        case .network, .name, .pid, .user, .gpu: return .systemOrange
+        case .cpu: return ColorPreferences.color(for: .cpu)
+        case .memory: return ColorPreferences.color(for: .memory)
+        case .disk: return ColorPreferences.color(for: .disk)
+        case .network: return ColorPreferences.color(for: .network)
+        case .name, .pid, .user, .gpu: return .systemOrange
         }
     }
 }

@@ -316,6 +316,11 @@ public struct SystemMetricsSnapshot: Codable, Equatable, Sendable {
     public let memoryUsedBytes: MetricReading
     public let memoryAvailableBytes: MetricReading
     public let memoryTotalBytes: MetricReading
+    /// Memory breakdown. Optional so snapshots persisted before these fields existed still decode.
+    public let memoryAppBytes: MetricReading?
+    public let memoryWiredBytes: MetricReading?
+    public let memoryCompressedBytes: MetricReading?
+    public let memoryCachedFilesBytes: MetricReading?
     public let memoryPressure: MemoryPressureSnapshot
     public let swapUsedBytes: MetricReading
     public let swapTotalBytes: MetricReading
@@ -327,7 +332,12 @@ public struct SystemMetricsSnapshot: Codable, Equatable, Sendable {
 
     public init(capacityCores: Int, cpuPercent: MetricReading, perCoreCPUPercent: [MetricReading],
                 memoryUsedBytes: MetricReading, memoryAvailableBytes: MetricReading,
-                memoryTotalBytes: MetricReading, memoryPressure: MemoryPressureSnapshot,
+                memoryTotalBytes: MetricReading,
+                memoryAppBytes: MetricReading? = nil,
+                memoryWiredBytes: MetricReading? = nil,
+                memoryCompressedBytes: MetricReading? = nil,
+                memoryCachedFilesBytes: MetricReading? = nil,
+                memoryPressure: MemoryPressureSnapshot,
                 swapUsedBytes: MetricReading, swapTotalBytes: MetricReading,
                 diskReadBytesPerSecond: MetricReading, diskWriteBytesPerSecond: MetricReading,
                 networkReceiveBytesPerSecond: MetricReading,
@@ -339,6 +349,10 @@ public struct SystemMetricsSnapshot: Codable, Equatable, Sendable {
         self.memoryUsedBytes = memoryUsedBytes
         self.memoryAvailableBytes = memoryAvailableBytes
         self.memoryTotalBytes = memoryTotalBytes
+        self.memoryAppBytes = memoryAppBytes
+        self.memoryWiredBytes = memoryWiredBytes
+        self.memoryCompressedBytes = memoryCompressedBytes
+        self.memoryCachedFilesBytes = memoryCachedFilesBytes
         self.memoryPressure = memoryPressure
         self.swapUsedBytes = swapUsedBytes
         self.swapTotalBytes = swapTotalBytes

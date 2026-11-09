@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 /// Identity of one outline row. A group's leader is also one of its members, so the row kind is part
 /// of the key: `.group(410)` and `.process(410)` are different rows.
@@ -93,6 +93,16 @@ enum ProcessColumn: String, CaseIterable {
 
     /// Name always stays visible; every other column can be hidden from the header menu.
     var isHideable: Bool { self != .name }
+
+    /// Hue of the heat fill in this column's metric cells. Matches the Performance metric colors where one exists.
+    @MainActor var heatColor: NSColor {
+        switch self {
+        case .cpu: return .systemBlue
+        case .memory: return .systemPurple
+        case .disk: return .systemGreen
+        case .network, .name, .pid, .user, .gpu: return .systemOrange
+        }
+    }
 }
 
 struct ProcessSortState: Equatable {

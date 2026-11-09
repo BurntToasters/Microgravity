@@ -228,8 +228,7 @@ final class InventoryViewController: NSViewController, SnapshotUpdating, PageToo
 
     @objc private func revealSelectedPath() {
         guard let path = selectedEntry?.path else { return }
-        let url = URL(fileURLWithPath: path)
-        NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
+        InventoryTableController.revealInFinder(path: path)
     }
 
     @objc private func openLoginItemsSettings() {

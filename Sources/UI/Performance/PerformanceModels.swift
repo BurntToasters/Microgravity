@@ -33,26 +33,29 @@ enum PerformanceMetric: String, CaseIterable {
     }
 }
 
-/// Detail time window. Fixed windows fix the x scale; `all` scales to the retained history.
+/// Detail time window. Each window fixes the x scale to its own length.
 enum PerformanceWindow: CaseIterable {
     case oneMinute
     case fiveMinutes
-    case all
+    case fifteenMinutes
+    case oneHour
 
     var title: String {
         switch self {
-        case .oneMinute: return "60 s"
-        case .fiveMinutes: return "5 min"
-        case .all: return String(localized: "All")
+        case .oneMinute: return String(localized: "1 min")
+        case .fiveMinutes: return String(localized: "5 min")
+        case .fifteenMinutes: return String(localized: "15 min")
+        case .oneHour: return String(localized: "1 h")
         }
     }
 
-    /// Seconds covered by the window, or nil for every retained sample.
-    var duration: TimeInterval? {
+    /// Seconds covered by the window.
+    var duration: TimeInterval {
         switch self {
         case .oneMinute: return 60
         case .fiveMinutes: return 300
-        case .all: return nil
+        case .fifteenMinutes: return 900
+        case .oneHour: return 3600
         }
     }
 }
@@ -216,16 +219,16 @@ enum PerformancePresenter {
         case .energy: model = advancedDetail(.energy, kind: .energy, snapshot: snapshot, visible: visible, window: window, cpuMode: cpuMode)
         }
         model.subtitle = "\(model.subtitle) over \(span.long)"
-        model.timeSpan = window.duration ?? max(duration, 1)
+        model.timeSpan = window.duration
         // The left edge of the plot is the window length, not the span of the data currently present.
-        model.spanLabel = window.duration.map { spanText($0).short } ?? span.short
+        model.spanLabel = spanText(window.duration).short
         return model
     }
 
     /// Samples inside the window, measured back from the newest sample.
     static func windowed(_ samples: [MonitoringGraphSample], _ window: PerformanceWindow) -> [MonitoringGraphSample] {
-        guard let duration = window.duration, let latest = samples.last else { return samples }
-        let cutoff = latest.timestamp.addingTimeInterval(-duration)
+        guard let latest = samples.last else { return samples }
+        let cutoff = latest.timestamp.addingTimeInterval(-window.duration)
         return samples.filter { $0.timestamp >= cutoff }
     }
 
@@ -343,10 +346,18 @@ enum PerformancePresenter {
         model.series = [series(String(localized: "Used"), .memory, visible.map(\.memoryUsedBytes))]
         model.maximum = total.value
         model.topLabel = total.value == nil ? nil : shortValue(total)
+        // Breakdown fields are optional: a nil field was never collected, so it shows as such, never as zero.
+        func breakdown(_ reading: MetricReading?) -> String {
+            reading.map(shortValue) ?? UIFormat.unavailable(.notCollected)
+        }
         model.stats = [
             MetricStat(label: String(localized: "Used"), value: shortValue(used)),
             MetricStat(label: String(localized: "Available"), value: shortValue(system.memoryAvailableBytes)),
-            MetricStat(label: String(localized: "Total"), value: shortValue(total))
+            MetricStat(label: String(localized: "Total"), value: shortValue(total)),
+            MetricStat(label: String(localized: "App memory"), value: breakdown(system.memoryAppBytes)),
+            MetricStat(label: String(localized: "Wired"), value: breakdown(system.memoryWiredBytes)),
+            MetricStat(label: String(localized: "Compressed"), value: breakdown(system.memoryCompressedBytes)),
+            MetricStat(label: String(localized: "Cached files"), value: breakdown(system.memoryCachedFilesBytes))
         ]
         var memory = MemoryDetailModel()
         memory.pressureLevel = system.memoryPressure.level
@@ -456,8 +467,11 @@ enum PerformancePresenter {
             : UIFormat.metric(current)
         model.stateIdentifier = "performance.\(metric.rawValue).state"
         if unavailable {
+            // Availability text can end with a period of its own; never append a second one.
+            var availabilityText = UIFormat.availability(availability)
+            if availabilityText.hasSuffix(".") { availabilityText.removeLast() }
             model.banner = DetailBanner(
-                message: "\(UIFormat.availability(availability)). Shown as no data, never as zero.",
+                message: "\(availabilityText). Shown as no data, never as zero.",
                 style: .info)
         } else if current.isPartial {
             model.banner = DetailBanner(message: UIFormat.metric(current), style: .warning)

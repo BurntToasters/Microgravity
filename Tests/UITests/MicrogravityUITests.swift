@@ -595,9 +595,11 @@ final class MicrogravityUITests: XCTestCase {
         return app
     }
 
-    /// Empty selection bar: one message in the summary, and the identity field left blank.
+    /// Empty selection bar: the live counts in the summary ("3 processes · 2 apps"), and the identity field left blank.
     private func assertProcessSelectionEmpty(_ app: XCUIApplication) {
-        XCTAssertEqual(app.staticTexts["process.selection.summary"].label, "Select a process to inspect its identity.")
+        let summary = app.staticTexts["process.selection.summary"].label
+        XCTAssertNotNil(summary.range(of: #"^\d+ process(es)? · \d+ apps?$"#, options: .regularExpression),
+                        "Unexpected empty-selection summary: \(summary)")
         let identity = app.staticTexts["process.selection.identity"]
         XCTAssertTrue(!identity.exists || identity.label.isEmpty, "Identity should be blank when nothing is selected")
     }

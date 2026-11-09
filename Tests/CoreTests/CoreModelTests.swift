@@ -28,6 +28,47 @@ final class CoreModelTests: XCTestCase {
         XCTAssertNil(reading.measurementInterval)
     }
 
+    func testSystemMetricsSnapshotDecodesDataWithoutMemoryBreakdown() throws {
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let base = CoreTestFixtures.system(timestamp: timestamp)
+        let system = SystemMetricsSnapshot(
+            capacityCores: base.capacityCores, cpuPercent: base.cpuPercent,
+            perCoreCPUPercent: base.perCoreCPUPercent,
+            memoryUsedBytes: base.memoryUsedBytes, memoryAvailableBytes: base.memoryAvailableBytes,
+            memoryTotalBytes: base.memoryTotalBytes,
+            memoryAppBytes: CoreTestFixtures.reading(2_100_000_000, unit: .bytes, timestamp: timestamp),
+            memoryWiredBytes: CoreTestFixtures.reading(1_200_000_000, unit: .bytes, timestamp: timestamp),
+            memoryCompressedBytes: CoreTestFixtures.reading(500_000_000, unit: .bytes, timestamp: timestamp),
+            memoryCachedFilesBytes: CoreTestFixtures.reading(1_400_000_000, unit: .bytes, timestamp: timestamp),
+            memoryPressure: base.memoryPressure, swapUsedBytes: base.swapUsedBytes,
+            swapTotalBytes: base.swapTotalBytes, diskReadBytesPerSecond: base.diskReadBytesPerSecond,
+            diskWriteBytesPerSecond: base.diskWriteBytesPerSecond,
+            networkReceiveBytesPerSecond: base.networkReceiveBytesPerSecond,
+            networkTransmitBytesPerSecond: base.networkTransmitBytesPerSecond,
+            networkInterfaces: base.networkInterfaces)
+
+        // Round trip keeps the breakdown.
+        let encoded = try JSONEncoder().encode(system)
+        let decoded = try JSONDecoder().decode(SystemMetricsSnapshot.self, from: encoded)
+        XCTAssertEqual(decoded.memoryAppBytes?.value, 2_100_000_000)
+        XCTAssertEqual(decoded.memoryCachedFilesBytes?.value, 1_400_000_000)
+
+        // Data written before the breakdown existed has none of the four keys and must still decode.
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        for key in ["memoryAppBytes", "memoryWiredBytes", "memoryCompressedBytes", "memoryCachedFilesBytes"] {
+            object.removeValue(forKey: key)
+        }
+        let legacy = try JSONSerialization.data(withJSONObject: object)
+        let legacyDecoded = try JSONDecoder().decode(SystemMetricsSnapshot.self, from: legacy)
+
+        XCTAssertNil(legacyDecoded.memoryAppBytes)
+        XCTAssertNil(legacyDecoded.memoryWiredBytes)
+        XCTAssertNil(legacyDecoded.memoryCompressedBytes)
+        XCTAssertNil(legacyDecoded.memoryCachedFilesBytes)
+        XCTAssertEqual(legacyDecoded.memoryUsedBytes, system.memoryUsedBytes)
+        XCTAssertEqual(legacyDecoded.memoryTotalBytes, system.memoryTotalBytes)
+    }
+
     func testPartialMetricReadingCodableRoundTrip() throws {
         let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
         let reading = MetricReading(value: 12.5, unit: .bytesPerSecond, timestamp: timestamp,

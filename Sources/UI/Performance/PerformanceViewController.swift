@@ -60,7 +60,8 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating, PageT
         let page = DynamicWindowBackgroundView()
         view = page
 
-        let header = UIComponents.header(title: String(localized: "Performance"), subtitle: "")
+        let header = UIComponents.header(title: String(localized: "Performance"),
+                                         subtitle: String(localized: "Live resource use. Hover a graph to read a sample."))
         header.toolTip = String(localized: "Live resource use. Gaps mark paused or missed samples; unavailable metrics are never drawn as zero.")
         rail.translatesAutoresizingMaskIntoConstraints = false
         rail.onSelect = { [weak self] metric in self?.selectMetric(metric) }

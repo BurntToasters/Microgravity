@@ -37,7 +37,7 @@ These cases define what the collectors, store, history, and process controls mus
 | History | The user clears history while a record is in flight | Serialize reset after the active write and invalidate stale publications so no pre-reset record can restore deleted rows. |
 | History | Monitoring is paused and resumed | Mark the first resumed history interval as a gap and do not integrate its rates across the pause. |
 | Store | Collector is slow, paused, or interval changes mid-cycle | Keep one bounded poll loop, avoid overlapping collections, stop publishing while paused, and apply the new interval. |
-| Store | UI listener is attached/detached during collection | Deliver callbacks on the main actor and retain at most 720 graph samples. |
+| Store | UI listener is attached/detached during collection | Deliver callbacks on the main actor and retain at most 3600 graph samples. |
 | Store | CoreMetrics callback supplies a new GPU/energy value | Preserve metric unit, timestamp, and unavailable reason in snapshots and graph samples; never relabel energy as power. |
 | Actions | PID is gone, reused, root-owned, another user's, PID 1, the caller itself, or protected | Revalidate PID + start time + owner immediately before signaling; reject with an explicit outcome and send no signal. |
 | Actions | Signal fails or privileged helper is unavailable | Return the failure; never escalate through a hidden or guessed helper. |

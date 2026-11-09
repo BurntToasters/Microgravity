@@ -73,6 +73,19 @@ enum MainMenu {
         let toggle = NSMenuItem(title: String(localized: "Toggle Sidebar"), action: #selector(MainWindowController.toggleSidebar(_:)), keyEquivalent: "s")
         toggle.keyEquivalentModifierMask = [.command, .option]
         items.append(toggle)
+        items.append(.separator())
+        // Title flips to "Resume Sampling" during validation (MainWindowController).
+        let pause = NSMenuItem(title: String(localized: "Pause Sampling"), action: #selector(MainWindowController.toggleSampling(_:)), keyEquivalent: "p")
+        pause.keyEquivalentModifierMask = [.command, .option]
+        items.append(pause)
+        let intervalMenu = NSMenu(title: String(localized: "Refresh Interval"))
+        for (index, interval) in MonitoringInterval.allCases.enumerated() {
+            let item = NSMenuItem(title: SamplingControls.longTitle(interval),
+                                  action: #selector(MainWindowController.setRefreshInterval(_:)), keyEquivalent: "")
+            item.tag = index
+            intervalMenu.addItem(item)
+        }
+        items.append(submenuItem(menu: intervalMenu))
         return items
     }
 
@@ -84,7 +97,9 @@ enum MainMenu {
         // No shortcut: ⇧⌥⌘Q is the system Log Out-without-confirmation shortcut.
         let forceQuit = NSMenuItem(title: String(localized: "Force Quit…"), action: #selector(ProcessesViewController.forceQuitSelectedProcess(_:)), keyEquivalent: "")
         let details = NSMenuItem(title: String(localized: "Show in Details"), action: #selector(ProcessesViewController.showSelectedProcessInDetails(_:)), keyEquivalent: "i")
-        return [find, .separator(), quit, forceQuit, .separator(), details]
+        let inspect = NSMenuItem(title: String(localized: "Inspect…"), action: #selector(ProcessesViewController.inspectSelectedProcess(_:)), keyEquivalent: "i")
+        inspect.keyEquivalentModifierMask = [.command, .option]
+        return [find, .separator(), quit, forceQuit, .separator(), inspect, details]
     }
 
     private static func submenuItem(title: String, items: [NSMenuItem]) -> NSMenuItem {

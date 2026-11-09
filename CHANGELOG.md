@@ -21,7 +21,19 @@
 
 ## 0.2.0
 
-Release notes pending.
+- **Performance:** Hover over a graph or a core tile to read the time and the value of each series at that point. Graphs with two series, Disk and Network, have a legend.
+- **Performance:** Graphs keep one hour of history. The time window picker offers 1 min, 5 min, 15 min and 1 h; "All" has been removed.
+- **Performance:** The Memory detail adds App memory, Wired, Compressed and Cached files to Used, Available and Total. A value that was not collected shows as not collected, never as zero.
+- **Performance:** The banner for unavailable advanced metrics no longer ends with two periods.
+- **Processes:** Inspect opens a popover with a process's parent, full start time, paths, live CPU, memory and disk rates, disk read and written since it started, and network use. Choose Inspect from the context menu, the selection bar, or press Option-Command-I. The popover keeps updating while it is open.
+- **Processes:** Each resource column has its own heat color: blue for CPU, purple for Memory, green for Disk and orange for Network. The color is a rounded fill inside each cell, so neighboring columns no longer blend together.
+- **Processes:** The grouping choice, By App or Flat List, is remembered between launches.
+- **Processes:** When nothing is selected, the selection bar shows how many processes and apps are listed. While you search, it shows how many processes match.
+- **Details:** Right-click a process for Show in Processes, Reveal in Finder, Copy Path and Copy PID. Show in Processes opens the Processes page with that process selected and its group expanded.
+- **Startup and Services:** Right-click an item to Reveal in Finder or Copy Path.
+- **Interface:** The View menu has Pause Sampling (Option-Command-P), which changes to Resume Sampling while sampling is paused, and a Refresh Interval submenu that marks the current interval.
+- **App History:** A search field filters applications by name, and the banner shows how many applications match.
+- **Settings:** The version and build number appear at the bottom of the Settings page.
 
 ## 0.1.2
 

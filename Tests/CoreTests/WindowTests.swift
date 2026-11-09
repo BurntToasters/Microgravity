@@ -188,6 +188,7 @@ final class WindowTests: XCTestCase {
             #selector(ProcessesViewController.quitSelectedProcess(_:)),
             #selector(ProcessesViewController.forceQuitSelectedProcess(_:)),
             #selector(ProcessesViewController.showSelectedProcessInDetails(_:)),
+            #selector(ProcessesViewController.inspectSelectedProcess(_:)),
             #selector(ProcessesViewController.revealSelectedProcess(_:)),
             #selector(ProcessesViewController.copySelectedPath(_:))
         ]
@@ -201,6 +202,145 @@ final class WindowTests: XCTestCase {
         settle(window)
         XCTAssertNil(actionTarget(#selector(ProcessesViewController.quitSelectedProcess(_:)), from: window),
                      "Quit Process must not be forwarded while another page is shown")
+    }
+
+    // MARK: Shell menus and sampling controls
+
+    func testViewMenuSamplingItemsHaveShortcutsAndOneRefreshItemPerInterval() throws {
+        let view = try XCTUnwrap(MainMenu.make().items.first { $0.title == "View" }?.submenu)
+        let pause = try XCTUnwrap(menuItem(action: #selector(MainWindowController.toggleSampling(_:)), in: view))
+        XCTAssertEqual(pause.title, "Pause Sampling")
+        XCTAssertEqual(pause.keyEquivalent, "p")
+        XCTAssertEqual(pause.keyEquivalentModifierMask, [.command, .option])
+
+        let refresh = try XCTUnwrap(view.items.first { $0.title == "Refresh Interval" }?.submenu)
+        XCTAssertEqual(refresh.items.map(\.title), MonitoringInterval.allCases.map(SamplingControls.longTitle))
+        XCTAssertEqual(refresh.items.map(\.tag), Array(0..<MonitoringInterval.allCases.count))
+        XCTAssertTrue(refresh.items.allSatisfy { $0.action == #selector(MainWindowController.setRefreshInterval(_:)) })
+    }
+
+    func testProcessMenuInspectUsesOptionCommandIAndNoOtherItemTakesTheNewShortcuts() throws {
+        let menu = MainMenu.make()
+        let process = try XCTUnwrap(menu.items.first { $0.title == "Process" }?.submenu)
+        let inspect = try XCTUnwrap(menuItem(action: #selector(ProcessesViewController.inspectSelectedProcess(_:)), in: process))
+        XCTAssertEqual(inspect.title, "Inspect…")
+        XCTAssertEqual(inspect.keyEquivalent, "i")
+        XCTAssertEqual(inspect.keyEquivalentModifierMask, [.command, .option])
+
+        let items = allMenuItems(in: menu)
+        let optionCommandP = items.filter { $0.keyEquivalent == "p" && $0.keyEquivalentModifierMask == [.command, .option] }
+        let optionCommandI = items.filter { $0.keyEquivalent == "i" && $0.keyEquivalentModifierMask == [.command, .option] }
+        XCTAssertEqual(optionCommandP.count, 1, "⌥⌘P must belong to Pause Sampling alone")
+        XCTAssertEqual(optionCommandI.count, 1, "⌥⌘I must belong to Inspect alone")
+    }
+
+    func testToggleSamplingFlipsThePauseStateAndPostsSamplingStateChanged() {
+        let (dependencies, store) = makeShellDependencies()
+        let controller = MainWindowController(dependencies: dependencies, frameAutosaveName: nil)
+        defer { controller.window?.close() }
+        let posted = NotificationCounter()
+        let observer = NotificationCenter.default.addObserver(forName: .samplingStateDidChange, object: nil, queue: nil) { _ in
+            posted.value += 1
+        }
+        addTeardownBlock { NotificationCenter.default.removeObserver(observer) }
+
+        let pause = NSMenuItem(title: "Pause Sampling", action: #selector(MainWindowController.toggleSampling(_:)), keyEquivalent: "p")
+        XCTAssertFalse(store.isPaused)
+        XCTAssertTrue(controller.validateUserInterfaceItem(pause))
+        XCTAssertEqual(pause.title, "Pause Sampling")
+
+        controller.toggleSampling(nil)
+        XCTAssertTrue(store.isPaused)
+        XCTAssertEqual(posted.value, 1)
+        XCTAssertTrue(controller.validateUserInterfaceItem(pause))
+        XCTAssertEqual(pause.title, "Resume Sampling")
+
+        controller.toggleSampling(nil)
+        XCTAssertFalse(store.isPaused)
+        XCTAssertEqual(posted.value, 2)
+        XCTAssertTrue(controller.validateUserInterfaceItem(pause))
+        XCTAssertEqual(pause.title, "Pause Sampling")
+    }
+
+    func testRefreshIntervalItemsSetTheStoreIntervalAndCheckTheCurrentOne() throws {
+        let defaults = UserDefaults.standard
+        let key = SamplingControls.refreshIntervalDefaultsKey
+        let priorInterval = defaults.object(forKey: key)
+        addTeardownBlock {
+            if let priorInterval { defaults.set(priorInterval, forKey: key) } else { defaults.removeObject(forKey: key) }
+        }
+        let (dependencies, store) = makeShellDependencies()
+        let controller = MainWindowController(dependencies: dependencies, frameAutosaveName: nil)
+        defer { controller.window?.close() }
+        let refresh = try XCTUnwrap(MainMenu.make().items.first { $0.title == "View" }?.submenu?
+            .items.first { $0.title == "Refresh Interval" }?.submenu)
+        store.setInterval(.oneSecond)
+
+        let twoSeconds = refresh.items[2]
+        XCTAssertTrue(controller.validateUserInterfaceItem(twoSeconds))
+        XCTAssertEqual(twoSeconds.state, .off)
+        XCTAssertTrue(controller.validateUserInterfaceItem(refresh.items[1]))
+        XCTAssertEqual(refresh.items[1].state, .on)
+
+        controller.setRefreshInterval(twoSeconds)
+        XCTAssertEqual(store.interval, .twoSeconds)
+        XCTAssertEqual(defaults.double(forKey: key), MonitoringInterval.twoSeconds.rawValue)
+        XCTAssertTrue(controller.validateUserInterfaceItem(twoSeconds))
+        XCTAssertEqual(twoSeconds.state, .on)
+        XCTAssertTrue(controller.validateUserInterfaceItem(refresh.items[1]))
+        XCTAssertEqual(refresh.items[1].state, .off)
+    }
+
+    func testShowProcessInProcessesOpensThePageAndSelectsTheExactIdentity() throws {
+        let (dependencies, store) = makeShellDependencies()
+        let controller = MainWindowController(dependencies: dependencies, frameAutosaveName: nil)
+        let window = try XCTUnwrap(controller.window)
+        defer { window.close() }
+        controller.showWindow(nil)
+        controller.root.select(.details)
+        settle(window)
+        let renderer = try XCTUnwrap(store.latestSnapshot?.processes.first { $0.id.pid == 411 })
+
+        controller.root.showProcessInProcesses(renderer.id)
+        settle(window)
+
+        let processes = try XCTUnwrap(controller.root.currentPageController as? ProcessesViewController)
+        let identity = try XCTUnwrap(view(withIdentifier: "process.selection.identity", in: processes.view) as? NSTextField)
+        XCTAssertTrue(identity.accessibilityLabel()?.contains("PID 411,") == true)
+    }
+
+    private final class NotificationCounter: @unchecked Sendable {
+        var value = 0
+    }
+
+    private func makeShellDependencies() -> (AppDependencies, FixtureMonitoringStore) {
+        let configuration = FixtureConfiguration(arguments: [])
+        let store = FixtureMonitoringStore(configuration: configuration)
+        let dependencies = AppDependencies(
+            monitoringStore: store,
+            processActions: FixtureProcessActioner(configuration: configuration),
+            integrations: UnavailableSystemIntegrationAPI(),
+            fixtureMode: true
+        )
+        return (dependencies, store)
+    }
+
+    private func allMenuItems(in menu: NSMenu) -> [NSMenuItem] {
+        menu.items.flatMap { item -> [NSMenuItem] in
+            [item] + (item.submenu.map { allMenuItems(in: $0) } ?? [])
+        }
+    }
+
+    private func menuItem(action: Selector, in menu: NSMenu) -> NSMenuItem? {
+        allMenuItems(in: menu).first { $0.action == action }
+    }
+
+    private func view(withIdentifier identifier: String, in root: NSView) -> NSView? {
+        if root.accessibilityIdentifier() == identifier { return root }
+        for subview in root.subviews {
+            if let found = view(withIdentifier: identifier, in: subview) { return found }
+        }
+        return nil
     }
 
     /// Mirrors AppKit's lookup for a nil-target action: each responder answers if it implements the action,

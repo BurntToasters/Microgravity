@@ -137,6 +137,12 @@ final class RootViewController: NSViewController {
         (pageHost.currentController as? DetailsViewController)?.selectProcess(identity: identity)
     }
 
+    /// Opens Processes and selects the exact live identity, clearing any search that would hide its row.
+    func showProcessInProcesses(_ identity: ProcessIdentity) {
+        select(.processes)
+        (pageHost.currentController as? ProcessesViewController)?.selectProcess(identity: identity)
+    }
+
     /// Collapses or expands the sidebar; the split view controller owns the animation.
     @objc func toggleSidebar(_ sender: Any?) {
         splitController.toggleSidebar(sender)

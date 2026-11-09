@@ -112,7 +112,7 @@ final class SystemMonitorCollectorTests: XCTestCase {
         let memory = SystemMonitorCollector.memoryBreakdown(
             physicalBytes: 10_000, pageBytes: 10,
             internalPages: 800, purgeablePages: 200,
-            wirePages: 150, compressorPages: 50)
+            wirePages: 150, compressorPages: 50, externalPages: 300)
 
         XCTAssertEqual(memory.usedBytes, 8_000)
         XCTAssertEqual(memory.availableBytes, 2_000)
@@ -122,10 +122,35 @@ final class SystemMonitorCollectorTests: XCTestCase {
         let memory = SystemMonitorCollector.memoryBreakdown(
             physicalBytes: 1_000, pageBytes: 10,
             internalPages: 100, purgeablePages: 0,
-            wirePages: 100, compressorPages: 100)
+            wirePages: 100, compressorPages: 100, externalPages: 0)
 
         XCTAssertEqual(memory.usedBytes, 1_000)
         XCTAssertEqual(memory.availableBytes, 0)
+    }
+
+    func testMemoryBreakdownSplitsAppWiredCompressedAndCachedFiles() {
+        let memory = SystemMonitorCollector.memoryBreakdown(
+            physicalBytes: 10_000, pageBytes: 10,
+            internalPages: 500, purgeablePages: 100,
+            wirePages: 150, compressorPages: 50, externalPages: 250)
+
+        // App excludes purgeable pages; cached files are file-backed plus purgeable pages.
+        XCTAssertEqual(memory.appBytes, 4_000)
+        XCTAssertEqual(memory.wiredBytes, 1_500)
+        XCTAssertEqual(memory.compressedBytes, 500)
+        XCTAssertEqual(memory.cachedFilesBytes, 3_500)
+        XCTAssertEqual(memory.usedBytes, memory.appBytes + memory.wiredBytes + memory.compressedBytes)
+    }
+
+    func testMemoryBreakdownNeverUnderflowsAppWhenPurgeableExceedsInternal() {
+        let memory = SystemMonitorCollector.memoryBreakdown(
+            physicalBytes: 10_000, pageBytes: 10,
+            internalPages: 100, purgeablePages: 300,
+            wirePages: 0, compressorPages: 0, externalPages: 0)
+
+        XCTAssertEqual(memory.appBytes, 0)
+        XCTAssertEqual(memory.cachedFilesBytes, 3_000)
+        XCTAssertEqual(memory.usedBytes, 0)
     }
 
     func testCurrentProcessHasAReadablePhysicalFootprint() async {

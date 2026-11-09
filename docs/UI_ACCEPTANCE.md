@@ -21,6 +21,11 @@ argument alone cannot switch a production build to fixture data.
   Command-comma.
 - The menu bar has the standard application, File, Edit, View, Window, and Help
   menus, a Process menu for the selected process, and Check for Updates.
+- The View menu has **Pause Sampling** (Option-Command-P), which changes to
+  **Resume Sampling** while sampling is paused. Its **Refresh Interval** submenu
+  offers the same four intervals as Settings and marks the current one. The
+  Process menu has **Inspect…** (Option-Command-I), which works from any focus
+  inside the window.
 - Closing the last window terminates the app. No storyboard or SwiftUI is used.
 - Sidebar items, tables, outline rows, headers, graph controls, toolbar items,
   actions, and dialogs have stable accessibility identifiers and keyboard
@@ -38,16 +43,31 @@ argument alone cannot switch a production build to fixture data.
   App** or **Flat List**. In grouped mode, related processes appear under an
   expandable parent row. Expanded groups are remembered across launches by full
   PID-plus-start-time identity, so a reused PID never inherits old expansion.
-  Selecting any row exposes its stable identity. **Show in Details** opens the
-  flat inventory and selects that same full process identity when it is still
-  present.
+  The grouping choice is also remembered across launches. Each resource column
+  tints its heat-mapped cells in its own color (CPU blue, Memory purple, Disk
+  green, Network orange) as a rounded fill inside the cell. Selecting any row
+  exposes its stable identity. **Show in Details** opens the flat inventory and
+  selects that same full process identity when it is still present.
+- **Inspect…** (row context menu, the Inspect button in the selection bar, or
+  Option-Command-I) opens a popover for the selected process. It shows the name,
+  PID, parent, owner, full start time, executable path, app bundle, live CPU,
+  memory, and disk read and write rates, disk read and written since the process
+  started, and network use. Values update while the popover is open, and it
+  closes when the process identity disappears. Unavailable values say so; they
+  are never shown as zero.
 - Partial and unavailable readings are marked with a badge and a tooltip that
   gives the reason. A selection bar at the bottom of the page shows the selected
-  process and its available actions.
+  process and its available actions. With nothing selected, it shows the process
+  and app counts (for example "12 processes · 4 apps"), or "K of N processes
+  match" while a search is active.
 - Details is a flat process inventory showing PID, owner, parent PID, executable
   path, CPU, memory, disk, available network and GPU columns. Unsupported fields
   are labeled unavailable; they are never presented as zero. Numeric columns
-  right-align their headers and trail-align their values.
+  right-align their headers and trail-align their values. Right-clicking a row
+  offers **Show in Processes**, **Reveal in Finder**, **Copy Path**, and **Copy
+  PID**. Reveal in Finder and Copy Path are disabled when the path is unavailable.
+  Show in Processes opens Processes with that process selected and its group
+  expanded.
 - Quit asks the core to act on the selected stable identity. Force Quit requires
   confirmation in a window sheet. The core must revalidate that identity at
   action time; if the PID was reused or the target exited, the UI reports that
@@ -78,10 +98,21 @@ and the Settings caption must match it.
 - Performance shows timestamped CPU total and per-core activity, memory pressure
   and swap, disk and network throughput, and GPU/energy only when supported. A
   metric rail with sparklines selects the detail graph. Graphs have a fill, grid
-  lines, axis labels, and a time-window picker. Missing samples are drawn as gap
-  markers. Each graph labels its units and gives a short definition.
-  Unsupported and temporarily unavailable metrics have distinct states from a
-  measured zero.
+  lines, axis labels, and a time-window picker. The picker offers 1 min, 5 min,
+  15 min, and 1 h, and each window fixes the horizontal scale to its own length.
+  Missing samples are drawn as gap markers. Each graph labels its units and gives
+  a short definition. Hovering a detail graph or a core tile shows a vertical
+  crosshair, a dot for each series at the nearest sample, and a readout with the
+  time and each series' value. An unavailable value shows its reason, and a gap
+  shows "Sample gap". Graphs with two series, Disk and Network, have a legend
+  below them. Unsupported and temporarily unavailable metrics have distinct
+  states from a measured zero.
+- Graph history keeps up to 3600 samples, which is one hour at one-second
+  sampling. The Performance header subtitle tells the user to hover a graph to
+  read a sample.
+- The Memory detail shows Used, Available, Total, App memory, Wired, Compressed,
+  and Cached files. A breakdown value that was not collected shows as not
+  collected, never as zero.
 - Network totals exclude loopback, virtual, and tunnel interfaces. Those
   interfaces remain in the per-interface list and are marked as excluded from
   totals.
@@ -97,6 +128,9 @@ and the Settings caption must match it.
   full measurement detail. An unavailable total displays "Unavailable", never
   zero. Numeric sorting uses the underlying value. Reset is explicit and confirmed in a window sheet;
   history reset does not clear process or operating-system state.
+- App History has a search field in the toolbar that filters applications by
+  name. While a search is active, the banner reads "K of N applications match",
+  and a query with no matches shows "No applications match" with the query.
 - Pre-release builds recorded per-app CPU seconds in the wrong unit. Histories
   from those builds must be reset before their CPU values are relied on.
 
@@ -104,7 +138,8 @@ and the Settings caption must match it.
 
 - Startup and Services are inspection surfaces only. They show discovery
   completeness, item/service identity, status, item kind, and known executable
-  path. The only actions are Reveal in Finder and Open Login Items Settings; the
+  path. The only actions are Reveal in Finder, Copy Path (from the row context
+  menu, and disabled when the path is unknown), and Open Login Items Settings; the
   UI does not enable, disable, start, or stop items.
 - Users displays active sessions and per-user process/resource aggregates. A
   small **You** badge sits beside the current user's name in the User column;
@@ -118,7 +153,9 @@ and the Settings caption must match it.
 - Settings is a System Settings–style form, top-anchored with natural card
   heights. It exposes System/Light/Dark
   appearance, the four refresh intervals, pause/resume, confirmed history reset,
-  and the helper, login-item, and update integration states.
+  and the helper, login-item, and update integration states. The page ends with
+  a centered version line, "Microgravity <version> (<build>)", read from the app
+  bundle.
 - Helper setup and removal, login-item control, and updates are routed through an
   integration protocol. Controls display unavailable, failure, and approval states
   rather than implying success.

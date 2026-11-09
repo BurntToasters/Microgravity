@@ -25,6 +25,9 @@ final class MetricDetailViewController: NSViewController {
     private let banner = StatusBannerView(style: .info)
     private let graph = MetricGraphView(style: .detail)
     private let coreGrid = CoreGridView()
+    private let legendRow = NSStackView()
+    private var legendNames: [String]?
+    private var legendSwatches: [LegendSwatchView] = []
     private let captionLabel = NSTextField(wrappingLabelWithString: "")
     private let statsGrid = MetricStatsGridView()
     private let interfaceSection = NSStackView()
@@ -98,6 +101,10 @@ final class MetricDetailViewController: NSViewController {
         graph.setAccessibilityElement(true)
         coreGrid.setContentHuggingPriority(.defaultLow, for: .horizontal)
         coreGrid.setAccessibilityIdentifier("performance.graph.cpu-cores")
+        legendRow.orientation = .horizontal
+        legendRow.alignment = .centerY
+        legendRow.spacing = 14
+        legendRow.setAccessibilityIdentifier("performance.legend")
 
         buildPressureBlock()
         buildSwapBlock()
@@ -119,7 +126,7 @@ final class MetricDetailViewController: NSViewController {
         contentStack.alignment = .leading
         contentStack.spacing = 12
         contentStack.translatesAutoresizingMaskIntoConstraints = false
-        for item in [header, subtitleRow, controls, stateLabel, banner, graph, coreGrid, captionLabel,
+        for item in [header, subtitleRow, controls, stateLabel, banner, graph, legendRow, coreGrid, captionLabel,
                      statsGrid, interfaceSection, memorySection] as [NSView] {
             Self.addFullWidth(item, to: contentStack)
         }
@@ -191,6 +198,7 @@ final class MetricDetailViewController: NSViewController {
         graph.setAccessibilityLabel(model.graphAccessibilityLabel)
         graph.update(series: model.series, maximum: model.maximum, mapping: .time(model.timeSpan),
                      topLabel: model.topLabel, spanLabel: model.spanLabel)
+        updateLegend(model.series)
 
         coreGrid.isHidden = !showsCores
         coreGrid.update(cores: model.cores, mapping: .time(model.timeSpan))
@@ -198,8 +206,7 @@ final class MetricDetailViewController: NSViewController {
         captionLabel.isHidden = model.caption == nil
         captionLabel.stringValue = model.caption ?? ""
         captionLabel.setAccessibilityIdentifier(model.captionIdentifier ?? "performance.detail.caption")
-        captionLabel.setAccessibilityLabel(model.caption ?? "")
-        captionLabel.setAccessibilityLabel(model.captionAccessibilityLabel)
+        captionLabel.setAccessibilityLabel(model.captionAccessibilityLabel ?? model.caption ?? "")
 
         statsGrid.update(model.stats)
 
@@ -271,6 +278,38 @@ final class MetricDetailViewController: NSViewController {
         swapBar.setAccessibilityValue(memory.swapValue)
         swapGraph.update(series: memory.swapSeries.map { [$0] } ?? [], maximum: memory.swapMaximum,
                          mapping: .time(timeSpan))
+    }
+
+    /// Legend entries are rebuilt only when the series names change. Swatch colors are refreshed in place.
+    private func updateLegend(_ series: [MetricGraphSeries]) {
+        legendRow.isHidden = series.count <= 1
+        let names = series.map(\.name)
+        if names != legendNames {
+            legendNames = names
+            for view in legendRow.arrangedSubviews {
+                legendRow.removeArrangedSubview(view)
+                view.removeFromSuperview()
+            }
+            legendSwatches = []
+            for item in series {
+                let swatch = LegendSwatchView()
+                let label = NSTextField(labelWithString: item.name)
+                label.font = .systemFont(ofSize: 11)
+                label.textColor = .secondaryLabelColor
+                label.lineBreakMode = .byTruncatingTail
+                label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                let entry = NSStackView(views: [swatch, label])
+                entry.orientation = .horizontal
+                entry.alignment = .centerY
+                entry.spacing = 5
+                legendSwatches.append(swatch)
+                legendRow.addView(entry, in: .leading)
+            }
+        }
+        let highContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        for (swatch, item) in zip(legendSwatches, series) {
+            swatch.setColor(MetricGraphView.lineColor(for: item, highContrast: highContrast))
+        }
     }
 
     /// Interface rows are reused while the interface list keeps its order; only their text changes each sample,
@@ -358,6 +397,37 @@ final class MetricDetailViewController: NSViewController {
     private static func fillWidth(_ view: NSView, in stack: NSStackView) {
         view.translatesAutoresizingMaskIntoConstraints = false
         view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+    }
+}
+
+/// 8 pt rounded swatch for the graph legend, filled with the same color as the matching line.
+@MainActor
+private final class LegendSwatchView: NSView {
+    private var color: NSColor = .clear
+
+    init() {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        widthAnchor.constraint(equalToConstant: 8).isActive = true
+        heightAnchor.constraint(equalToConstant: 8).isActive = true
+        setAccessibilityElement(false)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func setColor(_ color: NSColor) {
+        self.color = color
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        color.setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 2, yRadius: 2).fill()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
     }
 }
 

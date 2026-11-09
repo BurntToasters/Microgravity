@@ -124,7 +124,8 @@ final class UsersDetailsSettingsTests: XCTestCase {
 
             // Each section card keeps its natural height instead of stretching to fill the clip view.
             let content = try XCTUnwrap(header.superview?.superview as? NSStackView)
-            let cards = Array(content.arrangedSubviews.dropFirst())
+            // The version footer sits after the cards in the same stack but is not a card.
+            let cards = Array(content.arrangedSubviews.dropFirst()).filter { $0.accessibilityIdentifier() != "settings.version" }
             XCTAssertEqual(cards.count, 3, "Settings must show three section cards at \(label).")
             for card in cards {
                 XCTAssertEqual(card.frame.height, card.fittingSize.height, accuracy: 1,

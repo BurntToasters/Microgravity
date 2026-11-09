@@ -270,7 +270,7 @@ final class PerformanceViewControllerTests: XCTestCase {
 
         let oneMinute = PerformancePresenter.windowed(samples, .oneMinute)
         XCTAssertEqual(oneMinute.count, 61, "a 60 s window keeps the newest 60 seconds of one-second samples")
-        XCTAssertEqual(PerformancePresenter.windowed(samples, .all).count, 121)
+        XCTAssertEqual(PerformancePresenter.windowed(samples, .oneHour).count, 121, "a window longer than the data keeps every sample")
         let span = PerformancePresenter.spanText(PerformancePresenter.spanDuration(oneMinute))
         XCTAssertEqual(span.short, "60 s")
         XCTAssertEqual(span.long, "60 seconds")
@@ -297,9 +297,84 @@ final class PerformanceViewControllerTests: XCTestCase {
                                                       window: .fiveMinutes, cpuMode: .overall)
         XCTAssertEqual(fiveMinutes.spanLabel, "5 min")
 
-        let all = PerformancePresenter.detail(metric: .cpu, snapshot: snapshot, samples: samples,
-                                              window: .all, cpuMode: .overall)
-        XCTAssertEqual(all.spanLabel, "29 s", "the all-data view labels the span of the data it plots")
+        let oneHour = PerformancePresenter.detail(metric: .cpu, snapshot: snapshot, samples: samples,
+                                                  window: .oneHour, cpuMode: .overall)
+        XCTAssertEqual(oneHour.spanLabel, "1 h", "the plot spans the whole hour even while only 29 s exist")
+        XCTAssertEqual(oneHour.timeSpan, 3600)
+    }
+
+    func testPerformanceWindowsOfferOneMinuteToOneHour() {
+        XCTAssertEqual(PerformanceWindow.allCases.map(\.title), ["1 min", "5 min", "15 min", "1 h"])
+        XCTAssertEqual(PerformanceWindow.allCases.map(\.duration), [60, 300, 900, 3600])
+    }
+
+    func testFifteenMinuteWindowKeepsOnlyItsOwnSamples() {
+        let end = Date(timeIntervalSince1970: 1_800_000_000)
+        let samples = (0...3600).map { offset in
+            MonitoringGraphSample(snapshot: CoreTestFixtures.snapshot(timestamp: end.addingTimeInterval(Double(offset - 3600))))
+        }
+
+        XCTAssertEqual(PerformancePresenter.windowed(samples, .fifteenMinutes).count, 901)
+        XCTAssertEqual(PerformancePresenter.windowed(samples, .oneHour).count, 3601)
+        XCTAssertEqual(PerformancePresenter.spanText(PerformanceWindow.fifteenMinutes.duration).short, "15 min")
+    }
+
+    func testMemoryDetailShowsBreakdownAndNeverZeroForMissingFields() {
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let base = CoreTestFixtures.snapshot(timestamp: timestamp)
+        let system = base.system
+        let collected = SystemMetricsSnapshot(
+            capacityCores: system.capacityCores, cpuPercent: system.cpuPercent,
+            perCoreCPUPercent: system.perCoreCPUPercent,
+            memoryUsedBytes: system.memoryUsedBytes, memoryAvailableBytes: system.memoryAvailableBytes,
+            memoryTotalBytes: system.memoryTotalBytes,
+            memoryAppBytes: CoreTestFixtures.reading(2_100_000_000, unit: .bytes, timestamp: timestamp),
+            memoryWiredBytes: CoreTestFixtures.reading(1_200_000_000, unit: .bytes, timestamp: timestamp),
+            memoryCompressedBytes: CoreTestFixtures.reading(500_000_000, unit: .bytes, timestamp: timestamp),
+            memoryCachedFilesBytes: MetricReading(unavailable: .bytes, timestamp: timestamp, reason: .permissionDenied),
+            memoryPressure: system.memoryPressure, swapUsedBytes: system.swapUsedBytes,
+            swapTotalBytes: system.swapTotalBytes, diskReadBytesPerSecond: system.diskReadBytesPerSecond,
+            diskWriteBytesPerSecond: system.diskWriteBytesPerSecond,
+            networkReceiveBytesPerSecond: system.networkReceiveBytesPerSecond,
+            networkTransmitBytesPerSecond: system.networkTransmitBytesPerSecond,
+            networkInterfaces: system.networkInterfaces)
+        let snapshot = MonitoringSnapshot(timestamp: timestamp, system: collected, processes: [], processGroups: [],
+                                          startupItems: [], services: [], users: [], discoveryCoverage: [:],
+                                          capabilities: [:])
+        let samples = [MonitoringGraphSample(snapshot: snapshot)]
+
+        let detail = PerformancePresenter.detail(metric: .memory, snapshot: snapshot, samples: samples,
+                                                 window: .oneMinute, cpuMode: .overall)
+        XCTAssertEqual(detail.stats.map(\.label), ["Used", "Available", "Total", "App memory", "Wired",
+                                                   "Compressed", "Cached files"])
+        XCTAssertEqual(detail.stats.first { $0.label == "App memory" }?.value, UIFormat.value(collected.memoryAppBytes!))
+        XCTAssertEqual(detail.stats.first { $0.label == "Wired" }?.value, UIFormat.value(collected.memoryWiredBytes!))
+        XCTAssertEqual(detail.stats.first { $0.label == "Compressed" }?.value, UIFormat.value(collected.memoryCompressedBytes!))
+        XCTAssertEqual(detail.stats.first { $0.label == "Cached files" }?.value, UIFormat.unavailable(.permissionDenied))
+
+        // A snapshot from before the breakdown existed: nil fields read as not collected, never as zero.
+        let legacyDetail = PerformancePresenter.detail(metric: .memory, snapshot: base, samples: samples,
+                                                       window: .oneMinute, cpuMode: .overall)
+        XCTAssertEqual(legacyDetail.stats.count, 7)
+        for label in ["App memory", "Wired", "Compressed", "Cached files"] {
+            XCTAssertEqual(legacyDetail.stats.first { $0.label == label }?.value, "Not collected", label)
+        }
+    }
+
+    func testAdvancedBannerDoesNotDoublePunctuation() {
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let base = CoreTestFixtures.snapshot(timestamp: timestamp)
+        let snapshot = MonitoringSnapshot(
+            timestamp: timestamp, system: base.system, processes: [], processGroups: [], startupItems: [],
+            services: [], users: [], discoveryCoverage: [:],
+            capabilities: [.gpu: MetricAvailability(available: false, reason: .unsupported, detail: "Provider absent.")],
+            advancedMetrics: [:])
+        let samples = [MonitoringGraphSample(snapshot: snapshot)]
+
+        let detail = PerformancePresenter.detail(metric: .gpu, snapshot: snapshot, samples: samples,
+                                                 window: .oneMinute, cpuMode: .overall)
+        XCTAssertEqual(detail.banner?.message, "Unsupported · Provider absent. Shown as no data, never as zero.")
+        XCTAssertFalse(detail.banner?.message.contains("..") == true)
     }
 
     func testCoreGridUsesFourToSixColumnsByWidth() throws {
@@ -487,6 +562,180 @@ final class PerformanceViewControllerTests: XCTestCase {
                                   discoveryCoverage: base.discoveryCoverage, capabilities: base.capabilities,
                                   advancedMetrics: base.advancedMetrics, history: base.history,
                                   applicationHistory: base.applicationHistory)
+    }
+
+    func testNearestIndexPicksClosestPositionAndHandlesEmptyAndNonFinite() {
+        let positions: [CGFloat] = [10, 20, 30]
+        XCTAssertEqual(MetricGraphView.nearestIndex(toX: 21, in: positions), 1)
+        XCTAssertEqual(MetricGraphView.nearestIndex(toX: 0, in: positions), 0)
+        XCTAssertEqual(MetricGraphView.nearestIndex(toX: 100, in: positions), 2)
+        XCTAssertEqual(MetricGraphView.nearestIndex(toX: 15, in: positions), 0, "a tie keeps the earlier position")
+        XCTAssertNil(MetricGraphView.nearestIndex(toX: 15, in: []))
+        XCTAssertNil(MetricGraphView.nearestIndex(toX: .nan, in: positions))
+    }
+
+    func testHoverReadoutLinesCoverAvailablePartialUnavailableAndGap() {
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let time = UIFormat.time(timestamp)
+        let available = MetricReading(value: 42, unit: .percent, timestamp: timestamp)
+        let partial = MetricReading(value: 1_000, unit: .bytesPerSecond, timestamp: timestamp,
+                                    detail: "2 of 3 interfaces", isPartial: true)
+        let denied = MetricReading(unavailable: .percent, timestamp: timestamp, reason: .permissionDenied)
+        let gap = MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp, reason: .sleepGap)
+
+        let mixed = MetricGraphView.readoutLines(series: [
+            MetricGraphSeries(name: "Read", color: .systemGreen, readings: [available]),
+            MetricGraphSeries(name: "Write", color: .systemGreen, readings: [partial], isSecondary: true)
+        ], index: 0)
+        XCTAssertEqual(mixed, [time, "Read  \(UIFormat.metric(available))", "Write  \(UIFormat.metric(partial))"])
+        XCTAssertTrue(mixed[2].contains("partial"), "a partial reading says so in the readout")
+
+        let unavailable = MetricGraphView.readoutLines(
+            series: [MetricGraphSeries(name: "CPU", color: .systemBlue, readings: [denied])], index: 0)
+        XCTAssertEqual(unavailable, [time, "CPU  Permission denied"])
+
+        let sleepGap = MetricGraphView.readoutLines(
+            series: [MetricGraphSeries(name: "Write", color: .systemGreen, readings: [gap])], index: 0)
+        XCTAssertEqual(sleepGap, [time, "Write  Sample gap"])
+
+        XCTAssertEqual(MetricGraphView.readoutLines(series: [MetricGraphSeries(name: "CPU", color: .systemBlue,
+                                                                               readings: [available])], index: 1), [],
+                       "an index past the newest sample has no readout")
+    }
+
+    func testHoverTracksOnlyDetailAndCompactGraphsAndClearsOutsideThePlot() {
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let readings = (0..<5).map { MetricReading(value: Double($0 * 10), unit: .percent,
+                                                   timestamp: timestamp.addingTimeInterval(Double($0))) }
+        let series = [MetricGraphSeries(name: "CPU", color: .systemBlue, readings: readings)]
+
+        let detail = MetricGraphView(style: .detail)
+        detail.setFrameSize(NSSize(width: 480, height: 240))
+        detail.update(series: series, mapping: .index(capacity: 60))
+        detail.updateTrackingAreas()
+        XCTAssertEqual(detail.trackingAreas.count, 1)
+        let options = detail.trackingAreas.first?.options ?? []
+        XCTAssertTrue(options.contains([.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect]))
+
+        detail.setHover(x: detail.bounds.midX)
+        XCTAssertEqual(detail.hoverX, detail.bounds.midX)
+        detail.setHover(x: -50)
+        XCTAssertNil(detail.hoverX, "a pointer outside the plot clears the readout")
+        detail.setHover(x: detail.bounds.midX)
+        detail.setHover(x: nil)
+        XCTAssertNil(detail.hoverX, "mouse exit clears the readout")
+
+        let sparkline = MetricGraphView(style: .sparkline)
+        sparkline.setFrameSize(NSSize(width: 200, height: 30))
+        sparkline.update(series: series, mapping: .index(capacity: 60))
+        sparkline.updateTrackingAreas()
+        XCTAssertTrue(sparkline.trackingAreas.isEmpty, "sparklines never track the pointer")
+        sparkline.setHover(x: sparkline.bounds.midX)
+        XCTAssertNil(sparkline.hoverX)
+    }
+
+    func testHoverReadoutKeepsItsPositionWhenDataUpdatesAndDrawsAtTheRightEdge() throws {
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        func series(_ count: Int) -> [MetricGraphSeries] {
+            [MetricGraphSeries(name: "CPU", color: .systemBlue, readings: (0..<count).map { offset in
+                MetricReading(value: Double(offset), unit: .percent, timestamp: timestamp.addingTimeInterval(Double(offset)))
+            })]
+        }
+        let graph = MetricGraphView(style: .detail)
+        graph.setFrameSize(NSSize(width: 480, height: 240))
+        graph.update(series: series(5), mapping: .index(capacity: 60))
+        let cursor = graph.bounds.maxX - 14
+        graph.setHover(x: cursor)
+        graph.update(series: series(6), mapping: .index(capacity: 60))
+        XCTAssertEqual(graph.hoverX, cursor, "live data keeps the readout where the pointer is")
+
+        // Near the right edge the box flips left of the cursor; drawing must stay inside the bitmap without trapping.
+        let rep = try XCTUnwrap(graph.bitmapImageRepForCachingDisplay(in: graph.bounds))
+        graph.cacheDisplay(in: graph.bounds, to: rep)
+        XCTAssertGreaterThan(rep.pixelsWide, 0)
+    }
+
+    func testGraphLegendShowsOnlyForTwoSeriesMetrics() throws {
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = throughputSnapshot(
+            timestamp: timestamp,
+            diskRead: reading(1_024, timestamp), diskWrite: reading(2_048, timestamp),
+            networkReceive: reading(4_096, timestamp), networkSend: reading(8_192, timestamp))
+        let store = MutablePerformanceMonitoringStore()
+        store.replace(snapshot: snapshot, samples: [MonitoringGraphSample(snapshot: snapshot)])
+        let controller = makeController(store: store)
+        controller.update(snapshot: snapshot)
+        let legend = try XCTUnwrap(view(withIdentifier: "performance.legend", in: controller.view))
+
+        controller.selectMetric(.cpu)
+        controller.view.layoutSubtreeIfNeeded()
+        XCTAssertTrue(legend.isHidden, "one series needs no legend")
+        controller.selectMetric(.memory)
+        controller.view.layoutSubtreeIfNeeded()
+        XCTAssertTrue(legend.isHidden)
+
+        controller.selectMetric(.disk)
+        controller.view.layoutSubtreeIfNeeded()
+        XCTAssertFalse(legend.isHidden)
+        XCTAssertEqual(legendNames(in: legend), ["Read", "Write"])
+
+        controller.selectMetric(.network)
+        controller.view.layoutSubtreeIfNeeded()
+        XCTAssertFalse(legend.isHidden)
+        XCTAssertEqual(legendNames(in: legend), ["Receive", "Send"])
+    }
+
+    func testDetailCaptionAccessibilityLabelFallsBackToCaptionText() throws {
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = CoreTestFixtures.snapshot(timestamp: timestamp)
+        let samples = [MonitoringGraphSample(snapshot: snapshot)]
+        let store = MutablePerformanceMonitoringStore()
+        store.replace(snapshot: snapshot, samples: samples)
+        let controller = makeController(store: store)
+        controller.update(snapshot: snapshot)
+        controller.selectMetric(.cpu)
+        controller.view.layoutSubtreeIfNeeded()
+
+        let expected = try XCTUnwrap(PerformancePresenter.detail(metric: .cpu, snapshot: snapshot, samples: samples,
+                                                                 window: .oneMinute, cpuMode: .overall).caption)
+        let caption = try XCTUnwrap(view(withIdentifier: "performance.detail.caption", in: controller.view) as? NSTextField)
+        XCTAssertEqual(caption.accessibilityLabel(), expected,
+                       "without a separate accessibility label the caption is its own text, not cleared")
+    }
+
+    func testWindowPickerFitsInsideItsRowAtMinimumWindowWidth() throws {
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = CoreTestFixtures.snapshot(timestamp: timestamp)
+        let store = MutablePerformanceMonitoringStore()
+        store.replace(snapshot: snapshot, samples: [MonitoringGraphSample(snapshot: snapshot)])
+        let controller = makeController(store: store)
+        controller.update(snapshot: snapshot)
+        controller.selectMetric(.cpu)
+        controller.view.layoutSubtreeIfNeeded()
+
+        let picker = try XCTUnwrap(view(withIdentifier: "performance.window", in: controller.view) as? NSSegmentedControl)
+        XCTAssertEqual(picker.segmentCount, 4)
+        XCTAssertEqual((0..<picker.segmentCount).map { picker.label(forSegment: $0) }, ["1 min", "5 min", "15 min", "1 h"])
+        let row = try XCTUnwrap(picker.superview)
+        row.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(picker.frame.width, 0)
+        XCTAssertGreaterThanOrEqual(picker.frame.minX, row.bounds.minX)
+        XCTAssertLessThanOrEqual(picker.frame.maxX, row.bounds.maxX, "the picker must not spill past its row")
+        let inPage = picker.convert(picker.bounds, to: controller.view)
+        XCTAssertLessThanOrEqual(inPage.maxX, controller.view.bounds.maxX - 16)
+    }
+
+    func testPerformanceHeaderSubtitleInvitesHoverAndKeepsItsTooltip() {
+        let controller = makeController(store: MutablePerformanceMonitoringStore())
+        let subtitle = "Live resource use. Hover a graph to read a sample."
+        let matches = allViews(in: controller.view).compactMap { $0 as? NSTextField }.filter { $0.stringValue == subtitle }
+        XCTAssertEqual(matches.count, 1)
+        let header = matches.first?.superview
+        XCTAssertTrue(header?.toolTip?.hasPrefix("Live resource use. Gaps mark paused") == true, header?.toolTip ?? "no tooltip")
+    }
+
+    private func legendNames(in legend: NSView) -> [String] {
+        allViews(in: legend).compactMap { ($0 as? NSTextField)?.stringValue }
     }
 
     private func view(withIdentifier identifier: String, in root: NSView) -> NSView? {

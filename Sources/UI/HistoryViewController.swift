@@ -6,6 +6,7 @@ final class HistoryViewController: NSViewController, SnapshotUpdating, PageToolb
     static let showsBackgroundProcessesDefaultsKey = "history.showBackgroundProcesses"
     private static let resetItemIdentifier = NSToolbarItem.Identifier("history.toolbar.reset")
     private static let backgroundItemIdentifier = NSToolbarItem.Identifier("history.toolbar.background")
+    private static let searchItemIdentifier = NSToolbarItem.Identifier("history.toolbar.search")
 
     private let dependencies: PageDependencies
     private let defaults: UserDefaults
@@ -14,6 +15,20 @@ final class HistoryViewController: NSViewController, SnapshotUpdating, PageToolb
     private let backgroundButton = NSButton(checkboxWithTitle: String(localized: "Show Background Processes"), target: nil, action: nil)
     private var resetItem: NSToolbarItem?
     private var backgroundItem: NSToolbarItem?
+
+    private lazy var searchItem: NSSearchToolbarItem = {
+        let item = NSSearchToolbarItem(itemIdentifier: Self.searchItemIdentifier)
+        item.label = String(localized: "Search")
+        item.paletteLabel = String(localized: "Search applications")
+        item.toolTip = String(localized: "Search applications")
+        let field = item.searchField
+        field.placeholderString = String(localized: "Search applications")
+        field.setAccessibilityIdentifier("history.search")
+        field.target = self
+        field.action = #selector(searchChanged)
+        (field.cell as? NSSearchFieldCell)?.sendsSearchStringImmediately = true
+        return item
+    }()
     private var lastSnapshot: MonitoringSnapshot?
     private(set) var showsBackgroundProcesses: Bool
 
@@ -41,9 +56,12 @@ final class HistoryViewController: NSViewController, SnapshotUpdating, PageToolb
 
     // MARK: PageToolbarProviding
 
-    var toolbarItemIdentifiers: [NSToolbarItem.Identifier] { [Self.backgroundItemIdentifier, Self.resetItemIdentifier] }
+    var toolbarItemIdentifiers: [NSToolbarItem.Identifier] {
+        [Self.searchItemIdentifier, Self.backgroundItemIdentifier, Self.resetItemIdentifier]
+    }
 
     func toolbarItem(for identifier: NSToolbarItem.Identifier) -> NSToolbarItem? {
+        if identifier == Self.searchItemIdentifier { return searchItem }
         if identifier == Self.backgroundItemIdentifier { return backgroundToolbarItem(identifier) }
         guard identifier == Self.resetItemIdentifier else { return nil }
         if let resetItem { return resetItem }
@@ -124,26 +142,35 @@ final class HistoryViewController: NSViewController, SnapshotUpdating, PageToolb
         let summary = AppHistoryBuilder.summarize(snapshot.applicationHistory, through: snapshot.timestamp,
                                                   showsBackgroundProcesses: showsBackgroundProcesses)
         let availability = snapshot.capabilities[.history]
-        outlineController.update(groups: summary.groups)
+        let query = searchItem.searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matches = AppHistoryBuilder.filter(summary.groups, query: query)
+        outlineController.update(groups: matches)
 
         let status = AppHistoryStatus.banner(
             availability: availability,
-            applicationCount: summary.groups.count,
+            applicationCount: matches.count,
             hiddenBackgroundCount: summary.hiddenBackgroundCount,
             gaps: summary.gaps,
             counterResets: summary.counterResets,
-            timestamp: snapshot.timestamp
+            timestamp: snapshot.timestamp,
+            searchTotal: query.isEmpty ? nil : summary.groups.count
         )
         banner.setMessage(status.text, style: status.style)
 
         let empty = AppHistoryStatus.emptyState(
             availability: availability,
-            hiddenBackgroundCount: summary.groups.isEmpty ? summary.hiddenBackgroundCount : 0
+            hiddenBackgroundCount: summary.groups.isEmpty ? summary.hiddenBackgroundCount : 0,
+            query: query
         )
         outlineController.setEmptyState(title: empty.title, caption: empty.caption)
     }
 
     // MARK: Actions
+
+    /// Re-filters the last snapshot as the query changes; no new sampling is involved.
+    @objc private func searchChanged() {
+        if let lastSnapshot { render(lastSnapshot) }
+    }
 
     @objc private func toggleBackgroundProcesses(_ sender: Any?) {
         // The checkbox sets its own state; the menu item just flips the choice.

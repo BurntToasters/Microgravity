@@ -2,7 +2,7 @@ import Foundation
 
 @MainActor
 public final class DefaultMonitoringStore: MonitoringStore {
-    public static let maximumGraphSamples = 720
+    public static let maximumGraphSamples = 3600
     private static let historySummaryRefreshInterval: TimeInterval = 20
 
     private struct HistorySummaryCache {
@@ -302,6 +302,10 @@ private extension MonitoringSnapshot {
             memoryUsedBytes: system.memoryUsedBytes,
             memoryAvailableBytes: system.memoryAvailableBytes,
             memoryTotalBytes: system.memoryTotalBytes,
+            memoryAppBytes: system.memoryAppBytes,
+            memoryWiredBytes: system.memoryWiredBytes,
+            memoryCompressedBytes: system.memoryCompressedBytes,
+            memoryCachedFilesBytes: system.memoryCachedFilesBytes,
             memoryPressure: system.memoryPressure,
             swapUsedBytes: system.swapUsedBytes,
             swapTotalBytes: system.swapTotalBytes,

@@ -97,6 +97,7 @@ final class MainWindowController: NSWindowController {
         #selector(ProcessesViewController.quitSelectedProcess(_:)),
         #selector(ProcessesViewController.forceQuitSelectedProcess(_:)),
         #selector(ProcessesViewController.showSelectedProcessInDetails(_:)),
+        #selector(ProcessesViewController.inspectSelectedProcess(_:)),
         #selector(ProcessesViewController.revealSelectedProcess(_:)),
         #selector(ProcessesViewController.copySelectedPath(_:))
     ]
@@ -125,6 +126,17 @@ final class MainWindowController: NSWindowController {
 
     @objc func toggleSidebar(_ sender: Any?) {
         root.toggleSidebar(sender)
+    }
+
+    @objc func toggleSampling(_ sender: Any?) {
+        SamplingControls.togglePause(store: dependencies.monitoringStore)
+    }
+
+    /// The menu item's tag is the index into `MonitoringInterval.allCases`.
+    @objc func setRefreshInterval(_ sender: NSMenuItem) {
+        let intervals = MonitoringInterval.allCases
+        guard intervals.indices.contains(sender.tag) else { return }
+        SamplingControls.setInterval(intervals[sender.tag], store: dependencies.monitoringStore)
     }
 
     @objc func showHelp(_ sender: Any?) {
@@ -162,5 +174,21 @@ final class MainWindowController: NSWindowController {
         alert.informativeText = message
         alert.alertStyle = .informational
         alert.beginSheetModal(for: window)
+    }
+}
+
+extension MainWindowController: NSUserInterfaceValidations {
+    /// Sampling items reflect the store. Every other action this controller answers stays enabled, as before.
+    func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        let store = dependencies.monitoringStore
+        if item.action == #selector(toggleSampling(_:)) {
+            (item as? NSMenuItem)?.title = store.isPaused
+                ? String(localized: "Resume Sampling") : String(localized: "Pause Sampling")
+        } else if item.action == #selector(setRefreshInterval(_:)), let menuItem = item as? NSMenuItem {
+            let intervals = MonitoringInterval.allCases
+            let isCurrent = intervals.indices.contains(menuItem.tag) && intervals[menuItem.tag] == store.interval
+            menuItem.state = isCurrent ? .on : .off
+        }
+        return true
     }
 }

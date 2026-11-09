@@ -56,6 +56,17 @@ final class SettingsViewController: NSViewController {
     private let updateCheckButton = NSButton(title: String(localized: "Check for Updates"), target: nil, action: nil)
     private let updateInstallButton = NSButton(title: String(localized: "Install Update…"), target: nil, action: nil)
     private var appActivationObserver: NotificationObserverToken?
+    private let versionLabel = UIComponents.label(SettingsViewController.versionText(infoDictionary: Bundle.main.infoDictionary),
+                                                  size: 11, color: .secondaryLabelColor)
+
+    /// "Microgravity 0.2.0 (12)" from the bundle's version keys. Plain "Microgravity" when the short version is missing.
+    static func versionText(infoDictionary: [String: Any]?) -> String {
+        let short = (infoDictionary?["CFBundleShortVersionString"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let build = (infoDictionary?["CFBundleVersion"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !short.isEmpty else { return "Microgravity" }
+        guard !build.isEmpty else { return String(localized: "Microgravity \(short)") }
+        return String(localized: "Microgravity \(short) (\(build))")
+    }
 
     init(dependencies: PageDependencies) {
         self.dependencies = dependencies
@@ -72,7 +83,10 @@ final class SettingsViewController: NSViewController {
         let header = UIComponents.header(title: String(localized: "Settings"), subtitle: String(localized: "Appearance, sampling, history, and optional integrations."))
         let sections = [makeAppearanceSection(), makeSamplingSection(), makeIntegrationSection()]
         alignFormGrids()
-        let content = NSStackView(views: [header] + sections)
+        versionLabel.alignment = .center
+        versionLabel.maximumNumberOfLines = 1
+        versionLabel.setAccessibilityIdentifier("settings.version")
+        let content = NSStackView(views: [header] + sections + [versionLabel])
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 16
@@ -80,6 +94,8 @@ final class SettingsViewController: NSViewController {
         for section in sections {
             section.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         }
+        // Full width so the centered alignment centers the text under the cards.
+        versionLabel.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false

@@ -127,6 +127,14 @@ enum AppHistoryBuilder {
         let hiddenBackgroundCount: Int
     }
 
+    /// Groups whose application name contains `query` (case and diacritic insensitive, per `localizedStandardContains`).
+    /// The query is trimmed; an empty query returns every group unchanged.
+    static func filter(_ groups: [AppHistoryGroup], query: String) -> [AppHistoryGroup] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return groups }
+        return groups.filter { $0.total.title.localizedStandardContains(trimmed) }
+    }
+
     /// True for applications the user launched. Background daemons and XPC services are `.standalone` or `.parentProcess`.
     static func isApplicationBundle(_ application: ApplicationHistoryIdentity) -> Bool {
         application.association == .applicationBundle
@@ -341,12 +349,20 @@ enum AppHistoryStatus {
     }
 
     /// Failures are errors. Gaps and counter resets are information: the affected values are already marked partial.
+    /// While searching, pass `searchTotal` (applications before filtering) to show "K of N applications match".
     static func banner(availability: MetricAvailability?, applicationCount: Int, hiddenBackgroundCount: Int = 0,
-                       gaps: Int, counterResets: Int, timestamp: Date) -> Banner {
+                       gaps: Int, counterResets: Int, timestamp: Date, searchTotal: Int? = nil) -> Banner {
         if let availability, !availability.available {
             return Banner(text: String(localized: "App history is unavailable · ")
                             + UIFormat.unavailable(availability.reason, detail: availability.detail),
                           style: .error)
+        }
+        if let searchTotal, searchTotal > 0 {
+            let noun = searchTotal == 1 ? String(localized: "application") : String(localized: "applications")
+            let verb = searchTotal == 1 ? String(localized: "matches") : String(localized: "match")
+            return Banner(text: String(localized: "\(applicationCount) of \(searchTotal) \(noun) \(verb)")
+                            + String(localized: " · updated \(UIFormat.time(timestamp))"),
+                          style: .info)
         }
         if gaps > 0 || counterResets > 0 {
             var problems: [String] = []
@@ -370,10 +386,16 @@ enum AppHistoryStatus {
         return Banner(text: text + String(localized: " · updated \(UIFormat.time(timestamp))"), style: .info)
     }
 
-    static func emptyState(availability: MetricAvailability?, hiddenBackgroundCount: Int = 0) -> (title: String, caption: String) {
+    static func emptyState(availability: MetricAvailability?, hiddenBackgroundCount: Int = 0,
+                           query: String = "") -> (title: String, caption: String) {
         if let availability, !availability.available {
             return (String(localized: "App history is unavailable"),
                     UIFormat.unavailable(availability.reason, detail: availability.detail))
+        }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            return (String(localized: "No applications match “\(trimmed)”"),
+                    String(localized: "Try part of an application’s name."))
         }
         if hiddenBackgroundCount > 0 {
             return (String(localized: "No application history shown"),

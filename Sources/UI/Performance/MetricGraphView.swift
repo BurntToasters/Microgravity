@@ -57,6 +57,9 @@ final class MetricGraphView: NSView {
     private var mapping: XMapping = .time(60)
     private var topLabel: String?
     private var spanLabel: String?
+    /// Cursor x in view coordinates while the pointer is over the plot. Nil when not hovering or for `.sparkline`.
+    private(set) var hoverX: CGFloat?
+    private var hoverArea: NSTrackingArea?
 
     private struct Trace {
         let series: MetricGraphSeries
@@ -102,13 +105,16 @@ final class MetricGraphView: NSView {
             clip.addClip()
         }
         drawGrid(in: plot)
-        let result = traces(in: plot, maximum: effectiveMaximum())
+        let maximum = effectiveMaximum()
+        let result = traces(in: plot, maximum: maximum)
         drawFills(result.traces, in: plot)
         drawLines(result.traces)
         drawGapMarkers(result.gaps, in: plot)
         NSGraphicsContext.restoreGraphicsState()
 
         if style == .detail { drawAxisLabels(in: plot) }
+        // Last, so the readout box sits above the axis labels.
+        drawHover(in: plot, maximum: maximum)
     }
 
     // MARK: Geometry
@@ -217,9 +223,7 @@ final class MetricGraphView: NSView {
         // Secondary series first so the primary line sits on top.
         let ordered = traces.filter { $0.series.isSecondary } + traces.filter { !$0.series.isSecondary }
         for trace in ordered {
-            let color = trace.series.isSecondary
-                ? trace.series.color.withAlphaComponent(highContrast ? 0.9 : 0.55)
-                : trace.series.color
+            let color = Self.lineColor(for: trace.series, highContrast: highContrast)
             let path = NSBezierPath()
             path.lineWidth = width
             path.lineJoinStyle = .round
@@ -288,10 +292,18 @@ final class MetricGraphView: NSView {
         }
     }
 
+    /// Stroke for a series: the metric hue for the primary line, a lighter tint for the secondary one.
+    /// The legend uses the same color, so a swatch always matches its line.
+    static func lineColor(for series: MetricGraphSeries, highContrast: Bool) -> NSColor {
+        series.isSecondary ? series.color.withAlphaComponent(highContrast ? 0.9 : 0.55) : series.color
+    }
+
     // MARK: Gap tooltips
 
     private func refreshGapToolTips() {
         removeAllToolTips()
+        // While the readout is showing, gap tooltips would fight it; they come back when the pointer leaves.
+        guard hoverX == nil else { return }
         let plot = plotRect()
         guard plot.width > 1, plot.height > 1 else { return }
         let gaps = traces(in: plot, maximum: effectiveMaximum()).gaps
@@ -299,6 +311,171 @@ final class MetricGraphView: NSView {
             addToolTip(NSRect(x: x - 4, y: plot.minY, width: 8, height: plot.height),
                        owner: gapToolTipOwner, userData: nil)
         }
+    }
+
+    // MARK: Hover inspection
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        hoverArea = nil
+        guard style != .sparkline else { return }
+        let area = NSTrackingArea(rect: .zero,
+                                  options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        updateHover(with: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateHover(with: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        setHover(x: nil)
+    }
+
+    private func updateHover(with event: NSEvent) {
+        setHover(x: convert(event.locationInWindow, from: nil).x)
+    }
+
+    /// Sets the cursor x for the readout. Values outside the plot's horizontal span clear it. Redraws only on change.
+    func setHover(x: CGFloat?) {
+        guard style != .sparkline else { return }
+        let plot = plotRect()
+        let next = x.flatMap { $0 >= plot.minX && $0 <= plot.maxX ? $0 : nil }
+        guard next != hoverX else { return }
+        let wasHovering = hoverX != nil
+        hoverX = next
+        if wasHovering != (next != nil) { refreshGapToolTips() }
+        needsDisplay = true
+    }
+
+    /// The sample nearest the cursor: its index in the reference series (the one with the most readings) and the x it is drawn at.
+    private func hoveredSample(in plot: NSRect) -> (index: Int, x: CGFloat)? {
+        guard let hoverX, let end = series.compactMap({ $0.readings.last?.timestamp }).max(),
+              let reference = series.max(by: { $0.readings.count < $1.readings.count }) else { return nil }
+        let count = reference.readings.count
+        var positions: [(index: Int, x: CGFloat)] = []
+        for (index, reading) in reference.readings.enumerated() {
+            if let x = xPosition(index: index, count: count, timestamp: reading.timestamp, end: end, plot: plot) {
+                positions.append((index, x))
+            }
+        }
+        guard let nearest = Self.nearestIndex(toX: hoverX, in: positions.map(\.x)) else { return nil }
+        return positions[nearest]
+    }
+
+    /// Vertical rule, a dot per series at the sampled value, and the readout box. Drawn only while hovering.
+    private func drawHover(in plot: NSRect, maximum: Double) {
+        guard let hovered = hoveredSample(in: plot) else { return }
+        let x = hovered.x
+
+        let rule = NSBezierPath()
+        rule.lineWidth = 1
+        rule.move(to: NSPoint(x: x, y: plot.minY))
+        rule.line(to: NSPoint(x: x, y: plot.maxY))
+        NSColor.secondaryLabelColor.withAlphaComponent(0.6).setStroke()
+        rule.stroke()
+
+        let referenceCount = series.map { $0.readings.count }.max() ?? 0
+        for item in series {
+            // An unavailable sample gets no dot: it is never drawn as zero.
+            guard let reading = Self.sample(in: item, atReference: hovered.index, referenceCount: referenceCount),
+                  let value = reading.value, value.isFinite, value >= 0 else { continue }
+            let y = plot.minY + plot.height * CGFloat(min(max(value / maximum, 0), 1))
+            Self.lineColor(for: item, highContrast: highContrast).setFill()
+            NSBezierPath(ovalIn: NSRect(x: x - 1.5, y: y - 1.5, width: 3, height: 3)).fill()
+        }
+
+        drawReadout(Self.readoutLines(series: series, index: hovered.index), pointingAt: x, plot: plot)
+    }
+
+    private func drawReadout(_ lines: [String], pointingAt x: CGFloat, plot: NSRect) {
+        guard !lines.isEmpty else { return }
+        let padding = Self.readoutPadding
+        let texts = lines.enumerated().map { index, line in
+            NSAttributedString(string: line, attributes: index == 0 ? Self.readoutTitleAttributes : Self.readoutBodyAttributes)
+        }
+        let sizes = texts.map { $0.size() }
+        let contentWidth = sizes.map { ceil($0.width) }.max() ?? 0
+        let contentHeight = sizes.reduce(CGFloat(0)) { $0 + ceil($1.height) }
+        let boxSize = NSSize(width: contentWidth + padding * 2, height: contentHeight + padding * 2)
+
+        // Sit right of the cursor; flip to the left when that would run past the right edge. Keep it inside bounds.
+        var originX = x + 10
+        if originX + boxSize.width > bounds.maxX { originX = x - 10 - boxSize.width }
+        originX = min(max(originX, bounds.minX + 2), bounds.maxX - boxSize.width - 2)
+        let originY = max(plot.maxY - boxSize.height, bounds.minY + 2)
+        let rect = NSRect(origin: NSPoint(x: originX, y: originY), size: boxSize)
+
+        let box = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
+        NSColor.controlBackgroundColor.withAlphaComponent(0.92).setFill()
+        box.fill()
+        NSColor.separatorColor.setStroke()
+        box.lineWidth = 1
+        box.stroke()
+
+        var top = rect.maxY - padding
+        for (text, size) in zip(texts, sizes) {
+            let height = ceil(size.height)
+            text.draw(at: NSPoint(x: rect.minX + padding, y: top - height))
+            top -= height
+        }
+    }
+
+    private static let readoutPadding: CGFloat = 8
+    private static let readoutTitleAttributes: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+        .foregroundColor: NSColor.labelColor
+    ]
+    private static let readoutBodyAttributes: [NSAttributedString.Key: Any] = [
+        .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
+        .foregroundColor: NSColor.labelColor
+    ]
+
+    /// Text for the hover readout: the sample time first, then one line per series as "<name>  <value>".
+    /// `index` is a sample index in the reference series; shorter series line up with the newest samples.
+    /// Unavailable readings show their reason, sleep gaps show "Sample gap", and nothing is shown as zero.
+    static func readoutLines(series: [MetricGraphSeries], index: Int) -> [String] {
+        let referenceCount = series.map { $0.readings.count }.max() ?? 0
+        guard index >= 0, index < referenceCount else { return [] }
+        let samples = series.map { sample(in: $0, atReference: index, referenceCount: referenceCount) }
+        guard let timestamp = samples.compactMap({ $0?.timestamp }).first else { return [] }
+        var lines = [UIFormat.time(timestamp)]
+        for (item, sample) in zip(series, samples) {
+            let text = sample.map(readoutValue) ?? UIFormat.unavailable(.notCollected)
+            lines.append("\(item.name)  \(text)")
+        }
+        return lines
+    }
+
+    private static func readoutValue(_ reading: MetricReading) -> String {
+        if reading.unavailableReason == .sleepGap { return sampleGapToolTip }
+        return UIFormat.metric(reading)
+    }
+
+    /// The reading of `series` that lines up with `index` in the reference series. Alignment is by the newest sample.
+    private static func sample(in series: MetricGraphSeries, atReference index: Int, referenceCount: Int) -> MetricReading? {
+        let own = index - (referenceCount - series.readings.count)
+        guard series.readings.indices.contains(own) else { return nil }
+        return series.readings[own]
+    }
+
+    /// Index of the x position nearest to `x`; the earlier position wins a tie. Nil for no positions or a non-finite `x`.
+    static func nearestIndex(toX x: CGFloat, in xs: [CGFloat]) -> Int? {
+        guard x.isFinite else { return nil }
+        var best: (index: Int, distance: CGFloat)?
+        for (index, candidate) in xs.enumerated() where candidate.isFinite {
+            let distance = abs(candidate - x)
+            if let current = best, current.distance <= distance { continue }
+            best = (index, distance)
+        }
+        return best?.index
     }
 }
 

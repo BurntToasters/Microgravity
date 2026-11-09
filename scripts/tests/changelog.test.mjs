@@ -5,8 +5,9 @@ import test from "node:test";
 import { changelogSection, gpgFingerprint, gpgPublicKeyUrl, placeholderReleaseNotes, releaseHeader, releaseNotes, releaseNotesFailures } from "../lib/changelog.mjs";
 import { root } from "../lib/core.mjs";
 
-// The 0.1.0 section is the first public release; it must carry real notes, not the placeholder.
+// The section for the version in package.json must carry real notes, not the placeholder.
 const minimumReleaseItems = 8;
+const currentVersion = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version;
 
 const contents = `# Microgravity changelog
 
@@ -56,9 +57,9 @@ test("changelogSection fails when the requested release is missing", () => {
   assert.throws(() => changelogSection("3.0.0", contents), /CHANGELOG\.md has no 3\.0\.0 release section/);
 });
 
-test("the checked-in 0.1.0 release notes are publishable", () => {
+test("the checked-in release notes for the current version are publishable", () => {
   const changelog = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
-  assert.deepEqual(releaseNotesFailures("0.1.0", changelog, { minimumItems: minimumReleaseItems }), []);
+  assert.deepEqual(releaseNotesFailures(currentVersion, changelog, { minimumItems: minimumReleaseItems }), []);
 });
 
 test("releaseNotesFailures rejects placeholder and thin release sections", () => {

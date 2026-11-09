@@ -5,8 +5,8 @@
 
 | <img height="20" src="https://github.com/user-attachments/assets/42d7e887-4616-4e8c-b1d3-e44e01340f8c" /> macOS |
 | :-- |
-| **ZIP: [universal](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.2/Microgravity-0.1.2.zip)** |
-| **Checksums: [SHA256SUMS](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.2/SHA256SUMS) / [GPG signature](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.2/SHA256SUMS.asc)** |
+| **ZIP: [universal](https://github.com/BurntToasters/Microgravity/releases/download/v0.2.0/Microgravity-0.2.0.zip)** |
+| **Checksums: [SHA256SUMS](https://github.com/BurntToasters/Microgravity/releases/download/v0.2.0/SHA256SUMS) / [GPG signature](https://github.com/BurntToasters/Microgravity/releases/download/v0.2.0/SHA256SUMS.asc)** |
 
 > Requires macOS 14 or later. The universal build runs natively on Apple silicon and Intel Macs.
 
@@ -18,6 +18,10 @@
 
 ### ℹ️ Enjoying Microgravity? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 <!-- downloads:end -->
+
+## 0.2.0
+
+Release notes pending.
 
 ## 0.1.2
 

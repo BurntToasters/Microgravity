@@ -138,6 +138,92 @@ final class UIStateTests: XCTestCase {
         XCTAssertNil(processRow(named: "Fixture Renderer Worker", controller: afterPIDReuse, table: reusedTable))
     }
 
+    func testProcessGroupingPersistsAcrossControllers() throws {
+        let suite = "ProcessGroupingUIState-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let (dependencies, store, _) = makeDependencies()
+        let snapshot = try XCTUnwrap(store.latestSnapshot)
+
+        let first = ProcessesViewController(dependencies: dependencies, defaults: defaults)
+        first.loadViewIfNeeded()
+        XCTAssertEqual(first.grouping, .byApp, "grouping starts by app when nothing is saved")
+        let flat = NSMenuItem(title: "Flat List", action: #selector(ProcessesViewController.setProcessGrouping(_:)), keyEquivalent: "")
+        flat.tag = 1
+        first.setProcessGrouping(flat)
+        XCTAssertEqual(defaults.string(forKey: "process.grouping"), "flat")
+
+        let relaunched = ProcessesViewController(dependencies: dependencies, defaults: defaults)
+        XCTAssertEqual(relaunched.grouping, .flat)
+        relaunched.loadViewIfNeeded()
+        relaunched.update(snapshot: snapshot)
+        let table = try XCTUnwrap(view(withIdentifier: "process.table", in: relaunched.view) as? NSOutlineView)
+        XCTAssertEqual(processGroupNames(controller: relaunched, table: table), [], "flat grouping shows no group rows")
+
+        let grouped = NSMenuItem(title: "Group by App", action: #selector(ProcessesViewController.setProcessGrouping(_:)), keyEquivalent: "")
+        grouped.tag = 0
+        relaunched.setProcessGrouping(grouped)
+        XCTAssertEqual(defaults.string(forKey: "process.grouping"), "byApp")
+        XCTAssertEqual(ProcessesViewController(dependencies: dependencies, defaults: defaults).grouping, .byApp)
+    }
+
+    func testSelectProcessClearsSearchExpandsItsGroupAndSelectsTheRow() throws {
+        let defaults = isolatedProcessDefaults()
+        let (dependencies, store, _) = makeDependencies()
+        let snapshot = try XCTUnwrap(store.latestSnapshot)
+        let controller = ProcessesViewController(dependencies: dependencies, defaults: defaults)
+        controller.loadViewIfNeeded()
+        controller.update(snapshot: snapshot)
+        let table = try XCTUnwrap(view(withIdentifier: "process.table", in: controller.view) as NSOutlineView?)
+        let searchField = try XCTUnwrap(
+            (controller.toolbarItem(for: NSToolbarItem.Identifier("process.toolbar.search")) as? NSSearchToolbarItem)?.searchField
+        )
+        searchField.stringValue = "Indexer"
+        controller.update(snapshot: snapshot)
+        XCTAssertNil(processRow(named: "Fixture Renderer Worker", controller: controller, table: table))
+
+        let renderer = try XCTUnwrap(snapshot.processes.first { $0.id.pid == 411 })
+        let editor = try XCTUnwrap(snapshot.processGroups.first { $0.title == "Fixture Editor" })
+        controller.selectProcess(identity: renderer.id)
+
+        XCTAssertEqual(searchField.stringValue, "")
+        XCTAssertTrue(ProcessGroupExpansionPersistence.load(from: defaults).contains(editor.id),
+                      "the containing group is expanded and remembered")
+        XCTAssertEqual(selectedProcessName(controller: controller, table: table), "Fixture Renderer Worker")
+        XCTAssertTrue(textField(withIdentifier: "process.selection.identity", in: controller.view)?
+            .accessibilityLabel()?.contains("PID 411,") == true)
+    }
+
+    func testEmptySelectionSummaryPluralizesAndCountsMatchesWhileSearching() {
+        XCTAssertEqual(ProcessesViewController.emptySummary(processCount: 3, groupCount: 2, matchCount: 3, searching: false),
+                       "3 processes · 2 apps")
+        XCTAssertEqual(ProcessesViewController.emptySummary(processCount: 1, groupCount: 1, matchCount: 1, searching: false),
+                       "1 process · 1 app")
+        XCTAssertEqual(ProcessesViewController.emptySummary(processCount: 0, groupCount: 0, matchCount: 0, searching: false),
+                       "0 processes · 0 apps")
+        XCTAssertEqual(ProcessesViewController.emptySummary(processCount: 3, groupCount: 2, matchCount: 1, searching: true),
+                       "1 of 3 processes match")
+        XCTAssertEqual(ProcessesViewController.emptySummary(processCount: 1, groupCount: 1, matchCount: 0, searching: true),
+                       "0 of 1 process matches")
+    }
+
+    func testInspectIsEnabledOnlyWithAProcessSelected() throws {
+        let (dependencies, store, _) = makeDependencies()
+        let snapshot = try XCTUnwrap(store.latestSnapshot)
+        let controller = ProcessesViewController(dependencies: dependencies, defaults: isolatedProcessDefaults())
+        controller.loadViewIfNeeded()
+        controller.update(snapshot: snapshot)
+        let table = try XCTUnwrap(view(withIdentifier: "process.table", in: controller.view) as NSOutlineView?)
+        let inspect = NSMenuItem(title: "Inspect…", action: #selector(ProcessesViewController.inspectSelectedProcess(_:)),
+                                 keyEquivalent: "")
+
+        XCTAssertFalse(controller.validateUserInterfaceItem(inspect))
+        expandProcessGroup("Fixture Editor", controller: controller, table: table)
+        let rendererRow = try XCTUnwrap(processRow(named: "Fixture Renderer Worker", controller: controller, table: table))
+        table.selectRowIndexes(IndexSet(integer: rendererRow), byExtendingSelection: false)
+        XCTAssertTrue(controller.validateUserInterfaceItem(inspect))
+    }
+
     func testShowProcessInDetailsSelectsOnlyExactLiveIdentity() throws {
         let (_, store, _) = makeDependencies()
         let base = try XCTUnwrap(store.latestSnapshot)
@@ -330,6 +416,61 @@ final class UIStateTests: XCTestCase {
         XCTAssertEqual(childProcessNames(controller: controller, table: table), [
             "Child Positive A", "Child Positive B", "Child Partial", "Child Zero", "Child Missing", "Child Incomplete"
         ])
+    }
+
+    func testDetailsRowMenuSelectsTheClickedRowAndDisablesPathActionsWithoutAPath() throws {
+        let (_, store, _) = makeDependencies()
+        let base = try XCTUnwrap(store.latestSnapshot)
+        let pathless = makeDiskProcess(pid: 999, name: "Pathless Helper",
+                                       read: MetricReading(value: 0, unit: .bytesPerSecond, timestamp: base.timestamp),
+                                       write: MetricReading(value: 0, unit: .bytesPerSecond, timestamp: base.timestamp),
+                                       timestamp: base.timestamp)
+        let snapshot = copy(base, timestamp: base.timestamp, processes: base.processes + [pathless])
+        let details = DetailsViewController(autosaveName: nil)
+        details.loadViewIfNeeded()
+        details.update(snapshot: snapshot)
+        let table = try XCTUnwrap(view(withIdentifier: "details.table", in: details.view) as? NSTableView)
+        let menu = NSMenu()
+
+        let withPath = try XCTUnwrap(detailsRow(id: "details.process.410", table: table))
+        details.configureContextMenu(menu, clickedRow: withPath)
+        XCTAssertEqual(table.selectedRow, withPath, "right-click selects the clicked row first")
+        let titles = menu.items.filter { !$0.isSeparatorItem }.map(\.title)
+        XCTAssertEqual(titles, ["Show in Processes", "Reveal in Finder", "Copy Path", "Copy PID"])
+        XCTAssertEqual(menu.items.map(\.isSeparatorItem), [false, true, false, false, false])
+        XCTAssertTrue(menu.items.filter { !$0.isSeparatorItem }.allSatisfy(\.isEnabled))
+
+        let withoutPath = try XCTUnwrap(detailsRow(id: "details.process.999", table: table))
+        details.configureContextMenu(menu, clickedRow: withoutPath)
+        XCTAssertEqual(table.selectedRow, withoutPath)
+        XCTAssertEqual(menu.items.first { $0.title == "Reveal in Finder" }?.isEnabled, false)
+        XCTAssertEqual(menu.items.first { $0.title == "Copy Path" }?.isEnabled, false)
+        XCTAssertEqual(menu.items.first { $0.title == "Copy PID" }?.isEnabled, true)
+        XCTAssertEqual(menu.items.first { $0.title == "Show in Processes" }?.isEnabled, true)
+
+        details.configureContextMenu(menu, clickedRow: -1)
+        XCTAssertTrue(menu.items.isEmpty, "a click outside any row leaves no menu items")
+    }
+
+    func testSettingsFooterShowsTheBundleVersionWithAFallback() throws {
+        XCTAssertEqual(SettingsViewController.versionText(infoDictionary: [
+            "CFBundleShortVersionString": "0.2.0", "CFBundleVersion": "12"
+        ]), "Microgravity 0.2.0 (12)")
+        XCTAssertEqual(SettingsViewController.versionText(infoDictionary: ["CFBundleShortVersionString": "0.2.0"]),
+                       "Microgravity 0.2.0")
+        XCTAssertEqual(SettingsViewController.versionText(infoDictionary: ["CFBundleVersion": "12"]), "Microgravity")
+        XCTAssertEqual(SettingsViewController.versionText(infoDictionary: nil), "Microgravity")
+
+        let (dependencies, _, _) = makeDependencies()
+        let settings = SettingsViewController(dependencies: dependencies)
+        settings.loadViewIfNeeded()
+        let label = try XCTUnwrap(textField(withIdentifier: "settings.version", in: settings.view))
+        XCTAssertEqual(label.stringValue, SettingsViewController.versionText(infoDictionary: Bundle.main.infoDictionary))
+        XCTAssertEqual(label.alignment, .center)
+        XCTAssertEqual(label.font?.pointSize, 11)
+        if let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
+            XCTAssertTrue(label.stringValue.contains(short), label.stringValue)
+        }
     }
 
     func testSettingsRefreshesCachedControlsAndRoutesApprovalToFakeSettingsAction() async {
@@ -537,6 +678,10 @@ final class UIStateTests: XCTestCase {
         return defaults
     }
 
+    private func detailsRow(id: String, table: NSTableView) -> Int? {
+        (0..<table.numberOfRows).first { table.rowView(atRow: $0, makeIfNecessary: true)?.accessibilityIdentifier() == id }
+    }
+
     private func copyProcess(_ source: ProcessSnapshot, identity: ProcessIdentity? = nil,
                              cpuPercent: MetricReading? = nil,
                              advancedMetrics: [MetricKind: MetricReading]? = nil) -> ProcessSnapshot {
@@ -731,11 +876,11 @@ final class UIStateTests: XCTestCase {
         view(withIdentifier: identifier, in: root) as? NSTextField
     }
 
-    /// The selection bar shows one empty-state message: the summary. The identity field stays blank.
+    /// With no selection the summary shows the fixture's live counts (3 processes, 2 apps). The identity field stays blank.
     private func assertProcessSelectionEmpty(controller: ProcessesViewController,
                                              file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(textField(withIdentifier: "process.selection.summary", in: controller.view)?.stringValue,
-                       ProcessSelectionBar.emptyMessage, file: file, line: line)
+                       "3 processes · 2 apps", file: file, line: line)
         XCTAssertEqual(textField(withIdentifier: "process.selection.identity", in: controller.view)?.stringValue, "",
                        file: file, line: line)
     }

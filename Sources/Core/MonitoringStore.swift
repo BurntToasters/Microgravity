@@ -2,7 +2,7 @@ import Foundation
 
 @MainActor
 public final class DefaultMonitoringStore: MonitoringStore {
-    public static let maximumGraphSamples = 720
+    public static let maximumGraphSamples = 3600
     private static let historySummaryRefreshInterval: TimeInterval = 20
 
     private struct HistorySummaryCache {
@@ -302,6 +302,10 @@ private extension MonitoringSnapshot {
             memoryUsedBytes: system.memoryUsedBytes,
             memoryAvailableBytes: system.memoryAvailableBytes,
             memoryTotalBytes: system.memoryTotalBytes,
+            memoryAppBytes: system.memoryAppBytes,
+            memoryWiredBytes: system.memoryWiredBytes,
+            memoryCompressedBytes: system.memoryCompressedBytes,
+            memoryCachedFilesBytes: system.memoryCachedFilesBytes,
             memoryPressure: system.memoryPressure,
             swapUsedBytes: system.swapUsedBytes,
             swapTotalBytes: system.swapTotalBytes,
@@ -309,7 +313,8 @@ private extension MonitoringSnapshot {
             diskWriteBytesPerSecond: gap(system.diskWriteBytesPerSecond),
             networkReceiveBytesPerSecond: gap(system.networkReceiveBytesPerSecond),
             networkTransmitBytesPerSecond: gap(system.networkTransmitBytesPerSecond),
-            networkInterfaces: system.networkInterfaces)
+            networkInterfaces: system.networkInterfaces,
+            processorTopology: system.processorTopology)
         let nextGroups = processGroups.map { group in
             ProcessGroupSnapshot(
                 id: group.id, title: group.title, ownerUID: group.ownerUID,

@@ -20,39 +20,42 @@ enum PerformanceMetric: String, CaseIterable {
         }
     }
 
-    /// Hue for the rail sparkline and the detail graph. System colors only.
-    var color: NSColor {
+    /// Hue for the rail sparkline and the detail graph. The user's custom color, or the system default.
+    @MainActor var color: NSColor {
         switch self {
-        case .cpu: return .systemBlue
-        case .memory: return .systemPurple
-        case .disk: return .systemGreen
-        case .network: return .systemOrange
-        case .gpu: return .systemTeal
-        case .energy: return .systemYellow
+        case .cpu: return ColorPreferences.color(for: .cpu)
+        case .memory: return ColorPreferences.color(for: .memory)
+        case .disk: return ColorPreferences.color(for: .disk)
+        case .network: return ColorPreferences.color(for: .network)
+        case .gpu: return ColorPreferences.color(for: .gpu)
+        case .energy: return ColorPreferences.color(for: .energy)
         }
     }
 }
 
-/// Detail time window. Fixed windows fix the x scale; `all` scales to the retained history.
+/// Detail time window. Each window fixes the x scale to its own length.
 enum PerformanceWindow: CaseIterable {
     case oneMinute
     case fiveMinutes
-    case all
+    case fifteenMinutes
+    case oneHour
 
     var title: String {
         switch self {
-        case .oneMinute: return "60 s"
-        case .fiveMinutes: return "5 min"
-        case .all: return String(localized: "All")
+        case .oneMinute: return String(localized: "1 min")
+        case .fiveMinutes: return String(localized: "5 min")
+        case .fifteenMinutes: return String(localized: "15 min")
+        case .oneHour: return String(localized: "1 h")
         }
     }
 
-    /// Seconds covered by the window, or nil for every retained sample.
-    var duration: TimeInterval? {
+    /// Seconds covered by the window.
+    var duration: TimeInterval {
         switch self {
         case .oneMinute: return 60
         case .fiveMinutes: return 300
-        case .all: return nil
+        case .fifteenMinutes: return 900
+        case .oneHour: return 3600
         }
     }
 }
@@ -98,6 +101,20 @@ struct CoreTileModel {
     let index: Int
     let valueText: String
     let series: MetricGraphSeries
+    /// Processor class name for tooltips and VoiceOver, such as "Super". Nil when the topology is unknown.
+    var kindName: String? = nil
+}
+
+/// A group of logical processors in the CPU detail grid. The ungrouped list is one section with no title.
+struct CoreSectionModel {
+    /// Header text such as "Super · 6 cores · 14%". Nil draws no header.
+    let title: String?
+    /// Lowercase identifier suffix for the header, such as "super". Nil when ungrouped.
+    let slug: String?
+    /// Swatch color for the header; the section's tiles use the same hue.
+    let color: NSColor
+    /// Tiles in ascending CPU index.
+    let cores: [CoreTileModel]
 }
 
 struct MemoryPressureSample {
@@ -140,9 +157,13 @@ struct MetricDetailModel {
     var captionIdentifier: String? = nil
     var captionAccessibilityLabel: String? = nil
     var stats: [MetricStat] = []
-    var cores: [CoreTileModel] = []
+    /// CPU processor grid, fastest class first. Empty for every other metric.
+    var coreSections: [CoreSectionModel] = []
     var interfaces: [NetworkInterfaceRow] = []
     var memory: MemoryDetailModel? = nil
+
+    /// Every processor tile in display order.
+    var cores: [CoreTileModel] { coreSections.flatMap(\.cores) }
 
     init(metric: PerformanceMetric, window: PerformanceWindow, cpuMode: CPUDetailMode, title: String,
          subtitle: String, bigValue: String, graphIdentifier: String, graphAccessibilityLabel: String) {
@@ -155,6 +176,14 @@ struct MetricDetailModel {
         self.graphIdentifier = graphIdentifier
         self.graphAccessibilityLabel = graphAccessibilityLabel
     }
+}
+
+/// One processor class in the CPU grid: its display name, identifier slug, hue and CPU indexes (ascending).
+private struct ProcessorGroup {
+    let displayName: String
+    let slug: String
+    let color: NSColor
+    let cpus: [Int]
 }
 
 /// Turns snapshots and graph samples into rail and detail models. Pure data, so it is testable without views.
@@ -216,16 +245,16 @@ enum PerformancePresenter {
         case .energy: model = advancedDetail(.energy, kind: .energy, snapshot: snapshot, visible: visible, window: window, cpuMode: cpuMode)
         }
         model.subtitle = "\(model.subtitle) over \(span.long)"
-        model.timeSpan = window.duration ?? max(duration, 1)
+        model.timeSpan = window.duration
         // The left edge of the plot is the window length, not the span of the data currently present.
-        model.spanLabel = window.duration.map { spanText($0).short } ?? span.short
+        model.spanLabel = spanText(window.duration).short
         return model
     }
 
     /// Samples inside the window, measured back from the newest sample.
     static func windowed(_ samples: [MonitoringGraphSample], _ window: PerformanceWindow) -> [MonitoringGraphSample] {
-        guard let duration = window.duration, let latest = samples.last else { return samples }
-        let cutoff = latest.timestamp.addingTimeInterval(-duration)
+        guard let latest = samples.last else { return samples }
+        let cutoff = latest.timestamp.addingTimeInterval(-window.duration)
         return samples.filter { $0.timestamp >= cutoff }
     }
 
@@ -305,27 +334,105 @@ enum PerformancePresenter {
         model.topLabel = "100%"
         let logical = snapshot.system.capacityCores
         model.caption = String(localized: "Percent of total capacity across \(logical) logical processors.")
-        model.stats = [
-            MetricStat(label: String(localized: "Logical processors"), value: "\(logical)"),
-            MetricStat(label: String(localized: "Processes"), value: "\(snapshot.processes.count)"),
-            MetricStat(label: String(localized: "Uptime"), value: uptimeText())
-        ]
-        let coreCount = max(snapshot.system.perCoreCPUPercent.count,
-                            visible.reduce(0) { max($0, $1.perCoreCPUPercent.count) })
-        model.cores = (0..<coreCount).map { index in
+        let perCore = snapshot.system.perCoreCPUPercent
+        let coreCount = max(perCore.count, visible.reduce(0) { max($0, $1.perCoreCPUPercent.count) })
+        // Nil when the topology is absent or does not describe exactly these processors: one ungrouped list then.
+        let groups = processorGroups(snapshot.system.processorTopology, coreCount: coreCount)
+
+        var stats: [MetricStat] = []
+        if let groups {
+            stats = groups.map { MetricStat(label: String(localized: "\($0.displayName) cores"), value: "\($0.cpus.count)") }
+        } else {
+            stats.append(MetricStat(label: String(localized: "Logical processors"), value: "\(logical)"))
+        }
+        stats.append(MetricStat(label: String(localized: "Processes"), value: "\(snapshot.processes.count)"))
+        stats.append(MetricStat(label: String(localized: "Uptime"), value: uptimeText()))
+        model.stats = stats
+
+        func tile(_ index: Int, kindName: String?, color: NSColor) -> CoreTileModel {
             let readings = visible.map { sample -> MetricReading in
                 guard sample.perCoreCPUPercent.indices.contains(index) else {
                     return MetricReading(unavailable: .percent, timestamp: sample.timestamp, reason: .notCollected)
                 }
                 return sample.perCoreCPUPercent[index]
             }
-            let current = snapshot.system.perCoreCPUPercent.indices.contains(index)
-                ? snapshot.system.perCoreCPUPercent[index]
+            let current = perCore.indices.contains(index)
+                ? perCore[index]
                 : MetricReading(unavailable: .percent, timestamp: snapshot.timestamp, reason: .notCollected)
             return CoreTileModel(index: index, valueText: shortValue(current),
-                                 series: series(String(localized: "CPU \(index)"), .cpu, readings))
+                                 series: MetricGraphSeries(name: String(localized: "CPU \(index)"), color: color, readings: readings),
+                                 kindName: kindName)
+        }
+
+        if let groups {
+            model.coreSections = groups.map { group in
+                CoreSectionModel(title: coreSectionTitle(group, perCore: perCore), slug: group.slug, color: group.color,
+                                 cores: group.cpus.map { tile($0, kindName: group.displayName, color: group.color) })
+            }
+        } else {
+            let color = PerformanceMetric.cpu.color
+            model.coreSections = [CoreSectionModel(title: nil, slug: nil, color: color,
+                                                   cores: (0..<coreCount).map { tile($0, kindName: nil, color: color) })]
         }
         return model
+    }
+
+    /// "Super · 6 cores · 14%". The average covers only the processors with a finite current reading.
+    private static func coreSectionTitle(_ group: ProcessorGroup, perCore: [MetricReading]) -> String {
+        let readings: [MetricReading?] = group.cpus.map { perCore.indices.contains($0) ? perCore[$0] : nil }
+        let coreWord = group.cpus.count == 1 ? String(localized: "core") : String(localized: "cores")
+        return String(localized: "\(group.displayName) · \(group.cpus.count) \(coreWord) · \(averageText(readings))")
+    }
+
+    /// Mean of the readings that have a finite value. Missing readings are skipped, never counted as zero.
+    /// "Unavailable" when none of them has a value.
+    static func averageText(_ readings: [MetricReading?]) -> String {
+        let values = readings.compactMap { $0?.value }.filter(\.isFinite)
+        guard !values.isEmpty else { return String(localized: "Unavailable") }
+        return UIFormat.percent(values.reduce(0, +) / Double(values.count))
+    }
+
+    /// Processor classes as sections, fastest first, with CPU indexes ascending. Nil when the topology is absent, or
+    /// when its classes do not list each processor in 0..<coreCount exactly once.
+    private static func processorGroups(_ topology: ProcessorTopology?, coreCount: Int) -> [ProcessorGroup]? {
+        guard let topology else { return nil }
+        let kinds = topology.kinds.sorted { $0.rank < $1.rank }
+        let assigned = kinds.flatMap(\.logicalCPUs)
+        guard assigned.count == coreCount, Set(assigned) == Set(0..<coreCount) else { return nil }
+        let populated = kinds.filter { !$0.logicalCPUs.isEmpty }
+        guard !populated.isEmpty else { return nil }
+        return populated.enumerated().map { position, kind in
+            let slug = UIText.slug(kind.name)
+            return ProcessorGroup(
+                displayName: kindDisplayName(kind.name),
+                slug: slug.isEmpty ? "kind-\(position)" : slug,
+                color: ColorPreferences.color(for: colorRole(forKindNamed: kind.name, position: position, count: populated.count)),
+                cpus: kind.logicalCPUs.sorted())
+        }
+    }
+
+    /// Known system names map to their role. Other names are placed by position, fastest first: with three or more
+    /// classes the first is super, the last is efficiency and the rest are performance; with fewer, the first is
+    /// performance and the last is efficiency.
+    static func colorRole(forKindNamed name: String, position: Int, count: Int) -> ColorRole {
+        switch name {
+        case "Super": return .superCores
+        case "Performance": return .performanceCores
+        case "Efficiency": return .efficiencyCores
+        default:
+            if position == count - 1 && position > 0 { return .efficiencyCores }
+            if position == 0 && count >= 3 { return .superCores }
+            return .performanceCores
+        }
+    }
+
+    private static func kindDisplayName(_ name: String) -> String {
+        switch name {
+        case "Super": return String(localized: "Super")
+        case "Performance": return String(localized: "Performance")
+        case "Efficiency": return String(localized: "Efficiency")
+        default: return name
+        }
     }
 
     private static func memoryDetail(_ snapshot: MonitoringSnapshot, _ visible: [MonitoringGraphSample],
@@ -343,10 +450,18 @@ enum PerformancePresenter {
         model.series = [series(String(localized: "Used"), .memory, visible.map(\.memoryUsedBytes))]
         model.maximum = total.value
         model.topLabel = total.value == nil ? nil : shortValue(total)
+        // Breakdown fields are optional: a nil field was never collected, so it shows as such, never as zero.
+        func breakdown(_ reading: MetricReading?) -> String {
+            reading.map(shortValue) ?? UIFormat.unavailable(.notCollected)
+        }
         model.stats = [
             MetricStat(label: String(localized: "Used"), value: shortValue(used)),
             MetricStat(label: String(localized: "Available"), value: shortValue(system.memoryAvailableBytes)),
-            MetricStat(label: String(localized: "Total"), value: shortValue(total))
+            MetricStat(label: String(localized: "Total"), value: shortValue(total)),
+            MetricStat(label: String(localized: "App memory"), value: breakdown(system.memoryAppBytes)),
+            MetricStat(label: String(localized: "Wired"), value: breakdown(system.memoryWiredBytes)),
+            MetricStat(label: String(localized: "Compressed"), value: breakdown(system.memoryCompressedBytes)),
+            MetricStat(label: String(localized: "Cached files"), value: breakdown(system.memoryCachedFilesBytes))
         ]
         var memory = MemoryDetailModel()
         memory.pressureLevel = system.memoryPressure.level
@@ -456,8 +571,11 @@ enum PerformancePresenter {
             : UIFormat.metric(current)
         model.stateIdentifier = "performance.\(metric.rawValue).state"
         if unavailable {
+            // Availability text can end with a period of its own; never append a second one.
+            var availabilityText = UIFormat.availability(availability)
+            if availabilityText.hasSuffix(".") { availabilityText.removeLast() }
             model.banner = DetailBanner(
-                message: "\(UIFormat.availability(availability)). Shown as no data, never as zero.",
+                message: "\(availabilityText). Shown as no data, never as zero.",
                 style: .info)
         } else if current.isPartial {
             model.banner = DetailBanner(message: UIFormat.metric(current), style: .warning)

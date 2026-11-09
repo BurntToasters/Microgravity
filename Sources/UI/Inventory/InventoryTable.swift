@@ -12,6 +12,7 @@ final class InventoryTableController: NSObject, NSTableViewDataSource, NSTableVi
     private let emptyState: EmptyStateView
     private var source: [InventoryRow] = []
     private var rows: [InventoryRow] = []
+    private let rowMenu = NSMenu()
     /// Fires with the selected row ID, or nil when the selection is cleared.
     var onSelectionChanged: ((String?) -> Void)?
 
@@ -57,8 +58,49 @@ final class InventoryTableController: NSObject, NSTableViewDataSource, NSTableVi
         super.init()
         table.dataSource = self
         table.delegate = self
+        rowMenu.delegate = self
+        // Items set their own enabled state (Reveal and Copy Path need a path).
+        rowMenu.autoenablesItems = false
+        table.menu = rowMenu
         // Starts with no rows; `update` returns early for unchanged input, so show the empty state here.
         emptyState.isHidden = false
+    }
+
+    /// Opens a path in Finder with the item selected. Shared by the path bar and the row menu.
+    static func revealInFinder(path: String) {
+        let url = URL(fileURLWithPath: path)
+        NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
+    }
+
+    /// Fills the row menu for `row` and selects that row first. Internal so tests can drive it without a live click.
+    /// Reveal and Copy Path are disabled when the item has no known path.
+    func configureContextMenu(_ menu: NSMenu, clickedRow row: Int) {
+        menu.removeAllItems()
+        guard rows.indices.contains(row) else { return }
+        if table.selectedRow != row {
+            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
+        let path = rows[row].path
+        let reveal = NSMenuItem(title: String(localized: "Reveal in Finder"), action: #selector(revealRowPath(_:)), keyEquivalent: "")
+        let copy = NSMenuItem(title: String(localized: "Copy Path"), action: #selector(copyRowPath(_:)), keyEquivalent: "")
+        for item in [reveal, copy] {
+            item.target = self
+            item.representedObject = path
+            item.isEnabled = path != nil
+        }
+        menu.addItem(reveal)
+        menu.addItem(copy)
+    }
+
+    @objc private func revealRowPath(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        Self.revealInFinder(path: path)
+    }
+
+    @objc private func copyRowPath(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
     }
 
     var selectedRowID: String? {
@@ -122,6 +164,13 @@ final class InventoryTableController: NSObject, NSTableViewDataSource, NSTableVi
 
     func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
         rebuild()
+    }
+}
+
+extension InventoryTableController: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === rowMenu else { return }
+        configureContextMenu(menu, clickedRow: table.clickedRow)
     }
 }
 

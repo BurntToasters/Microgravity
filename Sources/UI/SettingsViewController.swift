@@ -56,12 +56,35 @@ final class SettingsViewController: NSViewController {
     private let updateCheckButton = NSButton(title: String(localized: "Check for Updates"), target: nil, action: nil)
     private let updateInstallButton = NSButton(title: String(localized: "Install Update…"), target: nil, action: nil)
     private var appActivationObserver: NotificationObserverToken?
+    private static let metricColorRoles: [ColorRole] = [.cpu, .memory, .disk, .network, .gpu, .energy]
+    private static let processorColorRoles: [ColorRole] = [.superCores, .performanceCores, .efficiencyCores]
+    private var colorWells: [ColorRole: NSColorWell] = [:]
+    private var colorResetButtons: [ColorRole: NSButton] = [:]
+    private let restoreColorsButton = NSButton(title: String(localized: "Restore Default Colors"), target: nil, action: nil)
+    private let resetAllButton = NSButton(title: String(localized: "Reset All Settings…"), target: nil, action: nil)
+    private let versionLabel = UIComponents.label(SettingsViewController.versionText(infoDictionary: Bundle.main.infoDictionary),
+                                                  size: 11, color: .secondaryLabelColor)
+
+    /// "Microgravity 0.2.0 (12)" from the bundle's version keys. Plain "Microgravity" when the short version is missing.
+    static func versionText(infoDictionary: [String: Any]?) -> String {
+        let short = (infoDictionary?["CFBundleShortVersionString"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let build = (infoDictionary?["CFBundleVersion"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !short.isEmpty else { return "Microgravity" }
+        guard !build.isEmpty else { return String(localized: "Microgravity \(short)") }
+        return String(localized: "Microgravity \(short) (\(build))")
+    }
 
     init(dependencies: PageDependencies) {
         self.dependencies = dependencies
         super.init(nibName: nil, bundle: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(samplingStateChanged),
                                                name: .samplingStateDidChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(colorPreferencesChanged),
+                                               name: .colorPreferencesDidChange, object: nil)
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -69,10 +92,13 @@ final class SettingsViewController: NSViewController {
     override func loadView() {
         view = DynamicWindowBackgroundView()
 
-        let header = UIComponents.header(title: String(localized: "Settings"), subtitle: String(localized: "Appearance, sampling, history, and optional integrations."))
-        let sections = [makeAppearanceSection(), makeSamplingSection(), makeIntegrationSection()]
+        let header = UIComponents.header(title: String(localized: "Settings"), subtitle: String(localized: "Appearance, colors, sampling, history, and optional integrations."))
+        let sections = [makeAppearanceSection(), makeColorsSection(), makeSamplingSection(), makeIntegrationSection(), makeResetSection()]
         alignFormGrids()
-        let content = NSStackView(views: [header] + sections)
+        versionLabel.alignment = .center
+        versionLabel.maximumNumberOfLines = 1
+        versionLabel.setAccessibilityIdentifier("settings.version")
+        let content = NSStackView(views: [header] + sections + [versionLabel])
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 16
@@ -80,6 +106,8 @@ final class SettingsViewController: NSViewController {
         for section in sections {
             section.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         }
+        // Full width so the centered alignment centers the text under the cards.
+        versionLabel.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
@@ -110,6 +138,7 @@ final class SettingsViewController: NSViewController {
         refreshSamplingState()
         synchronizeAppearanceControl()
         synchronizeIntervalControl()
+        synchronizeColorControls()
         dependencies.integrations.onStatusChange = { [weak self] in self?.updateIntegrationControls() }
         updateIntegrationControls()
         let observer = NotificationCenter.default.addObserver(
@@ -126,6 +155,7 @@ final class SettingsViewController: NSViewController {
         super.viewWillAppear()
         synchronizeAppearanceControl()
         synchronizeIntervalControl()
+        synchronizeColorControls()
         refreshSamplingState()
         refreshIntegrationStatus()
     }
@@ -142,6 +172,60 @@ final class SettingsViewController: NSViewController {
         grid.addRow(with: [formLabel(String(localized: "Appearance:")), appearancePopUp])
         return UIComponents.card(title: String(localized: "Appearance"), subtitle: String(localized: "Follow macOS or choose a fixed appearance."),
                                  content: grid)
+    }
+
+    private func makeColorsSection() -> NSView {
+        restoreColorsButton.target = self
+        restoreColorsButton.action = #selector(restoreDefaultColors)
+        restoreColorsButton.bezelStyle = .rounded
+        restoreColorsButton.setAccessibilityIdentifier("settings.colors.reset-all")
+
+        let metricsGrid = makeFormGrid()
+        for role in Self.metricColorRoles {
+            addColorRow(for: role, to: metricsGrid)
+        }
+        let processorsGrid = makeFormGrid()
+        for role in Self.processorColorRoles {
+            addColorRow(for: role, to: processorsGrid)
+        }
+
+        let content = NSStackView(views: [
+            colorGroupHeading(String(localized: "Metrics")), metricsGrid,
+            colorGroupHeading(String(localized: "Processor types")), processorsGrid,
+            buttonRow([restoreColorsButton])
+        ])
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 10
+        content.setCustomSpacing(16, after: processorsGrid)
+        return UIComponents.card(title: String(localized: "Colors"),
+                                 subtitle: String(localized: "Colors for graphs, heat maps and processor types."),
+                                 content: content)
+    }
+
+    /// One row per role: right-aligned label, color well, and a small Reset button that is enabled only when customized.
+    private func addColorRow(for role: ColorRole, to grid: NSGridView) {
+        let well = NSColorWell(style: .minimal)
+        well.target = self
+        well.action = #selector(changeColor(_:))
+        well.setAccessibilityIdentifier("settings.color.\(role.identifierSuffix)")
+        well.setAccessibilityLabel(String(localized: "\(role.title) color"))
+        well.toolTip = String(localized: "Choose the \(role.title) color")
+
+        let reset = NSButton(title: String(localized: "Reset"), target: self, action: #selector(resetColor(_:)))
+        reset.bezelStyle = .rounded
+        reset.controlSize = .small
+        reset.font = .systemFont(ofSize: 11)
+        reset.setAccessibilityIdentifier("settings.color.\(role.identifierSuffix).reset")
+        reset.setAccessibilityLabel(String(localized: "Reset \(role.title) color"))
+
+        colorWells[role] = well
+        colorResetButtons[role] = reset
+        grid.addRow(with: [formLabel("\(role.title):"), buttonRow([well, reset])])
+    }
+
+    private func colorGroupHeading(_ text: String) -> NSTextField {
+        UIComponents.label(text, size: 12, weight: .semibold)
     }
 
     private func makeSamplingSection() -> NSView {
@@ -217,6 +301,17 @@ final class SettingsViewController: NSViewController {
         return UIComponents.card(title: String(localized: "Optional integrations"),
                                  subtitle: String(localized: "Optional features that need your approval in macOS."),
                                  content: grid)
+    }
+
+    /// Last card, above the version footer. The button only asks; the reset itself waits for confirmation.
+    private func makeResetSection() -> NSView {
+        resetAllButton.target = self
+        resetAllButton.action = #selector(confirmSettingsReset)
+        resetAllButton.bezelStyle = .rounded
+        resetAllButton.setAccessibilityIdentifier("settings.reset-all")
+        return UIComponents.card(title: String(localized: "Reset"),
+                                 subtitle: String(localized: "Restore every Microgravity setting to its default."),
+                                 content: buttonRow([resetAllButton]))
     }
 
     /// Borderless, link-colored button for a secondary action next to a status line. Hidden until a state needs it.
@@ -305,7 +400,7 @@ final class SettingsViewController: NSViewController {
         return stack
     }
 
-    private func buttonRow(_ buttons: [NSButton]) -> NSStackView {
+    private func buttonRow(_ buttons: [NSView]) -> NSStackView {
         let stack = NSStackView(views: buttons)
         stack.orientation = .horizontal
         stack.alignment = .centerY
@@ -342,6 +437,20 @@ final class SettingsViewController: NSViewController {
         synchronizeAppearanceControl()
     }
 
+    @objc private func changeColor(_ sender: NSColorWell) {
+        guard let role = colorWells.first(where: { $0.value === sender })?.key else { return }
+        ColorPreferences.setColor(sender.color, for: role)
+    }
+
+    @objc private func resetColor(_ sender: NSButton) {
+        guard let role = colorResetButtons.first(where: { $0.value === sender })?.key else { return }
+        ColorPreferences.resetColor(for: role)
+    }
+
+    @objc private func restoreDefaultColors() {
+        ColorPreferences.resetAll()
+    }
+
     @objc private func chooseRefreshInterval(_ sender: NSPopUpButton) {
         let intervals = MonitoringInterval.allCases
         guard intervals.indices.contains(sender.indexOfSelectedItem) else { return }
@@ -376,6 +485,32 @@ final class SettingsViewController: NSViewController {
                 try await dependencies.monitoringStore.resetHistory()
             } catch {
                 await showIntegrationError(String(localized: "History could not be reset"), message: error.localizedDescription)
+            }
+        }
+    }
+
+    /// Confirms first. On "Reset and Restart" the service clears the settings and quits, and a fresh instance opens.
+    /// If the restart cannot be set up, the app stays open and a sheet says what happened.
+    @objc private func confirmSettingsReset() {
+        Task { [weak self] in
+            guard let self else { return }
+            let response = await SheetAlert.present(
+                on: view.window,
+                style: .warning,
+                messageText: String(localized: "Reset all settings?"),
+                informativeText: String(localized: "Appearance, colors, sampling, table columns and grouping, window size, and update preferences return to their defaults. Microgravity restarts when the reset finishes. App history, the privileged helper, and login items are kept."),
+                buttons: [String(localized: "Reset and Restart"), String(localized: "Cancel")],
+                defaultButtonIdentifier: "settings.reset-all.confirm",
+                destructiveButtonIndex: 0
+            )
+            do {
+                try SettingsResetService.shared.apply(SettingsResetDecision(response: response))
+            } catch {
+                let failure = error as? SettingsResetError ?? .restartFailed
+                await SheetAlert.present(on: view.window, style: .informational,
+                                         messageText: failure.messageText,
+                                         informativeText: failure.informativeText,
+                                         buttons: [String(localized: "OK")])
             }
         }
     }
@@ -544,6 +679,20 @@ final class SettingsViewController: NSViewController {
         if let index = AppearanceMode.allCases.firstIndex(of: selected) {
             appearancePopUp.selectItem(at: index)
         }
+    }
+
+    /// Color wells show the stored values, and Reset buttons enable only for customized roles. Runs on every
+    /// color change, so a change made elsewhere (or a restore) is reflected here too.
+    @objc private func colorPreferencesChanged() {
+        synchronizeColorControls()
+    }
+
+    private func synchronizeColorControls() {
+        for role in ColorRole.allCases {
+            colorWells[role]?.color = ColorPreferences.color(for: role)
+            colorResetButtons[role]?.isEnabled = ColorPreferences.isCustomized(role)
+        }
+        restoreColorsButton.isEnabled = ColorRole.allCases.contains(where: ColorPreferences.isCustomized)
     }
 
     private func synchronizeIntervalControl() {

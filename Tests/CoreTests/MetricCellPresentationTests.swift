@@ -141,16 +141,17 @@ final class MetricCellPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.toolTip, "Unsupported · GPU counters absent")
     }
 
-    func testHeatAlphaIsZeroBelowOnePercentAndRampsToFortyFivePercent() {
+    func testHeatAlphaIsZeroBelowOnePercentAndRampsToThirtyTwoPercent() {
         XCTAssertEqual(MetricValueCellView.heatAlpha(intensity: 0, increaseContrast: false), 0)
         XCTAssertEqual(MetricValueCellView.heatAlpha(intensity: 0.009, increaseContrast: false), 0)
         XCTAssertGreaterThan(MetricValueCellView.heatAlpha(intensity: 0.01, increaseContrast: false), 0)
-        XCTAssertEqual(MetricValueCellView.heatAlpha(intensity: 1, increaseContrast: false), 0.45, accuracy: 0.0001)
+        XCTAssertEqual(MetricValueCellView.heatAlpha(intensity: 1, increaseContrast: false), 0.32, accuracy: 0.0001)
         XCTAssertEqual(MetricValueCellView.heatAlpha(intensity: 0.5, increaseContrast: false),
-                       CGFloat(0.45 * pow(0.5, 0.6)), accuracy: 0.0001)
+                       CGFloat(0.32 * pow(0.5, 0.6)), accuracy: 0.0001)
         XCTAssertGreaterThan(MetricValueCellView.heatAlpha(intensity: 0.5, increaseContrast: true),
                              MetricValueCellView.heatAlpha(intensity: 0.5, increaseContrast: false))
-        XCTAssertLessThanOrEqual(MetricValueCellView.heatAlpha(intensity: 1, increaseContrast: true), 0.75)
+        XCTAssertEqual(MetricValueCellView.heatAlpha(intensity: 1, increaseContrast: true), 0.32 * 1.6, accuracy: 0.0001)
+        XCTAssertLessThanOrEqual(MetricValueCellView.heatAlpha(intensity: 1, increaseContrast: true), 0.6)
     }
 
     func testCombinedPairShowsBothValuesAndMarksAPartlyMissingPair() {

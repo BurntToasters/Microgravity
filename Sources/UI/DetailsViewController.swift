@@ -22,6 +22,8 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
     private var selectedProcessIdentity: ProcessIdentity?
     private var processIdentityByRowID: [String: ProcessIdentity] = [:]
     private var rowIDByProcessIdentity: [ProcessIdentity: String] = [:]
+    private var processByRowID: [String: ProcessSnapshot] = [:]
+    private let contextMenu = NSMenu()
     /// Last applied unavailability per optional column. Re-applied only when it changes, so a hidden column
     /// the user brought back with the header menu stays visible between snapshots.
     private var networkColumnUnavailable: Bool?
@@ -70,6 +72,10 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
             self?.selectedRowID = rowID
             self?.selectedProcessIdentity = rowID.flatMap { self?.processIdentityByRowID[$0] }
         }
+        contextMenu.delegate = self
+        // Items set their own enabled state (Reveal and Copy Path need a path).
+        contextMenu.autoenablesItems = false
+        table.menu = contextMenu
     }
 
     required init?(coder: NSCoder) { nil }
@@ -169,6 +175,9 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
         rowIDByProcessIdentity = Dictionary(sorted.map {
             ($0.id, "details.process.\($0.id.pid)")
         }, uniquingKeysWith: { first, _ in first })
+        processByRowID = Dictionary(sorted.map {
+            ("details.process.\($0.id.pid)", $0)
+        }, uniquingKeysWith: { first, _ in first })
         allRows = rows
         applyColumnVisibility(networkUnavailable: isUnavailable(networkCapability),
                               gpuUnavailable: isUnavailable(gpuCapability))
@@ -232,6 +241,54 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
         selectedProcessIdentity = identity
     }
 
+    /// Fills the row menu for the process in `row` and selects that row first, as right-click does in Processes.
+    /// Internal so tests can drive it without a live click. A row with no process leaves the menu empty.
+    func configureContextMenu(_ menu: NSMenu, clickedRow row: Int) {
+        menu.removeAllItems()
+        guard model.rows.indices.contains(row), let process = processByRowID[model.rows[row].id] else { return }
+        if table.selectedRow != row {
+            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
+        let hasPath = process.executablePath != nil
+        menu.addItem(contextItem(String(localized: "Show in Processes"), #selector(showSelectedProcessInProcesses(_:)), process))
+        menu.addItem(.separator())
+        menu.addItem(contextItem(String(localized: "Reveal in Finder"), #selector(revealProcessPath(_:)), process, enabled: hasPath))
+        menu.addItem(contextItem(String(localized: "Copy Path"), #selector(copyProcessPath(_:)), process, enabled: hasPath))
+        menu.addItem(contextItem(String(localized: "Copy PID"), #selector(copyProcessPID(_:)), process))
+    }
+
+    private func contextItem(_ title: String, _ action: Selector, _ process: ProcessSnapshot,
+                             enabled: Bool = true) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.representedObject = process
+        item.isEnabled = enabled
+        return item
+    }
+
+    @objc private func showSelectedProcessInProcesses(_ sender: NSMenuItem) {
+        guard let process = sender.representedObject as? ProcessSnapshot,
+              let root = view.window?.contentViewController as? RootViewController else { return }
+        root.showProcessInProcesses(process.id)
+    }
+
+    @objc private func revealProcessPath(_ sender: NSMenuItem) {
+        guard let path = (sender.representedObject as? ProcessSnapshot)?.executablePath else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
+    @objc private func copyProcessPath(_ sender: NSMenuItem) {
+        guard let path = (sender.representedObject as? ProcessSnapshot)?.executablePath else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+    }
+
+    @objc private func copyProcessPID(_ sender: NSMenuItem) {
+        guard let process = sender.representedObject as? ProcessSnapshot else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(String(process.id.pid), forType: .string)
+    }
+
     private func isUnavailable(_ availability: MetricAvailability?) -> Bool {
         availability?.available == false
     }
@@ -282,6 +339,12 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
             model.configureEmptyState(symbolName: "list.bullet.rectangle", title: String(localized: "No processes"),
                                       caption: String(localized: "Process discovery returned no rows."))
         }
+    }
+}
+
+extension DetailsViewController: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        configureContextMenu(menu, clickedRow: table.clickedRow)
     }
 }
 

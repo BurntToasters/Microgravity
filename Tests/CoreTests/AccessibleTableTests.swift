@@ -236,6 +236,50 @@ final class AccessibleTableTests: XCTestCase {
         XCTAssertEqual(overlay?.isHidden, false)
     }
 
+    func testEmptyStateStaysCenteredOverTheScrollViewThroughResizes() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        window.contentView = root
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = NSTableView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        root.addSubview(scroll)
+        // The leading edge stands in for the sidebar width, which the app changes at runtime.
+        let leading = scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 200)
+        NSLayoutConstraint.activate([
+            leading,
+            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -10),
+            scroll.topAnchor.constraint(equalTo: root.topAnchor, constant: 60),
+            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -10)
+        ])
+        let overlay = EmptyStateView.install(in: scroll, title: "No app history yet",
+                                             caption: "Keep Microgravity running to build history.")
+        overlay.isHidden = false
+        root.layoutSubtreeIfNeeded()
+        try assertContentCentered(in: overlay, scroll: scroll)
+
+        leading.constant = 60
+        window.setContentSize(NSSize(width: 900, height: 520))
+        root.layoutSubtreeIfNeeded()
+        try assertContentCentered(in: overlay, scroll: scroll)
+
+        leading.constant = 320
+        window.setContentSize(NSSize(width: 520, height: 380))
+        root.layoutSubtreeIfNeeded()
+        try assertContentCentered(in: overlay, scroll: scroll)
+    }
+
+    private func assertContentCentered(in overlay: EmptyStateView, scroll: NSScrollView,
+                                       file: StaticString = #filePath, line: UInt = #line) throws {
+        let content = try XCTUnwrap(overlay.subviews.first { $0 is NSStackView }, file: file, line: line)
+        let center = content.convert(NSPoint(x: content.bounds.midX, y: content.bounds.midY), to: scroll)
+        XCTAssertEqual(center.x, scroll.bounds.midX, accuracy: 1, "overlay content must stay horizontally centered",
+                       file: file, line: line)
+        XCTAssertEqual(center.y, scroll.bounds.midY, accuracy: 1, "overlay content must stay vertically centered",
+                       file: file, line: line)
+    }
+
     func testFirstColumnIconIsShownOnlyWhenTheModelReservesIt() throws {
         let icon = NSImage(size: NSSize(width: 16, height: 16))
         let columns = [TableColumnSpec("name", "Name"), TableColumnSpec("cpu", "CPU", alignment: .right)]

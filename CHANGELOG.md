@@ -5,8 +5,8 @@
 
 | <img height="20" src="https://github.com/user-attachments/assets/42d7e887-4616-4e8c-b1d3-e44e01340f8c" /> macOS |
 | :-- |
-| **ZIP: [universal](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.2/Microgravity-0.1.2.zip)** |
-| **Checksums: [SHA256SUMS](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.2/SHA256SUMS) / [GPG signature](https://github.com/BurntToasters/Microgravity/releases/download/v0.1.2/SHA256SUMS.asc)** |
+| **ZIP: [universal](https://github.com/BurntToasters/Microgravity/releases/download/v0.2.0/Microgravity-0.2.0.zip)** |
+| **Checksums: [SHA256SUMS](https://github.com/BurntToasters/Microgravity/releases/download/v0.2.0/SHA256SUMS) / [GPG signature](https://github.com/BurntToasters/Microgravity/releases/download/v0.2.0/SHA256SUMS.asc)** |
 
 > Requires macOS 14 or later. The universal build runs natively on Apple silicon and Intel Macs.
 
@@ -19,71 +19,25 @@
 ### ℹ️ Enjoying Microgravity? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 <!-- downloads:end -->
 
-## 0.1.2
+## 0.2.0
 
-- **Processes:** Per-process network rates now cover system and other users' processes, such as software update and other background daemons, when the optional helper is installed. Previously only your own processes showed network activity.
-- **Processes:** Find Process (⌘F), Quit Process (⌥⌘Q), Force Quit and Show in Details (⌘I) work whenever the Processes page is showing, including right after launch or after clicking the sidebar. Before, they only worked once you had clicked in the process list.
-- **Processes:** The column you sort by is remembered between launches.
-- **App History:** Longer CPU times read as hours and minutes, for example "1h 23m", instead of a large number of seconds.
-- **Startup and Services:** When some locations can't be read, the banner names the actual problem instead of a general note.
-- **Helper:** After you approve the optional helper in System Settings, its metrics appear as soon as you return to Microgravity instead of up to a minute later.
-- **Energy:** Without the helper, the Energy page reports its unit as watts, matching the readings the helper provides.
-- **Details:** Fixed a rare crash when the process list reported the same process ID twice.
-- **Updater:** The update window shows the release notes themselves instead of loading the whole GitHub release page.
-
-## 0.1.1
-
-- **Processes:** Processes owned by other users and by the system (root) now appear. Quitting other users' processes works through the optional helper. The administrator password prompt no longer freezes the window, and Microgravity explains why it appears.
-- **Processes:** Process names are no longer cut off at 31 characters. Exited (zombie) processes are no longer listed.
-- **Processes:** Quit and Force Quit are disabled, with an explanation, for processes Microgravity never quits: root-owned and protected system processes, PID 1 and Microgravity itself.
-- **Processes:** Finder can be relaunched, as in the system Force Quit window: select Finder and choose Relaunch.
-- **Processes:** Force Quit no longer uses ⇧⌥⌘Q, which is the system Log Out shortcut. Quit and Force Quit ask for confirmation first.
-- **App History:** Days use the local calendar, with Today and Yesterday labels. Pauses, sleep and relaunches no longer mark every value as partial. History is written in batches, which greatly reduces disk writes. Background processes are hidden by default; turn on Show Background Processes to list them. Applications start collapsed, and days follow time-zone changes without a relaunch.
-- **Users and Details:** Permanent "Collection failed" warnings are gone, and banners are quieter. Users lists every account that owns a process, including root and system accounts.
-- **Helper:** Metrics that need the optional helper say so in plain language instead of showing an internal error code.
-- **Energy:** Apple-silicon powermetrics power keys are read. Per-process GPU time has been removed.
-- **Helper:** The helper no longer samples per-task data, and it does not poll when it is not installed.
-- **Network:** VPN interfaces are excluded from system network totals.
-- **Interface:** Settings and sidebar text are consistent, the Help menu is updated, the CPU column has a tooltip, dates are localized, and user LaunchAgents are labeled as launch agents.
-- **Build:** Core tests no longer write to the real history database.
-- **App History:** History is now stored by local day. Older versions of Microgravity cannot read history written by 0.1.1.
-- **Interface:** A Support Microgravity button at the bottom of the sidebar, and Support Microgravity… in the app menu, open https://rosie.run/support in your default browser.
-- **Processes:** Rows change order instantly when values update instead of sliding and fading on every sample. App History no longer re-animates its groups on each refresh. Expanding or collapsing a group yourself still animates.
-- **Processes:** The Name column refits to the window, so a column layout saved from a wider window no longer pushes the CPU, memory, disk and network columns out of view.
-- **Processes:** Idle disk and network rates show "0 KB/s" instead of "Zero KB/s".
-- **Processes:** The selection bar shows the PID once and the start time, instead of repeating the PID.
-- **Processes:** Long names such as `com.apple.Virtualization.VirtualMachine` are shortened in the middle, so the end that tells them apart stays visible. Hover to see the full name.
-- **Processes:** Column titles have the same side padding as their values, so PID and User no longer run together.
-- **Settings:** Labels line up across the Appearance, Sampling and history, and Optional integrations sections, and the Appearance row no longer jumps when you change it.
-- **Settings:** The privileged helper and Open at login can be set up on a fresh install. macOS reports a never-registered helper or login item as "not found", which was shown as "The bundled helper is missing" or "not installed in a supported location" and disabled setup, while Remove Helper stayed enabled.
-- **Releases:** GitHub releases list the download, the SHA-256 checksums, and the GPG public key (https://tuxedo.rosie.run/GPG/Microgravity_1C2EC359.asc) for verifying the `.asc` signatures.
-- **Updater:** The update window shows only what changed in the new version.
-- **Updater:** Sparkle is pinned to the official 2.9.6 release and checked against its published checksum and tag commit before it is built in.
-- **Build:** Building from source requires Node.js 24.13 or later.
-
-## 0.1.0
-
-The first release of Microgravity, a native process and system monitor for macOS 14 and later.
-
-- **Monitoring:** Per-process CPU percentages are correct. The kernel reports process CPU times in Mach ticks, which were read as nanoseconds; on Apple silicon every process, group, user total, sort order, heat map and App History CPU value was about 42 times too low.
-- **Monitoring:** Pre-release builds recorded App History CPU seconds with the wrong unit. If you tested a pre-release build, use Reset History (App History or Settings) before relying on per-app CPU history.
-- **Monitoring:** System network totals exclude loopback, virtual and tunnel interfaces, so traffic is not counted twice. The per-interface list still shows every interface and marks which ones count toward totals.
-- **Monitoring:** Memory pressure reads the current system level at startup instead of waiting for the first pressure event.
-- **Monitoring:** Partial and unavailable measurements are labeled with a reason. Missing values are never shown as zero.
-- **Performance:** Process names and paths are cached per process identity, which reduces system calls on every sample.
-- **Performance:** Sampling runs on a fixed schedule, so collection time no longer stretches the refresh interval.
-- **Performance:** Snapshots are published before the history write completes, so a slow disk does not delay the interface. Retention cleanup runs once per UTC day instead of on every sample.
-- **Interface:** The main window opens at 1280 × 820 and remembers its size and position.
-- **Interface:** A unified toolbar with page-specific actions, and a sidebar grouped into Monitor and Inventory with keyboard shortcuts (Command-1 through Command-8) and a sampling status footer.
-- **Interface:** Standard View, Window and Help menus, Settings (Command-comma), Check for Updates, and a Process menu.
-- **Processes:** An outline view with app icons, heat-mapped cells, partial and unavailable badges with explanations, a selection bar, a context menu and keyboard shortcuts.
-- **Performance page:** A metric rail with sparklines, a detail graph with grid lines, axis labels and gap markers, a time-window picker, per-core activity, a swap capacity bar and a memory pressure timeline.
-- **App History:** One outline of applications and days.
-- **Startup and Services:** Status, item kind, discovery coverage, Reveal in Finder, and a shortcut to Login Items settings. Both pages stay read-only.
-- **Users and Details:** Refreshed to match the new layout.
-- **Settings:** A form for appearance, refresh interval, pause and resume, history reset, the helper, the login item and updates.
-- **Interface:** Force Quit and Reset History confirmations appear as sheets attached to the window.
-- **Process actions:** Quit and Force Quit act only on the selected process identity (PID and start time). Microgravity checks that identity again before sending a signal, and reports when a PID was reused or the process exited.
-- **Helper:** The optional privileged helper can quit processes owned by other standard users after administrator approval. It never quits root-owned processes or processes in protected system locations (`/System/Library`, `/usr/libexec`, `/usr/sbin`, `/sbin`). Settings states this limit.
-- **Updater:** Built-in updates use Sparkle 2.9.6, pinned to the official release and checked against its published checksum.
-- **Known limitations:** Helper authorization, notarized distribution, Sparkle update delivery and VoiceOver behavior were not verified for this release. See [implementation status](https://github.com/BurntToasters/Microgravity/blob/main/docs/IMPLEMENTATION_STATUS.md).
+- **Performance:** Hover over a graph or a core tile to read the time and the value of each series at that point. Graphs with two series, Disk and Network, have a legend.
+- **Performance:** Graphs keep one hour of history. The time window picker offers 1 min, 5 min, 15 min and 1 h; "All" has been removed.
+- **Performance:** The Memory detail adds App memory, Wired, Compressed and Cached files to Used, Available and Total. A value that was not collected shows as not collected, never as zero.
+- **Performance:** The banner for unavailable advanced metrics no longer ends with two periods.
+- **Processes:** Inspect opens a popover with a process's parent, full start time, paths, live CPU, memory and disk rates, disk read and written since it started, and network use. Choose Inspect from the context menu, the selection bar, or press Option-Command-I. The popover keeps updating while it is open.
+- **Processes:** Each resource column has its own heat color: blue for CPU, purple for Memory, green for Disk and orange for Network. The color is a rounded fill inside each cell, so neighboring columns no longer blend together.
+- **Processes:** The grouping choice, By App or Flat List, is remembered between launches.
+- **Processes:** When nothing is selected, the selection bar shows how many processes and apps are listed. While you search, it shows how many processes match.
+- **Details:** Right-click a process for Show in Processes, Reveal in Finder, Copy Path and Copy PID. Show in Processes opens the Processes page with that process selected and its group expanded.
+- **Startup and Services:** Right-click an item to Reveal in Finder or Copy Path.
+- **Interface:** The View menu has Pause Sampling (Option-Command-P), which changes to Resume Sampling while sampling is paused, and a Refresh Interval submenu that marks the current interval.
+- **App History:** A search field filters applications by name, and the banner shows how many applications match.
+- **Settings:** The version and build number appear at the bottom of the Settings page.
+- **Performance:** On Macs with more than one processor type, Logical Processors groups the graphs by type, such as Super and Performance cores on M5 Pro or Performance and Efficiency cores on earlier Apple silicon. Each group shows its core count and average use, and the CPU statistics list the cores of each type.
+- **Settings:** A new Colors section sets the colors used for CPU, Memory, Disk, Network, GPU, Energy and each processor type, in graphs and in the Processes heat map. Each color can be reset on its own, or all at once.
+- **Settings:** Reset All Settings restores every Microgravity setting to its default and restarts the app after you confirm. App history, the helper and login items are kept.
+- **App History:** Fixed history failing to save with "SQLite error 21", which left App History unavailable once more than one app had been recorded.
+- **Interface:** Showing or hiding the sidebar on the Performance page no longer shrinks or moves the window.
+- **Performance:** The Logical Processors view no longer stacks every processor graph on top of each other after the window width changes.
+- **Interface:** Empty-table messages stay centered over their table after the window is resized.

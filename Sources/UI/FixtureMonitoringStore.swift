@@ -273,6 +273,10 @@ final class FixtureMonitoringStore: MonitoringStore {
             memoryUsedBytes: reading(4_300_000_000, .bytes, timestamp),
             memoryAvailableBytes: reading(3_900_000_000, .bytes, timestamp),
             memoryTotalBytes: reading(8_200_000_000, .bytes, timestamp),
+            memoryAppBytes: reading(2_600_000_000, .bytes, timestamp),
+            memoryWiredBytes: reading(1_200_000_000, .bytes, timestamp),
+            memoryCompressedBytes: reading(500_000_000, .bytes, timestamp),
+            memoryCachedFilesBytes: reading(1_400_000_000, .bytes, timestamp),
             memoryPressure: MemoryPressureSnapshot(level: pressure, timestamp: timestamp),
             swapUsedBytes: reading(640_000_000 + Double(sampleIndex * 400_000), .bytes, timestamp),
             swapTotalBytes: reading(2_000_000_000, .bytes, timestamp),
@@ -290,7 +294,11 @@ final class FixtureMonitoringStore: MonitoringStore {
                 transmitBytesPerSecond: reading(4_000, .bytesPerSecond, timestamp),
                 receiveTotalBytes: reading(9_000_000, .bytes, timestamp),
                 transmitTotalBytes: reading(3_000_000, .bytes, timestamp)
-            )]
+            )],
+            processorTopology: ProcessorTopology(kinds: [
+                ProcessorCoreKind(name: "Performance", rank: 0, logicalCPUs: [4, 5, 6, 7]),
+                ProcessorCoreKind(name: "Efficiency", rank: 1, logicalCPUs: [0, 1, 2, 3]),
+            ])
         )
 
         // History days are local midnights, as the history store keys them.

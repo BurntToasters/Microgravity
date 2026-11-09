@@ -309,6 +309,31 @@ public struct NetworkInterfaceSnapshot: Codable, Equatable, Sendable, Identifiab
     }
 }
 
+/// One class of logical processors, such as Apple's Performance or Efficiency cores.
+public struct ProcessorCoreKind: Codable, Equatable, Sendable {
+    public let name: String
+    /// 0 is the fastest class, matching the order of the system's performance levels.
+    public let rank: Int
+    /// Logical CPU indexes, sorted ascending. Indexes match per-core CPU readings.
+    public let logicalCPUs: [Int]
+
+    public init(name: String, rank: Int, logicalCPUs: [Int]) {
+        self.name = name
+        self.rank = rank
+        self.logicalCPUs = logicalCPUs
+    }
+}
+
+/// How logical processors split into core classes. Absent when the Mac has a single class or the split is unknown.
+public struct ProcessorTopology: Codable, Equatable, Sendable {
+    /// Sorted by rank.
+    public let kinds: [ProcessorCoreKind]
+
+    public init(kinds: [ProcessorCoreKind]) {
+        self.kinds = kinds
+    }
+}
+
 public struct SystemMetricsSnapshot: Codable, Equatable, Sendable {
     public let capacityCores: Int
     public let cpuPercent: MetricReading
@@ -316,6 +341,11 @@ public struct SystemMetricsSnapshot: Codable, Equatable, Sendable {
     public let memoryUsedBytes: MetricReading
     public let memoryAvailableBytes: MetricReading
     public let memoryTotalBytes: MetricReading
+    /// Memory breakdown. Optional so snapshots persisted before these fields existed still decode.
+    public let memoryAppBytes: MetricReading?
+    public let memoryWiredBytes: MetricReading?
+    public let memoryCompressedBytes: MetricReading?
+    public let memoryCachedFilesBytes: MetricReading?
     public let memoryPressure: MemoryPressureSnapshot
     public let swapUsedBytes: MetricReading
     public let swapTotalBytes: MetricReading
@@ -324,21 +354,33 @@ public struct SystemMetricsSnapshot: Codable, Equatable, Sendable {
     public let networkReceiveBytesPerSecond: MetricReading
     public let networkTransmitBytesPerSecond: MetricReading
     public let networkInterfaces: [NetworkInterfaceSnapshot]
+    /// Optional so snapshots persisted before this field existed still decode. Nil means one ungrouped list.
+    public let processorTopology: ProcessorTopology?
 
     public init(capacityCores: Int, cpuPercent: MetricReading, perCoreCPUPercent: [MetricReading],
                 memoryUsedBytes: MetricReading, memoryAvailableBytes: MetricReading,
-                memoryTotalBytes: MetricReading, memoryPressure: MemoryPressureSnapshot,
+                memoryTotalBytes: MetricReading,
+                memoryAppBytes: MetricReading? = nil,
+                memoryWiredBytes: MetricReading? = nil,
+                memoryCompressedBytes: MetricReading? = nil,
+                memoryCachedFilesBytes: MetricReading? = nil,
+                memoryPressure: MemoryPressureSnapshot,
                 swapUsedBytes: MetricReading, swapTotalBytes: MetricReading,
                 diskReadBytesPerSecond: MetricReading, diskWriteBytesPerSecond: MetricReading,
                 networkReceiveBytesPerSecond: MetricReading,
                 networkTransmitBytesPerSecond: MetricReading,
-                networkInterfaces: [NetworkInterfaceSnapshot]) {
+                networkInterfaces: [NetworkInterfaceSnapshot],
+                processorTopology: ProcessorTopology? = nil) {
         self.capacityCores = capacityCores
         self.cpuPercent = cpuPercent
         self.perCoreCPUPercent = perCoreCPUPercent
         self.memoryUsedBytes = memoryUsedBytes
         self.memoryAvailableBytes = memoryAvailableBytes
         self.memoryTotalBytes = memoryTotalBytes
+        self.memoryAppBytes = memoryAppBytes
+        self.memoryWiredBytes = memoryWiredBytes
+        self.memoryCompressedBytes = memoryCompressedBytes
+        self.memoryCachedFilesBytes = memoryCachedFilesBytes
         self.memoryPressure = memoryPressure
         self.swapUsedBytes = swapUsedBytes
         self.swapTotalBytes = swapTotalBytes
@@ -347,6 +389,7 @@ public struct SystemMetricsSnapshot: Codable, Equatable, Sendable {
         self.networkReceiveBytesPerSecond = networkReceiveBytesPerSecond
         self.networkTransmitBytesPerSecond = networkTransmitBytesPerSecond
         self.networkInterfaces = networkInterfaces
+        self.processorTopology = processorTopology
     }
 }
 

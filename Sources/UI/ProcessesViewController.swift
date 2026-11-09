@@ -9,7 +9,8 @@ import AppKit
 @MainActor
 final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToolbarProviding,
                                      NSOutlineViewDataSource, NSOutlineViewDelegate,
-                                     NSSearchFieldDelegate, NSMenuDelegate, NSUserInterfaceValidations {
+                                     NSSearchFieldDelegate, NSMenuDelegate, NSUserInterfaceValidations,
+                                     NSPopoverDelegate {
     private enum ToolbarItemID {
         static let search = NSToolbarItem.Identifier("process.toolbar.search")
         static let quit = NSToolbarItem.Identifier("process.toolbar.quit")
@@ -18,11 +19,12 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     }
 
     private static let columnVisibilityKey = "process.columns.visibility"
+    private static let groupingDefaultsKey = "process.grouping"
     private static let autosaveName = "process.outline"
     private static let systemProtectedMessage = String(localized: "System processes are protected and can't be quit from Microgravity.")
     /// Longest diff applied row by row; longer changes at one level reload that level instead.
     private static let incrementalOperationLimit = 40
-    private static let startTimeFormatter: DateFormatter = {
+    static let startTimeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .medium
@@ -60,11 +62,16 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     private var collapsedDuringSearch = Set<ProcessIdentity>()
     private var selectedID: ProcessRowID?
     private var sort = ProcessSortState(column: .cpu, ascending: false)
-    private var grouping: ProcessGrouping = .byApp
+    /// Restored from and saved to `process.grouping`.
+    private(set) var grouping: ProcessGrouping = .byApp
     /// Explicit column visibility choices from the header menu. Columns without a choice follow capability.
     private var columnOverrides: [String: Bool]
     /// True while the controller changes the outline itself, so delegate callbacks are not user actions.
     private var isApplyingModel = false
+    /// The Inspect popover, the row it describes, and its content. Closed when that row's process goes away.
+    private var inspectorPopover: NSPopover?
+    private var inspectorController: ProcessInspectorViewController?
+    private var inspectedRowID: ProcessRowID?
 
     init(dependencies: PageDependencies, defaults: UserDefaults? = nil) {
         self.dependencies = dependencies
@@ -84,10 +91,22 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         expandedGroups = ProcessGroupExpansionPersistence.load(from: self.defaults)
         columnOverrides = self.defaults.dictionary(forKey: ProcessesViewController.columnVisibilityKey)
             as? [String: Bool] ?? [:]
+        grouping = Self.restoredGrouping(from: self.defaults)
         super.init(nibName: nil, bundle: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(colorPreferencesChanged),
+                                               name: .colorPreferencesDidChange, object: nil)
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     required init?(coder: NSCoder) { nil }
+
+    /// `"flat"` lists every process; anything else, including no saved choice, groups by app.
+    static func restoredGrouping(from defaults: UserDefaults) -> ProcessGrouping {
+        defaults.string(forKey: groupingDefaultsKey) == "flat" ? .flat : .byApp
+    }
 
     override func loadView() {
         view = DynamicWindowBackgroundView()
@@ -104,6 +123,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
 
         configureOutline()
         configureToolbarItems()
+        selectionBar.onInspect = { [weak self] in self?.inspectSelectedProcess(nil) }
 
         outlineScroll.documentView = outlineView
         outlineScroll.hasVerticalScroller = true
@@ -341,6 +361,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         }
         applyColumnVisibility()
         applyModel()
+        refreshInspector()
     }
 
     private func makeInput() -> ProcessOutlineInput {
@@ -544,6 +565,18 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         }
     }
 
+    /// Heat colors are set when a cell is configured, so the visible cells in the columns that follow a metric color
+    /// are reloaded in place. Row identity does not change, so the selection stays put and nothing animates.
+    @objc private func colorPreferencesChanged() {
+        let rows = IndexSet(integersIn: 0..<outlineView.numberOfRows)
+        let columns = IndexSet([ProcessColumn.cpu, .memory, .disk, .network].compactMap { column -> Int? in
+            let index = outlineView.column(withIdentifier: NSUserInterfaceItemIdentifier(column.rawValue))
+            return index >= 0 ? index : nil
+        })
+        guard !rows.isEmpty, !columns.isEmpty else { return }
+        withoutAnimation { outlineView.reloadData(forRowIndexes: rows, columnIndexes: columns) }
+    }
+
     /// Keeps the selection on the same row identity. A row that is no longer visible clears it.
     private func syncSelection(visible: [ProcessRowID]) {
         if let selectedID, processByIdentity[selectedID.identity] == nil {
@@ -636,7 +669,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
 
     private func updateSelectionDetails() {
         guard let selectedID, let process = processByIdentity[selectedID.identity] else {
-            selectionBar.showEmpty()
+            selectionBar.showEmpty(summary: selectionSummary())
             setActionsEnabled(false)
             return
         }
@@ -675,9 +708,38 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             || HelperTerminationPolicy.isProtected(executablePath: process.executablePath, systemFlag: false)
     }
 
-    /// The process start time as a `Date`, for the localized selection-bar label.
-    private static func startDate(_ startTime: ProcessStartTime) -> Date {
+    /// The process start time as a `Date`, for the selection-bar label and the Inspect popover.
+    static func startDate(_ startTime: ProcessStartTime) -> Date {
         Date(timeIntervalSince1970: TimeInterval(startTime.secondsSinceEpoch) + TimeInterval(startTime.microseconds) / 1_000_000)
+    }
+
+    /// Selection-bar text while nothing is selected. Nil before the first snapshot, which keeps `ProcessSelectionBar.emptyMessage`.
+    private func selectionSummary() -> String? {
+        guard let snapshot = currentSnapshot else { return nil }
+        let searching = !searchQuery.isEmpty
+        return Self.emptySummary(processCount: snapshot.processes.count, groupCount: snapshot.processGroups.count,
+                                 matchCount: searching ? matchingProcessCount() : snapshot.processes.count,
+                                 searching: searching)
+    }
+
+    /// Processes passing the search, from a flat build so collapsed groups still count their members.
+    private func matchingProcessCount() -> Int {
+        var input = makeInput()
+        input.grouping = .flat
+        return ProcessRowModel.build(input).rows.values.filter { !$0.isGroup }.count
+    }
+
+    /// Selection-bar summary with no selection: "3 processes · 2 apps", or "1 of 3 processes match" while searching.
+    static func emptySummary(processCount: Int, groupCount: Int, matchCount: Int, searching: Bool) -> String {
+        if searching {
+            if processCount == 1 {
+                return String(localized: "\(matchCount) of 1 process matches")
+            }
+            return String(localized: "\(matchCount) of \(processCount) processes match")
+        }
+        let processes = processCount == 1 ? String(localized: "1 process") : String(localized: "\(processCount) processes")
+        let apps = groupCount == 1 ? String(localized: "1 app") : String(localized: "\(groupCount) apps")
+        return String(localized: "\(processes) · \(apps)")
     }
 
     private func setActionsEnabled(_ enabled: Bool) {
@@ -739,8 +801,8 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             let identifier = NSUserInterfaceItemIdentifier("process.cell.\(column.suffix)")
             let cell = outlineView.makeView(withIdentifier: identifier, owner: self) as? MetricValueCellView
                 ?? makeMetricCell(identifier: identifier)
-            cell.configure(presentation: presentation, heatIntensity: heat, alignment: .right,
-                           accessibilityIdentifier: "\(row.accessibilityID).\(column.suffix)")
+            cell.configure(presentation: presentation, heatIntensity: heat, heatColor: column.heatColor,
+                           alignment: .right, accessibilityIdentifier: "\(row.accessibilityID).\(column.suffix)")
             cell.setAccessibilityIdentifier("\(row.accessibilityID).cell.\(column.suffix)")
             return cell
         }
@@ -831,6 +893,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         rowsByID = output.rows
         syncSelection(visible: visibleRowIDs)
         updateSelectionDetails()
+        refreshInspector()
     }
 
     func outlineView(_ outlineView: NSOutlineView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
@@ -862,8 +925,33 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
 
     @objc func setProcessGrouping(_ sender: NSMenuItem) {
         grouping = sender.tag == 1 ? .flat : .byApp
+        defaults.set(grouping == .flat ? "flat" : "byApp", forKey: Self.groupingDefaultsKey)
         updateGroupingMenu()
         applyModel()
+    }
+
+    /// Expands the groups that contain `identity`, clears the search, and selects its row, scrolled into view.
+    /// A process row is preferred; a group row is selected when the identity appears only as a group.
+    func selectProcess(identity: ProcessIdentity) {
+        guard currentSnapshot != nil else { return }
+        searchItem.searchField.stringValue = ""
+        collapsedDuringSearch.removeAll()
+        if grouping == .byApp, let snapshot = currentSnapshot {
+            let containing = snapshot.processGroups.filter { $0.members.contains(identity) }.map(\.id)
+            let updated = expandedGroups.union(containing)
+            if updated != expandedGroups {
+                expandedGroups = updated
+                persistExpandedGroups()
+            }
+        }
+        applyModel()
+        let visible = visibleRowIDs
+        guard let target = [ProcessRowID.process(identity), .group(identity)].first(where: { visible.contains($0) }),
+              let row = visible.firstIndex(of: target) else { return }
+        selectedID = target
+        outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        outlineView.scrollRowToVisible(row)
+        updateSelectionDetails()
     }
 
     private func updateGroupingMenu() {
@@ -901,6 +989,65 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         root.showProcessInDetails(selectedID.identity)
     }
 
+    /// Opens the Inspect popover for the selected row, anchored to that row. It stays live until the row goes away.
+    @objc func inspectSelectedProcess(_ sender: Any?) {
+        guard let selectedID, processByIdentity[selectedID.identity] != nil else { return }
+        let row = outlineView.selectedRow
+        guard row >= 0 else { return }
+        closeInspector()
+        outlineView.scrollRowToVisible(row)
+
+        let controller = ProcessInspectorViewController()
+        let popover = NSPopover()
+        popover.behavior = .semitransient
+        popover.delegate = self
+        popover.contentViewController = controller
+        inspectorPopover = popover
+        inspectorController = controller
+        inspectedRowID = selectedID
+        refreshInspector()
+        guard inspectorPopover === popover else { return }
+        popover.show(relativeTo: outlineView.rect(ofRow: row), of: outlineView, preferredEdge: .minY)
+    }
+
+    /// Re-renders the open Inspect popover from the latest snapshot. It closes when its process or row is gone.
+    private func refreshInspector() {
+        guard let inspected = inspectedRowID, inspectorPopover != nil, let controller = inspectorController,
+              let snapshot = currentSnapshot else { return }
+        guard let process = processByIdentity[inspected.identity], let item = items[inspected],
+              outlineView.row(forItem: item) >= 0 else {
+            closeInspector()
+            return
+        }
+        var group: ProcessGroupSnapshot?
+        if case .group = inspected {
+            group = groupByIdentity[inspected.identity]
+        }
+        let rows = ProcessInspectorModel.rows(process: process, group: group, snapshot: snapshot,
+                                              ownerName: { UIFormat.ownerName($0) })
+        let row = rowsByID[inspected]
+        let icon = row?.isGroup == true
+            ? AppIconProvider.icon(forBundlePath: row?.iconBundlePath)
+            : AppIconProvider.genericExecutableIcon()
+        controller.update(title: row?.title ?? process.name, icon: icon,
+                          executablePath: process.executablePath, rows: rows)
+    }
+
+    private func closeInspector() {
+        let popover = inspectorPopover
+        inspectorPopover = nil
+        inspectorController = nil
+        inspectedRowID = nil
+        popover?.close()
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        guard let popover = notification.object as? NSPopover, popover === inspectorPopover else { return }
+        inspectorPopover = nil
+        inspectorController = nil
+        inspectedRowID = nil
+    }
+
     private func persistExpandedGroups() {
         ProcessGroupExpansionPersistence.save(expandedGroups, to: defaults)
     }
@@ -923,6 +1070,9 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         }
         if action == #selector(revealSelectedProcess(_:)) || action == #selector(copySelectedPath(_:)) {
             return selectedPath != nil
+        }
+        if action == #selector(inspectSelectedProcess(_:)) {
+            return selectedProcess != nil
         }
         return true
     }
@@ -1067,6 +1217,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         menu.addItem(contextItem(String(localized: "Reveal in Finder"), #selector(revealSelectedProcess(_:))))
         menu.addItem(contextItem(String(localized: "Copy Path"), #selector(copySelectedPath(_:))))
         menu.addItem(.separator())
+        menu.addItem(contextItem(String(localized: "Inspect…"), #selector(inspectSelectedProcess(_:))))
         menu.addItem(contextItem(String(localized: "Show in Details"), #selector(showSelectedProcessInDetails(_:))))
     }
 

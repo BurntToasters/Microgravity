@@ -3,7 +3,8 @@ import AppKit
 /// Slim strip under the process table: icon, name, "PID · user · path", and the identity on the trailing edge.
 ///
 /// The trailing label keeps the `process.selection.identity` identifier. It shows the start time; the PID is
-/// already in the summary, and the label's accessibility text names both.
+/// already in the summary, and the label's accessibility text names both. An Inspect button sits after it
+/// while a process is selected and calls `onInspect`.
 @MainActor
 final class ProcessSelectionBar: NSView {
     static let height: CGFloat = 36
@@ -12,8 +13,12 @@ final class ProcessSelectionBar: NSView {
     private let titleField = NSTextField(labelWithString: "")
     private let summaryField = NSTextField(labelWithString: "")
     private let identityField = NSTextField(labelWithString: "")
+    private let inspectButton = NSButton(title: String(localized: "Inspect"), target: nil, action: nil)
 
-    /// The single empty-state message. The identity field stays blank so the message is not repeated.
+    /// Called when the user presses Inspect.
+    var onInspect: (() -> Void)?
+
+    /// Shown before the first snapshot, and with no selection when the page has no summary to show.
     static let emptyMessage = String(localized: "Select a process to inspect its identity.")
 
     init() {
@@ -48,7 +53,17 @@ final class ProcessSelectionBar: NSView {
         identityField.setContentCompressionResistancePriority(.required, for: .horizontal)
         identityField.setContentHuggingPriority(.required, for: .horizontal)
 
-        let stack = NSStackView(views: [iconView, titleField, summaryField, identityField])
+        inspectButton.bezelStyle = .rounded
+        inspectButton.controlSize = .small
+        inspectButton.target = self
+        inspectButton.action = #selector(inspectPressed(_:))
+        inspectButton.setAccessibilityIdentifier("process.selection.inspect")
+        inspectButton.setAccessibilityLabel(String(localized: "Inspect process"))
+        inspectButton.toolTip = String(localized: "Show details for the selected process")
+        inspectButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        inspectButton.setContentHuggingPriority(.required, for: .horizontal)
+
+        let stack = NSStackView(views: [iconView, titleField, summaryField, identityField, inspectButton])
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = 8
@@ -65,14 +80,17 @@ final class ProcessSelectionBar: NSView {
 
     required init?(coder: NSCoder) { nil }
 
-    func showEmpty() {
+    /// Clears the bar. `summary` replaces the empty-state message, for example "3 processes · 2 apps".
+    func showEmpty(summary: String? = nil) {
+        let text = summary ?? Self.emptyMessage
         iconView.image = nil
         iconView.isHidden = true
         titleField.stringValue = ""
-        summaryField.stringValue = Self.emptyMessage
-        summaryField.setAccessibilityLabel(Self.emptyMessage)
+        summaryField.stringValue = text
+        summaryField.setAccessibilityLabel(text)
         identityField.stringValue = ""
         identityField.setAccessibilityLabel("")
+        inspectButton.isHidden = true
     }
 
     func show(title: String, summary: String, identity: String, identityAccessibilityLabel: String? = nil, icon: NSImage) {
@@ -83,6 +101,11 @@ final class ProcessSelectionBar: NSView {
         summaryField.setAccessibilityLabel(summary)
         identityField.stringValue = identity
         identityField.setAccessibilityLabel(identityAccessibilityLabel ?? identity)
+        inspectButton.isHidden = false
+    }
+
+    @objc private func inspectPressed(_ sender: Any?) {
+        onInspect?()
     }
 
     override func draw(_ dirtyRect: NSRect) {

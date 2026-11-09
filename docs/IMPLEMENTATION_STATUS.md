@@ -12,6 +12,10 @@ Intended behavior is in [UI acceptance](UI_ACCEPTANCE.md). Collector, history,
 and process-action regressions are in [core failure cases](FAILURE_CASES_CORE.md).
 The release procedure and the 0.1.0 UI gate are in [RELEASING.md](RELEASING.md).
 
+## 0.2.0 (in progress)
+
+Microgravity 0.2.0 adds these surfaces: Performance graph hover readouts, a legend for two-series graphs, 1 h graph history with 1 min, 5 min, 15 min and 1 h windows, and memory breakdown stats; the Processes Inspect popover, per-column heat colors, remembered grouping, and selection bar counts; View menu Pause Sampling and Refresh Interval; Details and Startup/Services context menus; App History search; and a Settings version line. The signed UI test suite has not yet been re-run for these surfaces, so the results below cover 0.1.2 and do not establish that they pass.
+
 ## Verification
 
 ### Latest results (2026-11-08, branch `next-0.1.2`)

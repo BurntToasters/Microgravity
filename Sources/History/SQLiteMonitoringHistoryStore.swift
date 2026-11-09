@@ -1047,6 +1047,9 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
         try execute("DELETE FROM application_sample_state", on: handle.pointer)
         let upsert = try cachedStatement(Self.applicationSampleUpsertSQL, on: handle)
         for (applicationID, sampleTime) in priorApplicationSamples.sorted(by: { $0.key < $1.key }) {
+            // The statement is stepped to DONE on each pass, so it must be reset before it is bound again.
+            sqlite3_reset(upsert)
+            sqlite3_clear_bindings(upsert)
             bind(applicationID, to: upsert, index: 1)
             sqlite3_bind_double(upsert, 2, sampleTime.timeIntervalSince1970)
             let code = sqlite3_step(upsert)

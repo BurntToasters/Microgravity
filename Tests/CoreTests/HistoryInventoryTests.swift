@@ -324,6 +324,60 @@ final class HistoryInventoryTests: XCTestCase {
         XCTAssertNil(AppHistorySortOrder(descriptor: nil))
     }
 
+    func testInventoryRowMenuSelectsTheClickedRowAndDisablesRevealAndCopyWithoutAPath() {
+        let controller = InventoryTableController(identifier: "startup.table", autosaveName: nil, accessibilityLabel: "Startup")
+        controller.update(rows: InventoryRows.rows(for: [
+            entry(id: "helper", name: "Helper", path: nil, state: .unknown),
+            entry(id: "agent", name: "Agent", path: "/Applications/Foo.app/Contents/MacOS/foo", state: .running)
+        ], pageIdentifier: "startup"))
+        let menu = NSMenu()
+
+        controller.configureContextMenu(menu, clickedRow: 0)
+        XCTAssertEqual(controller.selectedRowID, "startup.item.agent", "right-click selects the clicked row first")
+        XCTAssertEqual(menu.items.map(\.title), ["Reveal in Finder", "Copy Path"])
+        XCTAssertTrue(menu.items.allSatisfy(\.isEnabled))
+
+        controller.configureContextMenu(menu, clickedRow: 1)
+        XCTAssertEqual(controller.selectedRowID, "startup.item.helper")
+        XCTAssertTrue(menu.items.allSatisfy { !$0.isEnabled }, "no known path disables both actions")
+
+        controller.configureContextMenu(menu, clickedRow: 7)
+        XCTAssertTrue(menu.items.isEmpty)
+    }
+
+    // MARK: App History search
+
+    func testAppHistoryFilterMatchesApplicationTitlesCaseAndDiacriticInsensitively() {
+        let groups = [group(name: "Fixture Editor"), group(name: "Indexer"), group(name: "Café Notes")]
+        XCTAssertEqual(AppHistoryBuilder.filter(groups, query: "").map(\.total.title),
+                       ["Fixture Editor", "Indexer", "Café Notes"])
+        XCTAssertEqual(AppHistoryBuilder.filter(groups, query: "  \n ").count, 3, "a blank query shows everything")
+        XCTAssertEqual(AppHistoryBuilder.filter(groups, query: "editor").map(\.total.title), ["Fixture Editor"])
+        XCTAssertEqual(AppHistoryBuilder.filter(groups, query: " INDEX ").map(\.total.title), ["Indexer"])
+        XCTAssertEqual(AppHistoryBuilder.filter(groups, query: "cafe").map(\.total.title), ["Café Notes"])
+        XCTAssertTrue(AppHistoryBuilder.filter(groups, query: "zzz").isEmpty)
+    }
+
+    func testSearchBannerCountsMatchesAndEmptyStateQuotesTheQuery() {
+        let when = date("2026-05-01T12:00:00Z")
+        let counted = AppHistoryStatus.banner(availability: nil, applicationCount: 1, gaps: 0, counterResets: 0,
+                                              timestamp: when, searchTotal: 3)
+        XCTAssertTrue(counted.text.hasPrefix("1 of 3 applications match · updated"), counted.text)
+        XCTAssertEqual(counted.style, .info)
+
+        let single = AppHistoryStatus.banner(availability: nil, applicationCount: 0, gaps: 0, counterResets: 0,
+                                             timestamp: when, searchTotal: 1)
+        XCTAssertTrue(single.text.hasPrefix("0 of 1 application matches · updated"), single.text)
+
+        let unsearched = AppHistoryStatus.banner(availability: nil, applicationCount: 0, gaps: 0, counterResets: 0,
+                                                 timestamp: when, searchTotal: 0)
+        XCTAssertEqual(unsearched.text, "No application history recorded yet.")
+
+        let empty = AppHistoryStatus.emptyState(availability: nil, query: "zzz")
+        XCTAssertEqual(empty.title, "No applications match “zzz”")
+        XCTAssertEqual(AppHistoryStatus.emptyState(availability: nil).title, "No app history yet")
+    }
+
     // MARK: App History status
 
     func testBannerPrefersFailureThenPartialInformationThenCounts() {
@@ -378,6 +432,14 @@ final class HistoryInventoryTests: XCTestCase {
             cpuSeconds: cpu, diskReadBytes: nil, diskWriteBytes: nil,
             networkReceiveBytes: nil, networkTransmitBytes: nil,
             sampleCount: 3, gaps: gaps, counterResets: resets
+        )
+    }
+
+    private func group(name: String) -> AppHistoryGroup {
+        AppHistoryGroup(
+            total: AppHistoryRow(id: "history.total.\(AppHistoryBuilder.slug(name))", values: [name], numbers: [nil]),
+            executablePath: nil,
+            days: []
         )
     }
 

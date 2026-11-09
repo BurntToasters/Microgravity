@@ -116,6 +116,9 @@ public actor SystemMonitorCollector: MonitoringCollecting {
 
     private static let bundleMetadataCacheLimit = 256
 
+    /// Core classes do not change while the app runs, so the device tree is read once per process.
+    private static let hostProcessorTopology: ProcessorTopology? = ProcessorTopologyReader.read()
+
     private let advancedCollector: (any AdvancedMetricsCollecting)?
     private let memoryPressureLevelReader: @Sendable () -> Int32?
     private var systemCounters = CounterDeltaTracker<CounterKey>()
@@ -205,6 +208,10 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             memoryUsedBytes: memory.used,
             memoryAvailableBytes: memory.available,
             memoryTotalBytes: memory.total,
+            memoryAppBytes: memory.app,
+            memoryWiredBytes: memory.wired,
+            memoryCompressedBytes: memory.compressed,
+            memoryCachedFilesBytes: memory.cachedFiles,
             memoryPressure: memory.pressure,
             swapUsedBytes: memory.swapUsed,
             swapTotalBytes: memory.swapTotal,
@@ -212,7 +219,8 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             diskWriteBytesPerSecond: disk.writeRate,
             networkReceiveBytesPerSecond: network.receiveRate,
             networkTransmitBytesPerSecond: network.transmitRate,
-            networkInterfaces: network.interfaces)
+            networkInterfaces: network.interfaces,
+            processorTopology: Self.hostProcessorTopology)
 
         let capabilities: [MetricKind: MetricAvailability] = [
             .totalCPU: Self.availability(for: cpu.total),
@@ -319,7 +327,9 @@ public actor SystemMonitorCollector: MonitoringCollecting {
 
     private func collectMemory(at timestamp: Date) -> (used: MetricReading, available: MetricReading,
                                                        total: MetricReading, pressure: MemoryPressureSnapshot,
-                                                       swapUsed: MetricReading, swapTotal: MetricReading) {
+                                                       swapUsed: MetricReading, swapTotal: MetricReading,
+                                                       app: MetricReading, wired: MetricReading,
+                                                       compressed: MetricReading, cachedFiles: MetricReading) {
         var physicalBytes: UInt64 = 0
         var physicalLength = MemoryLayout<UInt64>.size
         let physicalResult = sysctlbyname("hw.memsize", &physicalBytes, &physicalLength, nil, 0)
@@ -336,6 +346,10 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         let memoryUsed: MetricReading
         let memoryAvailable: MetricReading
         let memoryTotal: MetricReading
+        let memoryApp: MetricReading
+        let memoryWired: MetricReading
+        let memoryCompressed: MetricReading
+        let memoryCachedFiles: MetricReading
         if memoryOK, physicalBytes > 0 {
             let breakdown = Self.memoryBreakdown(
                 physicalBytes: physicalBytes,
@@ -343,15 +357,24 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                 internalPages: UInt64(stats.internal_page_count),
                 purgeablePages: UInt64(stats.purgeable_count),
                 wirePages: UInt64(stats.wire_count),
-                compressorPages: UInt64(stats.compressor_page_count))
+                compressorPages: UInt64(stats.compressor_page_count),
+                externalPages: UInt64(stats.external_page_count))
             memoryAvailable = MetricReading(value: Double(breakdown.availableBytes), unit: .bytes, timestamp: timestamp)
             memoryTotal = MetricReading(value: Double(physicalBytes), unit: .bytes, timestamp: timestamp)
             memoryUsed = MetricReading(value: Double(breakdown.usedBytes), unit: .bytes, timestamp: timestamp)
+            memoryApp = MetricReading(value: Double(breakdown.appBytes), unit: .bytes, timestamp: timestamp)
+            memoryWired = MetricReading(value: Double(breakdown.wiredBytes), unit: .bytes, timestamp: timestamp)
+            memoryCompressed = MetricReading(value: Double(breakdown.compressedBytes), unit: .bytes, timestamp: timestamp)
+            memoryCachedFiles = MetricReading(value: Double(breakdown.cachedFilesBytes), unit: .bytes, timestamp: timestamp)
         } else {
             let reason: MetricUnavailableReason = physicalResult == 0 ? .collectionFailed : .permissionDenied
             memoryUsed = MetricReading(unavailable: .bytes, timestamp: timestamp, reason: reason)
             memoryAvailable = MetricReading(unavailable: .bytes, timestamp: timestamp, reason: reason)
             memoryTotal = MetricReading(unavailable: .bytes, timestamp: timestamp, reason: reason)
+            memoryApp = MetricReading(unavailable: .bytes, timestamp: timestamp, reason: reason)
+            memoryWired = MetricReading(unavailable: .bytes, timestamp: timestamp, reason: reason)
+            memoryCompressed = MetricReading(unavailable: .bytes, timestamp: timestamp, reason: reason)
+            memoryCachedFiles = MetricReading(unavailable: .bytes, timestamp: timestamp, reason: reason)
         }
 
         var swap = xsw_usage()
@@ -370,7 +393,7 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         }
 
         return (memoryUsed, memoryAvailable, memoryTotal, resolveMemoryPressure(at: timestamp),
-                swapUsed, swapTotal)
+                swapUsed, swapTotal, memoryApp, memoryWired, memoryCompressed, memoryCachedFiles)
     }
 
     /// The OS-reported level is the baseline on every sample. Dispatch events refine it between samples:
@@ -1020,14 +1043,26 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         return result
     }
 
+    /// Splits physical memory the way Activity Monitor does. App memory is internal pages that are not
+    /// purgeable; cached files are file-backed plus purgeable pages. `used` is App + Wired + Compressed,
+    /// clamped to physical memory. The four categories are each clamped to physical memory as well.
     static func memoryBreakdown(physicalBytes: UInt64, pageBytes: UInt64,
                                 internalPages: UInt64, purgeablePages: UInt64,
-                                wirePages: UInt64, compressorPages: UInt64) -> (usedBytes: UInt64, availableBytes: UInt64) {
+                                wirePages: UInt64, compressorPages: UInt64,
+                                externalPages: UInt64)
+        -> (usedBytes: UInt64, availableBytes: UInt64,
+            appBytes: UInt64, wiredBytes: UInt64, compressedBytes: UInt64, cachedFilesBytes: UInt64) {
+        func bytes(_ pages: UInt64) -> UInt64 {
+            let (raw, overflow) = pages.multipliedReportingOverflow(by: pageBytes)
+            return overflow ? physicalBytes : min(physicalBytes, raw)
+        }
         let nonReclaimableInternal = internalPages - min(internalPages, purgeablePages)
-        let usedPages = nonReclaimableInternal + wirePages + compressorPages
-        let (rawUsedBytes, overflow) = usedPages.multipliedReportingOverflow(by: pageBytes)
-        let usedBytes = overflow ? physicalBytes : min(physicalBytes, rawUsedBytes)
-        return (usedBytes, physicalBytes - usedBytes)
+        let appBytes = bytes(nonReclaimableInternal)
+        let wiredBytes = bytes(wirePages)
+        let compressedBytes = bytes(compressorPages)
+        let cachedFilesBytes = bytes(externalPages + purgeablePages)
+        let usedBytes = min(physicalBytes, appBytes + wiredBytes + compressedBytes)
+        return (usedBytes, physicalBytes - usedBytes, appBytes, wiredBytes, compressedBytes, cachedFilesBytes)
     }
 
     /// Capability for a discovery source. An incomplete source carries its reasons as the detail.

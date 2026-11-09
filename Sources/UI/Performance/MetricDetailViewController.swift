@@ -25,6 +25,9 @@ final class MetricDetailViewController: NSViewController {
     private let banner = StatusBannerView(style: .info)
     private let graph = MetricGraphView(style: .detail)
     private let coreGrid = CoreGridView()
+    private let legendRow = NSStackView()
+    private var legendNames: [String]?
+    private var legendSwatches: [LegendSwatchView] = []
     private let captionLabel = NSTextField(wrappingLabelWithString: "")
     private let statsGrid = MetricStatsGridView()
     private let interfaceSection = NSStackView()
@@ -36,7 +39,9 @@ final class MetricDetailViewController: NSViewController {
     private let pressureStrip = MemoryPressureStripView()
     private let swapBlock = NSStackView()
     private let swapValueLabel = NSTextField(labelWithString: "")
-    private let swapBar = CapacityBarView(tint: .systemPurple)
+    private var swapBar = CapacityBarView(tint: ColorPreferences.color(for: .memory))
+    /// Hex of the tint the swap bar was built with. The bar takes its tint at init, so it is rebuilt only when this changes.
+    private var swapBarTintKey: String?
     private let swapGraph = MetricGraphView(style: .sparkline)
 
     override func loadView() {
@@ -97,7 +102,15 @@ final class MetricDetailViewController: NSViewController {
         graph.heightAnchor.constraint(equalToConstant: 240).isActive = true
         graph.setAccessibilityElement(true)
         coreGrid.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        // The grid's height is exactly its tile rows, so the stack must neither stretch nor squeeze it: a squeezed
+        // grid would clip or overlap its last row of tiles and the caption below.
+        coreGrid.setContentHuggingPriority(.required, for: .vertical)
+        coreGrid.setContentCompressionResistancePriority(.required, for: .vertical)
         coreGrid.setAccessibilityIdentifier("performance.graph.cpu-cores")
+        legendRow.orientation = .horizontal
+        legendRow.alignment = .centerY
+        legendRow.spacing = 14
+        legendRow.setAccessibilityIdentifier("performance.legend")
 
         buildPressureBlock()
         buildSwapBlock()
@@ -119,7 +132,7 @@ final class MetricDetailViewController: NSViewController {
         contentStack.alignment = .leading
         contentStack.spacing = 12
         contentStack.translatesAutoresizingMaskIntoConstraints = false
-        for item in [header, subtitleRow, controls, stateLabel, banner, graph, coreGrid, captionLabel,
+        for item in [header, subtitleRow, controls, stateLabel, banner, graph, legendRow, coreGrid, captionLabel,
                      statsGrid, interfaceSection, memorySection] as [NSView] {
             Self.addFullWidth(item, to: contentStack)
         }
@@ -191,15 +204,15 @@ final class MetricDetailViewController: NSViewController {
         graph.setAccessibilityLabel(model.graphAccessibilityLabel)
         graph.update(series: model.series, maximum: model.maximum, mapping: .time(model.timeSpan),
                      topLabel: model.topLabel, spanLabel: model.spanLabel)
+        updateLegend(model.series)
 
         coreGrid.isHidden = !showsCores
-        coreGrid.update(cores: model.cores, mapping: .time(model.timeSpan))
+        coreGrid.update(sections: model.coreSections, mapping: .time(model.timeSpan))
 
         captionLabel.isHidden = model.caption == nil
         captionLabel.stringValue = model.caption ?? ""
         captionLabel.setAccessibilityIdentifier(model.captionIdentifier ?? "performance.detail.caption")
-        captionLabel.setAccessibilityLabel(model.caption ?? "")
-        captionLabel.setAccessibilityLabel(model.captionAccessibilityLabel)
+        captionLabel.setAccessibilityLabel(model.captionAccessibilityLabel ?? model.caption ?? "")
 
         statsGrid.update(model.stats)
 
@@ -207,10 +220,28 @@ final class MetricDetailViewController: NSViewController {
         if model.metric == .network { updateInterfaces(model.interfaces) }
 
         memorySection.isHidden = model.memory == nil
+        refreshSwapBarTint()
         if let memory = model.memory { updateMemory(memory, timeSpan: model.timeSpan) }
     }
 
     // MARK: Sections
+
+    /// Rebuilds the swap bar in place when the memory color changes. Otherwise the bar keeps its view and state.
+    private func refreshSwapBarTint() {
+        let tint = ColorPreferences.color(for: .memory)
+        let key = ColorPreferences.hexString(for: tint) ?? ""
+        guard key != swapBarTintKey else { return }
+        swapBarTintKey = key
+        let bar = CapacityBarView(tint: tint)
+        bar.setAccessibilityLabel(String(localized: "Swap used against total"))
+        if let index = swapBlock.arrangedSubviews.firstIndex(of: swapBar) {
+            swapBlock.removeArrangedSubview(swapBar)
+            swapBar.removeFromSuperview()
+            swapBlock.insertArrangedSubview(bar, at: index)
+            Self.fillWidth(bar, in: swapBlock)
+        }
+        swapBar = bar
+    }
 
     private func buildPressureBlock() {
         pressureBlock.orientation = .vertical
@@ -271,6 +302,38 @@ final class MetricDetailViewController: NSViewController {
         swapBar.setAccessibilityValue(memory.swapValue)
         swapGraph.update(series: memory.swapSeries.map { [$0] } ?? [], maximum: memory.swapMaximum,
                          mapping: .time(timeSpan))
+    }
+
+    /// Legend entries are rebuilt only when the series names change. Swatch colors are refreshed in place.
+    private func updateLegend(_ series: [MetricGraphSeries]) {
+        legendRow.isHidden = series.count <= 1
+        let names = series.map(\.name)
+        if names != legendNames {
+            legendNames = names
+            for view in legendRow.arrangedSubviews {
+                legendRow.removeArrangedSubview(view)
+                view.removeFromSuperview()
+            }
+            legendSwatches = []
+            for item in series {
+                let swatch = LegendSwatchView()
+                let label = NSTextField(labelWithString: item.name)
+                label.font = .systemFont(ofSize: 11)
+                label.textColor = .secondaryLabelColor
+                label.lineBreakMode = .byTruncatingTail
+                label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                let entry = NSStackView(views: [swatch, label])
+                entry.orientation = .horizontal
+                entry.alignment = .centerY
+                entry.spacing = 5
+                legendSwatches.append(swatch)
+                legendRow.addView(entry, in: .leading)
+            }
+        }
+        let highContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        for (swatch, item) in zip(legendSwatches, series) {
+            swatch.setColor(MetricGraphView.lineColor(for: item, highContrast: highContrast))
+        }
     }
 
     /// Interface rows are reused while the interface list keeps its order; only their text changes each sample,
@@ -361,6 +424,37 @@ final class MetricDetailViewController: NSViewController {
     }
 }
 
+/// 8 pt rounded swatch for the graph legend, filled with the same color as the matching line.
+@MainActor
+private final class LegendSwatchView: NSView {
+    private var color: NSColor = .clear
+
+    init() {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        widthAnchor.constraint(equalToConstant: 8).isActive = true
+        heightAnchor.constraint(equalToConstant: 8).isActive = true
+        setAccessibilityElement(false)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func setColor(_ color: NSColor) {
+        self.color = color
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        color.setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 2, yRadius: 2).fill()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
+
 /// Grey-on-tint state pill with a colored dot. The text field is exposed as `label` for identifiers.
 @MainActor
 private final class StateChipView: NSView {
@@ -413,6 +507,9 @@ private final class MetricStatsGridView: NSView {
     private var cells: [MetricStatCellView] = []
     private var gridView: NSGridView?
     private var columns = 0
+    /// Keeps every cell the same width. Using this instead of fixed column widths keeps the grid's minimum width
+    /// independent of its current width, so the window does not shrink to the card when the sidebar collapses.
+    private var equalWidthConstraints: [NSLayoutConstraint] = []
 
     init() {
         super.init(frame: .zero)
@@ -446,17 +543,6 @@ private final class MetricStatsGridView: NSView {
         guard !cells.isEmpty else { return }
         let desired = columnCount(for: bounds.width)
         if desired != columns { rebuildGrid(columns: desired) }
-        applyColumnWidths()
-    }
-
-    /// Fixes each column to an equal share of the width, so the grid never grows past the card.
-    private func applyColumnWidths() {
-        guard let grid = gridView, columns > 0, bounds.width > 0 else { return }
-        let spacing = grid.columnSpacing * CGFloat(columns - 1)
-        let width = floor((bounds.width - spacing) / CGFloat(columns))
-        for index in 0..<columns {
-            grid.column(at: index).width = width
-        }
     }
 
     private func columnCount(for width: CGFloat) -> Int {
@@ -468,6 +554,8 @@ private final class MetricStatsGridView: NSView {
     private func rebuildGrid(columns count: Int) {
         gridView?.removeFromSuperview()
         gridView = nil
+        NSLayoutConstraint.deactivate(equalWidthConstraints)
+        equalWidthConstraints = []
         columns = count
         guard !cells.isEmpty, count > 0 else { return }
 
@@ -495,8 +583,11 @@ private final class MetricStatsGridView: NSView {
             grid.topAnchor.constraint(equalTo: topAnchor),
             grid.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
+        if let first = cells.first {
+            equalWidthConstraints = cells.dropFirst().map { $0.widthAnchor.constraint(equalTo: first.widthAnchor) }
+            NSLayoutConstraint.activate(equalWidthConstraints)
+        }
         gridView = grid
-        applyColumnWidths()
     }
 }
 

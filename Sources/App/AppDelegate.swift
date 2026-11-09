@@ -118,6 +118,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if SettingsResetService.shared.isClearPending {
+            // Stop the main window from writing its frame back, then clear whatever it wrote since the reset.
+            windowController?.window?.setFrameAutosaveName("")
+        }
+        SettingsResetService.shared.clearAtQuitIfPending()
         // shouldTerminate already waited for the commit. This is a last attempt for any path that skipped it.
         flushHistoryInBackground()
     }

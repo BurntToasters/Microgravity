@@ -52,6 +52,12 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating, PageT
         // Settings and the sidebar footer change sampling too; keep the toolbar in step without waiting for a snapshot.
         NotificationCenter.default.addObserver(self, selector: #selector(samplingStateChanged),
                                                name: .samplingStateDidChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(colorPreferencesChanged),
+                                               name: .colorPreferencesDidChange, object: nil)
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -60,7 +66,8 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating, PageT
         let page = DynamicWindowBackgroundView()
         view = page
 
-        let header = UIComponents.header(title: String(localized: "Performance"), subtitle: "")
+        let header = UIComponents.header(title: String(localized: "Performance"),
+                                         subtitle: String(localized: "Live resource use. Hover a graph to read a sample."))
         header.toolTip = String(localized: "Live resource use. Gaps mark paused or missed samples; unavailable metrics are never drawn as zero.")
         rail.translatesAutoresizingMaskIntoConstraints = false
         rail.onSelect = { [weak self] metric in self?.selectMetric(metric) }
@@ -161,6 +168,11 @@ final class PerformanceViewController: NSViewController, SnapshotUpdating, PageT
 
     @objc private func samplingStateChanged() {
         syncToolbar()
+    }
+
+    /// Series colors are baked into the presented model, so a color change needs a fresh render.
+    @objc private func colorPreferencesChanged() {
+        rerender()
     }
 }
 

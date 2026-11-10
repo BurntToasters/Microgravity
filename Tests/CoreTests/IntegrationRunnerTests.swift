@@ -70,4 +70,36 @@ final class IntegrationRunnerTests: XCTestCase {
         let cancelled = await task.value
         XCTAssertEqual(cancelled.error, "disconnected")
     }
+    func testReapedChildIsNeverSignaled() {
+        let null = open("/dev/null", O_WRONLY)
+        defer { close(null) }
+        guard let child = SampledChild.launch(.init(executable: "/usr/bin/true", arguments: []), output: null) else { return XCTFail("launch failed") }
+        child.waitForExit()
+        XCTAssertTrue(child.exitedCleanly)
+        XCTAssertFalse(child.kill(), "a reaped child must not be signaled")
+        XCTAssertTrue(child.pollExit())
+    }
+    func testUnreapedChildIsKilled() {
+        let null = open("/dev/null", O_WRONLY)
+        defer { close(null) }
+        guard let child = SampledChild.launch(.init(executable: "/bin/sleep", arguments: ["10"]), output: null) else { return XCTFail("launch failed") }
+        XCTAssertTrue(child.kill())
+        child.waitForExit()
+        XCTAssertFalse(child.exitedCleanly)
+    }
+    func testChildEnvironmentIsExactlyPathAndLocale() async {
+        let runner = SamplingRunner(command: { _ in .init(executable: "/usr/bin/env", arguments: []) })
+        let result = await run(runner)
+        XCTAssertNil(result.error)
+        let lines = String(decoding: result.output ?? Data(), as: UTF8.self).split(separator: "\n").map(String.init).sorted()
+        XCTAssertEqual(lines, ["LC_ALL=C", "PATH=/usr/bin:/bin"])
+    }
+    func testLaunchFailureAndNonzeroExitAreReported() async {
+        let missing = SamplingRunner(command: { _ in .init(executable: "/nonexistent/sampler", arguments: []) })
+        let launchFailed = await run(missing)
+        XCTAssertEqual(launchFailed.error, "launchFailed")
+        let failing = SamplingRunner(command: { _ in .init(executable: "/usr/bin/false", arguments: []) })
+        let commandFailed = await run(failing)
+        XCTAssertEqual(commandFailed.error, "commandFailed")
+    }
 }

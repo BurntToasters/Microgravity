@@ -5,8 +5,8 @@
 
 | <img height="20" src="https://github.com/user-attachments/assets/42d7e887-4616-4e8c-b1d3-e44e01340f8c" /> macOS |
 | :-- |
-| **ZIP: [universal](https://github.com/BurntToasters/Microgravity/releases/download/v0.2.0/Microgravity-0.2.0.zip)** |
-| **Checksums: [SHA256SUMS](https://github.com/BurntToasters/Microgravity/releases/download/v0.2.0/SHA256SUMS) / [GPG signature](https://github.com/BurntToasters/Microgravity/releases/download/v0.2.0/SHA256SUMS.asc)** |
+| **ZIP: [universal](https://github.com/BurntToasters/Microgravity/releases/download/v0.2.1/Microgravity-0.2.1.zip)** |
+| **Checksums: [SHA256SUMS](https://github.com/BurntToasters/Microgravity/releases/download/v0.2.1/SHA256SUMS) / [GPG signature](https://github.com/BurntToasters/Microgravity/releases/download/v0.2.1/SHA256SUMS.asc)** |
 
 > Requires macOS 14 or later. The universal build runs natively on Apple silicon and Intel Macs.
 
@@ -18,6 +18,18 @@
 
 ### ℹ️ Enjoying Microgravity? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 <!-- downloads:end -->
+
+## 0.2.1
+
+- **Processes:** Quitting a process owned by another user now shows an administrator dialog written by the helper, naming the process and its PID. Each approval covers only that process, and the helper checks the process again after approval before quitting it.
+- **Processes:** An approval given more than 100 seconds after the request no longer quits the process. Microgravity reports that the approval came too late, and no signal is sent.
+- **Processes:** The helper registers its own authorization right, `run.rosie.microgravity.terminate`, which asks for an administrator every time and does not let root processes skip the dialog. Remove Helper leaves this right in place; it grants nothing on its own.
+- **Helper:** Release builds of the app and the helper accept each other only when both are signed with Microgravity's Developer ID and carry no entitlements that allow code injection. Development builds signed with other certificates can no longer talk to the released helper.
+- **Helper:** After an update, the helper exits once its current requests finish, so the new version of the helper runs without a restart. The helper also exits 30 seconds after the last connection closes, and starts again on demand.
+- **Helper:** A connection that never sends a valid request is closed after 10 seconds and no longer keeps the helper running.
+- **Helper:** The helper records connections, quit requests and samples, with their results, in the system log under `run.rosie.microgravity.helper`. Authorization data is never logged.
+- **Helper:** The helper now starts and cleans up `nettop` and `powermetrics` itself, so a stopped sample can never signal an unrelated process that reused the same process ID.
+- **Documentation:** Advanced Metrics documents the helper's signing, authorization and logging, notes that advanced samples need no administrator approval, and lists the checks to run on a signed build.
 
 ## 0.2.0
 

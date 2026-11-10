@@ -76,7 +76,7 @@ actor PrivilegedProcessActionController: ProcessActioning {
         guard let request = try? JSONEncoder().encode(HelperTerminationPayload(version: helperProtocolVersion, target: target, force: force)) else {
             return ProcessActionResult(identity: identity, force: force, outcome: .rejected(.helperUnavailable, detail: "Could not encode request."))
         }
-        guard let authorization = await Self.authorize(pid: identity.pid) else {
+        guard let authorization = Self.makeAuthorization() else {
             return ProcessActionResult(identity: identity, force: force, outcome: .rejected(.permissionDenied, detail: "Administrator authorization was not granted."))
         }
         let result = await Self.send(request, authorization: authorization.externalForm, requirement: requirement)
@@ -85,7 +85,9 @@ actor PrivilegedProcessActionController: ProcessActioning {
         let outcome: ProcessActionOutcome
         switch result {
         case "signalSent": outcome = .signalSent
-        case "authorizationDenied": outcome = .rejected(.permissionDenied, detail: "Administrator authorization expired or was rejected.")
+        case "authorizationDenied": outcome = .rejected(.permissionDenied, detail: "Administrator authorization was not granted.")
+        case "approvalExpired": outcome = .rejected(.permissionDenied, detail: "Administrator approval came too late. No signal was sent.")
+        case "authorizationUnavailable": outcome = .rejected(.helperUnavailable, detail: "The helper could not register its authorization right.")
         case "targetRejected": outcome = .rejected(.protectedProcess, detail: "The target exited, changed identity, or is protected.")
         case "signalFailed": outcome = .rejected(.signalFailed, detail: "The helper could not signal the process.")
         default: outcome = .rejected(.helperUnavailable, detail: result)
@@ -93,20 +95,11 @@ actor PrivilegedProcessActionController: ProcessActioning {
         return ProcessActionResult(identity: identity, force: force, outcome: outcome)
     }
 
-    /// The Security dialog blocks until the user answers, so it runs off the main actor.
-    nonisolated private static func authorize(pid: Int32) async -> AdministratorAuthorization? {
-        await Task.detached(priority: .userInitiated) {
-            PrivilegedProcessActionController.grantAdministratorAuthorization(pid: pid)
-        }.value
-    }
-
-    nonisolated private static func grantAdministratorAuthorization(pid: Int32) -> AdministratorAuthorization? {
+    /// Creates an empty authorization with no rights and no UI. The helper requests the
+    /// terminate right itself, after validating the target, so the app never prompts.
+    nonisolated private static func makeAuthorization() -> AdministratorAuthorization? {
         var reference: AuthorizationRef?
         guard AuthorizationCreate(nil, nil, [], &reference) == errAuthorizationSuccess, let reference else { return nil }
-        guard acquireAdministratorRight(reference, pid: pid) else {
-            AuthorizationFree(reference, [])
-            return nil
-        }
         var external = AuthorizationExternalForm()
         guard AuthorizationMakeExternalForm(reference, &external) == errAuthorizationSuccess else {
             AuthorizationFree(reference, [])
@@ -116,33 +109,13 @@ actor PrivilegedProcessActionController: ProcessActioning {
         return AdministratorAuthorization(reference: reference, externalForm: form)
     }
 
-    /// Requests only the admin right; the environment prompt explains why the dialog appears.
-    /// The prompt bytes and C key stay alive for the whole AuthorizationCopyRights call.
-    nonisolated private static func acquireAdministratorRight(_ reference: AuthorizationRef, pid: Int32) -> Bool {
-        var prompt = Array("Microgravity needs an administrator to quit “PID \(pid)”, which belongs to another user.".utf8)
-        return prompt.withUnsafeMutableBytes { promptBytes in
-            kAuthorizationEnvironmentPrompt.withCString { promptKey in
-                var environmentItem = AuthorizationItem(name: promptKey, valueLength: promptBytes.count,
-                                                        value: promptBytes.baseAddress, flags: 0)
-                return withUnsafeMutablePointer(to: &environmentItem) { environmentItems in
-                    var environment = AuthorizationEnvironment(count: 1, items: environmentItems)
-                    return "system.privilege.admin".withCString { name in
-                        var item = AuthorizationItem(name: name, valueLength: 0, value: nil, flags: 0)
-                        return withUnsafeMutablePointer(to: &item) { items in
-                            var rights = AuthorizationRights(count: 1, items: items)
-                            return AuthorizationCopyRights(reference, &rights, &environment,
-                                                           [.interactionAllowed, .extendRights], nil) == errAuthorizationSuccess
-                        }
-                    }
-                }
-            }
-        }
-    }
-
+    /// The helper waits for the user to answer its approval dialog before replying,
+    /// so this timeout covers that wait as well as the signal. It must stay above
+    /// `TerminationService.approvalDeadline`, after which the helper sends no signal.
     private static func send(_ request: Data, authorization: Data, requirement: String) async -> String {
         await withCheckedContinuation { continuation in
             let connection = NSXPCConnection(machServiceName: helperMachService, options: .privileged)
-            let reply = XPCSingleReply(continuation, connection: connection, timeout: 5,
+            let reply = XPCSingleReply(continuation, connection: connection, timeout: 120,
                                        timeoutValue: "Helper connection timed out.")
             connection.setCodeSigningRequirement(requirement)
             connection.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)

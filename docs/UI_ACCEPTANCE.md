@@ -88,6 +88,10 @@ and the Settings caption must match it.
   `/sbin/`. A process whose executable path cannot be read is also treated as
   protected, and so is any process the OS flags as a system process.
 - The helper never signals its own process or the requesting client.
+- Each quit needs its own administrator approval. The dialog names the process
+  and PID, and the helper writes its text. Cancel sends no signal. The approval
+  covers only the process the helper signals. See
+  [ADVANCED_METRICS.md](ADVANCED_METRICS.md#helper-trust-and-authorization).
 - Settings states the limit: "Lets you quit processes owned by other standard
   users. System and root processes stay protected."
 - Widening this policy is a product decision. It requires updating this section,

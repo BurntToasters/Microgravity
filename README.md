@@ -167,6 +167,7 @@ Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for build and
 - **Product page:** <https://rosie.run/microgravity> — overview, screenshots, and download links.
 - **Help center:** <https://help.rosie.run/microgravity/en-us> — setup and troubleshooting.
 - **GitHub Issues:** <https://github.com/BurntToasters/Microgravity/issues> — bug reports and feature requests.
+- **Star the repository:** <https://github.com/BurntToasters/Microgravity> — if Microgravity is useful, a star helps other Mac users find it.
 - **General contact:** <https://help.rosie.run/contact>.
 - **Support development:** <https://rosie.run/support>.
 

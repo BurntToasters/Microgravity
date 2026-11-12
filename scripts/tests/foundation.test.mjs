@@ -283,8 +283,8 @@ test("release prepare skips the UI automation suite unless MICROGRAVITY_RELEASE_
   assert.deepEqual(releaseTestArguments({ MICROGRAVITY_RELEASE_UI_TESTS: "1" }), []);
 });
 
-test("GitHub release title is the version tag without the app name", async () => {
+test("GitHub release title includes the app name and version", async () => {
   const { expectedDraftTarget } = await import("../release.mjs");
-  assert.equal(expectedDraftTarget({ tag: "v0.1.1", version: "0.1.1", channel: "stable" }, "abc").title, "v0.1.1");
-  assert.equal(expectedDraftTarget({ tag: "v0.2.0-beta.1", version: "0.2.0-beta.1", channel: "beta" }, "abc").title, "v0.2.0-beta.1");
+  assert.equal(expectedDraftTarget({ tag: "v0.1.1", version: "0.1.1", channel: "stable" }, "abc").title, "Microgravity 0.1.1");
+  assert.equal(expectedDraftTarget({ tag: "v0.2.0-beta.1", version: "0.2.0-beta.1", channel: "beta" }, "abc").title, "Microgravity 0.2.0-beta.1");
 });

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a bug or request a feature
+    url: https://github.com/BurntToasters/Microgravity/issues
+    about: Open the issue tracker to report a problem or suggest an improvement.
+  - name: Microgravity product page
+    url: https://rosie.run/microgravity
+    about: Learn about Microgravity, see screenshots, and find download and support links.

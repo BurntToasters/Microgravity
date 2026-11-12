@@ -43,9 +43,13 @@ export function releaseHeader(info) {
   ].join("\n");
 }
 
+export function releaseIntro() {
+  return `Microgravity is a free, open-source macOS process and system monitor — a Task Manager and Activity Monitor alternative with per-app CPU, disk and network history, plus system-wide GPU and energy graphs. [See screenshots and download](https://rosie.run/microgravity).\n\n`;
+}
+
 export function releaseNotes(info, contents) {
   const section = changelogSection(info.version, contents).replace(/^## \S+[^\n]*/, `## Changes in \`${info.tag}:\``);
-  return `${releaseHeader(info)}\n${section}\n\nSource: ${info.tag} at ${info.version}. See the tagged repository for the complete corresponding source and bundled notices.\n`;
+  return `${releaseIntro()}${releaseHeader(info)}\n${section}\n\nSource: ${info.tag} at ${info.version}. See the tagged repository for the complete corresponding source and bundled notices.\n`;
 }
 
 // Text that sync-version and early drafts write in place of real notes. A release section containing it is not publishable.

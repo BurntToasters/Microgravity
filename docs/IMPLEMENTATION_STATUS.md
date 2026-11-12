@@ -78,10 +78,10 @@ exact minimum and custom 1100 × 700 frames stable across sidebar selection,
 the showPage menu action, and appearance changes, re-expansion from minimum,
 and the fixture size-flag parser. A manual drag-resize check is still needed.
 
-Four app-only screenshots are committed under [`screenshots/`](screenshots/).
-Processes and Performance (dark) are from an earlier signed test run. The
-Settings images (Light and Dark) are the default-size captures from the final
-visual matrix run, downscaled to 2080 px wide. All four show fixture states. No
+Marketing screenshots are committed under [`screenshots/`](screenshots/) and
+use privacy-safe demo data; no host process names, user names, or real process
+identifiers are shown. They are captured from the debug fixture runner and
+cover Processes, Performance, and Settings in dark and light appearance. No
 manual VoiceOver or live controlled-process sheet review is claimed.
 
 ## Implemented

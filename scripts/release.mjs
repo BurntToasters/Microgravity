@@ -24,7 +24,7 @@ function ghOutput(args) {
 }
 
 export function expectedDraftTarget(info, commit) {
-  return { tag: info.tag, target: commit, title: info.tag, prerelease: info.channel === "beta" };
+  return { tag: info.tag, target: commit, title: `Microgravity ${info.version}`, prerelease: info.channel === "beta" };
 }
 
 export function betaMirrorTarget(channel, latestStableTag) {

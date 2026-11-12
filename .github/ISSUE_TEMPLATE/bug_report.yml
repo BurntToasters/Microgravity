@@ -1,0 +1,109 @@
+name: Bug report
+description: Report a reproducible problem with Microgravity.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem. Please search existing issues first.
+
+        Do not report security vulnerabilities here. Follow the private process in [SECURITY.md](https://github.com/BurntToasters/Microgravity/blob/main/SECURITY.md).
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      description: Open  > About This Mac, then click More Info.
+      placeholder: "macOS 14.6 (23G80)"
+    validations:
+      required: true
+
+  - type: input
+    id: microgravity-version
+    attributes:
+      label: Microgravity version
+      description: Shown at the bottom of Settings.
+      placeholder: "Microgravity 0.2.1 (5)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation
+      description: How are you running Microgravity?
+      options:
+        - GitHub release (ZIP)
+        - Built from source
+    validations:
+      required: true
+
+  - type: dropdown
+    id: architecture
+    attributes:
+      label: Mac architecture
+      options:
+        - Apple silicon
+        - Intel
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Give the smallest sequence that reliably shows the problem.
+      placeholder: |
+        1. Open Microgravity.
+        2. Click ...
+        3. See ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste relevant logs with personal information removed. Helper activity is logged under the subsystem shown below.
+      placeholder: |
+        log stream --predicate 'subsystem == "run.rosie.microgravity.helper"' --info
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or recordings
+      description: Drag images or video into this field after creating the issue. Remove personal information first.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I removed personal information, tokens, and other secrets from logs and screenshots.
+          required: true
+        - label: This is not a security vulnerability, or I have reported it privately according to SECURITY.md.
+          required: true
+        - label: I agree to follow this project's Code of Conduct.
+          required: true

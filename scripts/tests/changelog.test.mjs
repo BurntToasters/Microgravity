@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { changelogSection, gpgFingerprint, gpgPublicKeyUrl, placeholderReleaseNotes, releaseHeader, releaseNotes, releaseNotesFailures } from "../lib/changelog.mjs";
+import { changelogSection, gpgFingerprint, gpgPublicKeyUrl, placeholderReleaseNotes, releaseHeader, releaseIntro, releaseNotes, releaseNotesFailures } from "../lib/changelog.mjs";
 import { root } from "../lib/core.mjs";
 
 // The section for the version in package.json must carry real notes, not the placeholder.
@@ -33,9 +33,10 @@ test("changelogSection returns the final release through end of file", () => {
   assert.equal(changelogSection("1.0.0", contents), "## 1.0.0\n\n- Initial change.");
 });
 
-test("releaseNotes puts the download header above the section and ends with tagged source attribution", () => {
+test("releaseNotes puts the product intro and download header above the section and ends with tagged source attribution", () => {
   const notes = releaseNotes({ version: "2.0.0", tag: "v2.0.0", channel: "stable" }, contents);
-  assert.ok(notes.startsWith(releaseHeader({ version: "2.0.0", tag: "v2.0.0", channel: "stable" })));
+  assert.ok(notes.startsWith(releaseIntro()));
+  assert.ok(notes.includes(releaseHeader({ version: "2.0.0", tag: "v2.0.0", channel: "stable" })));
   assert.ok(notes.endsWith("## Changes in `v2.0.0:`\n\n- Newest change.\n\nSource: v2.0.0 at 2.0.0. See the tagged repository for the complete corresponding source and bundled notices.\n"));
   assert.doesNotMatch(notes, /Beta build/);
 });

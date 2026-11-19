@@ -7,37 +7,13 @@ struct HelperTerminationRequest: Codable, Sendable {
 }
 
 enum HelperSampleKind: String, Codable, CaseIterable, Sendable {
-    case nettop
     case powermetrics
-    case nettopStream
     case processMetrics
 }
 
 struct HelperSampleRequest: Codable, Sendable {
     let version: Int
     let kind: HelperSampleKind
-    let sinceSequence: UInt64?
-
-    init(version: Int, kind: HelperSampleKind, sinceSequence: UInt64? = nil) {
-        self.version = version
-        self.kind = kind
-        self.sinceSequence = sinceSequence
-    }
-}
-
-struct HelperNettopDeltaEntry: Codable, Equatable, Sendable {
-    let pid: Int32
-    let bytesIn: UInt64
-    let bytesOut: UInt64
-}
-
-struct HelperNettopStreamPayload: Codable, Equatable, Sendable {
-    let health: NettopStreamHealth
-    let intervalStart: Date?
-    let intervalEnd: Date?
-    let sequence: UInt64
-    let entries: [HelperNettopDeltaEntry]
-    let detail: String?
 }
 
 struct HelperProcessMetricEntry: Codable, Equatable, Sendable {

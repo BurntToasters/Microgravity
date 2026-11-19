@@ -10,6 +10,138 @@ private struct StubAdvancedMetricsCollector: AdvancedMetricsCollecting {
 }
 
 final class NettopStreamTests: XCTestCase {
+    private var services: [NettopStreamService] = []
+    private var abandonedChildren: [SampledChild] = []
+    private var markers: [String] = []
+
+    override func tearDown() {
+        for service in services { service.stop() }
+        services.removeAll()
+        for child in abandonedChildren {
+            child.kill()
+            child.waitForExit()
+        }
+        abandonedChildren.removeAll()
+        for marker in markers { _ = try? runTool("/usr/bin/pkill", ["-9", "-f", marker]) }
+        markers.removeAll()
+        super.tearDown()
+    }
+
+    private func runTool(_ path: String, _ arguments: [String]) throws -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus
+    }
+
+    /// True when `pgrep -f` finds a process whose command line contains `marker`.
+    private func markerProcessExists(_ marker: String) throws -> Bool {
+        let status = try runTool("/usr/bin/pgrep", ["-f", marker])
+        switch status {
+        case 0: return true
+        case 1: return false
+        default:
+            XCTFail("pgrep exited with status \(status)")
+            return true
+        }
+    }
+
+    private func waitUntilMarkerGone(_ marker: String, within seconds: TimeInterval) throws -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        repeat {
+            if try !markerProcessExists(marker) { return true }
+            usleep(100_000)
+        } while Date() < deadline
+        return false
+    }
+
+    private func waitForHealthyPID(_ pid: Int32, on service: NettopStreamService, within seconds: TimeInterval) -> NettopStreamSnapshot? {
+        let deadline = Date().addingTimeInterval(seconds)
+        repeat {
+            let snapshot = service.latestSnapshot()
+            if snapshot.health == .healthy, snapshot.totalsByPID[pid] != nil { return snapshot }
+            usleep(100_000)
+        } while Date() < deadline
+        return nil
+    }
+
+    private func fakeNettopCommand(marker: String) -> SamplingRunner.Command {
+        let script = "while :; do echo \",bytes_in,bytes_out\"; echo \"proc.4242,10,20\"; sleep 0.3; done # \(marker)"
+        return SamplingRunner.Command(executable: "/bin/sh", arguments: ["-c", script])
+    }
+
+    func testParserAcceptsScriptTranscriptHeaderAndCarriageReturns() {
+        XCTAssertEqual(NettopDeltaFrameParser.sanitized("^D\u{8}\u{8},bytes_in,bytes_out\r"), ",bytes_in,bytes_out")
+        XCTAssertEqual(NettopDeltaFrameParser.sanitized("Safari.120,1,2\r"), "Safari.120,1,2")
+
+        let lines = [
+            "^D\u{8}\u{8},bytes_in,bytes_out\r",
+            "Safari.120,10000,5000\r",
+            "Mail.240,250,100\r",
+            ",bytes_in,bytes_out\r",
+            "Safari.120,1024,512\r",
+            ",bytes_in,bytes_out\r",
+            "Mail.240,0,4096\r"
+        ]
+        let t0 = Date(timeIntervalSince1970: 1_800_000_400)
+        var parser = NettopDeltaFrameParser()
+        var frames: [NettopDeltaFrame] = []
+        for (offset, line) in lines.enumerated() {
+            if let frame = parser.consumeLine(line, at: t0.addingTimeInterval(Double(offset))) {
+                frames.append(frame)
+            }
+        }
+        if let finalFrame = parser.commitPendingFrame(at: t0.addingTimeInterval(Double(lines.count))) {
+            frames.append(finalFrame)
+        }
+
+        XCTAssertEqual(frames.count, 3)
+        XCTAssertTrue(frames[0].isBaseline)
+        XCTAssertEqual(frames[0].entries[120]?.bytesIn, 10_000)
+        XCTAssertEqual(frames[0].entries[240]?.bytesOut, 100)
+        XCTAssertFalse(frames[1].isBaseline)
+        XCTAssertEqual(frames[1].entries[120]?.bytesIn, 1_024)
+        XCTAssertFalse(frames[2].isBaseline)
+        XCTAssertEqual(frames[2].entries[240]?.bytesOut, 4_096)
+    }
+
+    func testStopTakesDownChildLaunchedUnderScript() throws {
+        try XCTSkipIf(!FileManager.default.isExecutableFile(atPath: "/usr/bin/script"), "/usr/bin/script is missing")
+        let marker = "mg-wp1-stop-\(UUID().uuidString)"
+        markers.append(marker)
+        let service = NettopStreamService(command: fakeNettopCommand(marker: marker))
+        services.append(service)
+
+        let healthy = waitForHealthyPID(4242, on: service, within: 5)
+        XCTAssertNotNil(healthy, "stream did not become healthy with pid 4242 within 5 s")
+        XCTAssertTrue(try markerProcessExists(marker), "fake nettop was not running")
+
+        service.stop()
+        XCTAssertTrue(try waitUntilMarkerGone(marker, within: 2), "child survived stop()")
+    }
+
+    func testAbandonedTransportTakesChildDown() throws {
+        try XCTSkipIf(!FileManager.default.isExecutableFile(atPath: "/usr/bin/script"), "/usr/bin/script is missing")
+        let marker = "mg-wp1-abandon-\(UUID().uuidString)"
+        markers.append(marker)
+        let service = NettopStreamService(command: fakeNettopCommand(marker: marker))
+        services.append(service)
+
+        XCTAssertNotNil(waitForHealthyPID(4242, on: service, within: 5), "stream did not become healthy within 5 s")
+
+        let abandoned = service.abandonTransportForTesting()
+        if let abandoned { abandonedChildren.append(abandoned) }
+        XCTAssertNotNil(abandoned)
+        XCTAssertTrue(try waitUntilMarkerGone(marker, within: 3), "child survived the read end closing")
+
+        abandoned?.kill()
+        abandoned?.waitForExit()
+    }
+
     func testParserSkipsFrame0BaselineAndEmitsSubsequentDeltaFrames() {
         let capture = """
         ,bytes_in,bytes_out,

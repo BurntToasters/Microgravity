@@ -6,6 +6,9 @@ actor HelperSamplingClient {
     /// Failure reason reported when the privileged helper is not registered, enabled, or verifiable.
     static let unavailableError = "helperUnavailable"
 
+    /// While the daemon was last seen enabled, its status is re-read at most this often (seconds of uptime).
+    static let statusRecheckInterval: TimeInterval = 5
+
     /// Requirement verified by the latest `prepareRefresh()`; nil when the helper was unavailable then.
     private var requirement: String?
     private var cachedConnection: NSXPCConnection?
@@ -13,13 +16,37 @@ actor HelperSamplingClient {
     private var cachedConnectionID: UUID?
     private var pendingReplies: [UUID: CachedXPCReply] = [:]
 
-    nonisolated var supportsProtocolV2: Bool { true }
+    private let daemonIsEnabled: @Sendable () -> Bool
+    private let signingRequirement: @Sendable () -> String?
+    private let uptime: @Sendable () -> TimeInterval
+    /// Set once a signing requirement has been verified; a failed lookup leaves it nil so it is retried.
+    private var verifiedRequirement: String?
+    private var lastStatusWasEnabled = false
+    private var lastStatusCheckUptime: TimeInterval = 0
+    /// Set by any connection invalidation, so the next `prepareRefresh()` re-reads the daemon status.
+    private var statusRecheckRequired = false
+
+    /// Production defaults: the daemon's `SMAppService` status, the app's own signing requirement, and system uptime.
+    init(daemonIsEnabled: @escaping @Sendable () -> Bool = {
+             SMAppService.daemon(plistName: helperMachService + ".plist").status == .enabled
+         },
+         signingRequirement: @escaping @Sendable () -> String? = {
+             SigningIdentity.requirement(for: helperSigningIdentifier)
+         },
+         uptime: @escaping @Sendable () -> TimeInterval = {
+             ProcessInfo.processInfo.systemUptime
+         }) {
+        self.daemonIsEnabled = daemonIsEnabled
+        self.signingRequirement = signingRequirement
+        self.uptime = uptime
+    }
 
     /// Checks daemon registration and signing once per refresh, not once per sample kind.
+    /// Status is cheap to re-read only so often: while enabled it is re-checked at most every
+    /// `statusRecheckInterval` and after a connection invalidation; while not enabled, on every call.
     func prepareRefresh() async -> Bool {
         requirement = nil
-        guard SMAppService.daemon(plistName: helperMachService + ".plist").status == .enabled,
-              let verified = SigningIdentity.requirement(for: helperSigningIdentifier) else {
+        guard daemonStatusIsEnabled(), let verified = verifiedSigningRequirement() else {
             invalidateConnection(reason: Self.unavailableError)
             return false
         }
@@ -27,23 +54,39 @@ actor HelperSamplingClient {
         return true
     }
 
-    func sample(_ kind: HelperSampleKind) async -> HelperSampleResponse {
-        await sample(kind, sinceSequence: nil)
+    private func daemonStatusIsEnabled() -> Bool {
+        let now = uptime()
+        if lastStatusWasEnabled, !statusRecheckRequired, now >= lastStatusCheckUptime,
+           now - lastStatusCheckUptime < Self.statusRecheckInterval {
+            return true
+        }
+        let enabled = daemonIsEnabled()
+        lastStatusWasEnabled = enabled
+        lastStatusCheckUptime = now
+        statusRecheckRequired = false
+        return enabled
+    }
+
+    private func verifiedSigningRequirement() -> String? {
+        if let verifiedRequirement { return verifiedRequirement }
+        guard let fresh = signingRequirement() else { return nil }
+        verifiedRequirement = fresh
+        return fresh
     }
 
     /// Must follow `prepareRefresh()` in the same refresh; otherwise reports `helperUnavailable`.
-    func sample(_ kind: HelperSampleKind, sinceSequence: UInt64?) async -> HelperSampleResponse {
+    func sample(_ kind: HelperSampleKind) async -> HelperSampleResponse {
         func failure(_ reason: String) -> HelperSampleResponse {
             HelperSampleResponse(version: helperProtocolVersion, kind: kind, capturedAt: Date(), output: nil, error: reason)
         }
         guard let codeRequirement = requirement else { return failure(Self.unavailableError) }
         guard let request = try? JSONEncoder().encode(
-            HelperSampleRequest(version: helperProtocolVersion, kind: kind, sinceSequence: sinceSequence)
+            HelperSampleRequest(version: helperProtocolVersion, kind: kind)
         ) else { return failure("invalidRequest") }
 
         let (connection, connectionID) = activeConnection(for: codeRequirement)
         let callID = UUID()
-        let timeout: TimeInterval = (kind == .nettopStream || kind == .processMetrics) ? 10 : 25
+        let timeout: TimeInterval = kind == .processMetrics ? 10 : 25
 
         let response = await withCheckedContinuation { continuation in
             let token = CachedXPCReply(continuation, timeout: timeout, timeoutValue: failure("timedOut")) { [weak self] in
@@ -98,7 +141,9 @@ actor HelperSamplingClient {
         invalidateConnection(reason: reason)
     }
 
-    private func invalidateConnection(reason: String) {
+    /// Internal so tests can simulate a connection drop; production reaches it from the XPC handlers and error paths.
+    func invalidateConnection(reason: String) {
+        statusRecheckRequired = true
         let staleConnection = cachedConnection
         cachedConnection = nil
         cachedRequirement = nil

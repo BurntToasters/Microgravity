@@ -56,6 +56,12 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         case diskWrite(ProcessIdentity)
     }
 
+    /// The last rate read from a helper capture, so a reused capture returns the same reading.
+    private struct HelperCounterReading {
+        let capturedAt: Date
+        let reading: MetricReading
+    }
+
     private struct RawProcess {
         let identity: ProcessIdentity
         let parentPID: Int32
@@ -132,6 +138,7 @@ public actor SystemMonitorCollector: MonitoringCollecting {
     private let regularAppPIDsProvider: (@Sendable () -> Set<Int32>)?
     private var systemCounters = CounterDeltaTracker<CounterKey>()
     private var processCounters = CounterDeltaTracker<ProcessCounterKey>()
+    private var helperCounterReadings: [ProcessCounterKey: HelperCounterReading] = [:]
     private var processTextCache: [ProcessIdentity: CachedProcessText] = [:]
     /// Keyed by standardized executable path; nil records a path with no enclosing .app bundle.
     private var applicationBundlePathCache: [String: String?] = [:]
@@ -629,23 +636,27 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             let threadCount: Int32?
             let cpuTotalSeconds: MetricReading?
             let resolvedCPUNanos: UInt64?
+            let cpuCapturedAt: Date?
             if taskAvailable, let timebase = Self.machTimebase {
                 // proc_taskinfo CPU times are Mach absolute-time ticks, not nanoseconds.
                 let ticks = task.pti_total_user &+ task.pti_total_system
                 resolvedCPUNanos = Self.nanoseconds(fromMachTicks: ticks, timebase: timebase)
+                cpuCapturedAt = nil
                 threadCount = task.pti_threadnum
             } else if let helperNanos = supplement?.cpuTotalNanoseconds {
                 resolvedCPUNanos = helperNanos
+                cpuCapturedAt = supplement?.capturedAt
                 threadCount = supplement?.threadCount
             } else {
                 resolvedCPUNanos = nil
+                cpuCapturedAt = nil
                 threadCount = supplement?.threadCount
             }
             if let cpuNanos = resolvedCPUNanos {
                 cpuTotalSeconds = MetricReading(value: Double(cpuNanos) / 1_000_000_000,
                                                 unit: .seconds, timestamp: timestamp)
-                let delta = processCounters.update(cpuNanos, for: .cpu(identity), at: timestamp)
-                cpuReading = delta.reading(unit: .percent, timestamp: timestamp) { value, elapsed in
+                cpuReading = processRateReading(cpuNanos, for: .cpu(identity), capturedAt: cpuCapturedAt,
+                                                tick: timestamp, unit: .percent) { value, elapsed in
                     guard capacityCores > 0 else { return 0 }
                     return Double(value) / elapsed / 1_000_000_000 / Double(capacityCores) * 100
                 }
@@ -669,6 +680,8 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                 : (supplement?.memoryBytes ?? (taskAvailable ? task.pti_resident_size : nil))
             let resolvedDiskRead: UInt64? = usageAvailable ? usage.ri_diskio_bytesread : supplement?.diskReadBytes
             let resolvedDiskWrite: UInt64? = usageAvailable ? usage.ri_diskio_byteswritten : supplement?.diskWriteBytes
+            // Helper disk counters are timed at their capture; local reads at the tick.
+            let diskCapturedAt: Date? = usageAvailable ? nil : supplement?.capturedAt
 
             let fallbackReason: MetricUnavailableReason = usageErrno == EPERM ? .permissionDenied : .collectionFailed
             let memoryReading: MetricReading
@@ -681,8 +694,8 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             let diskReadRate: MetricReading
             if let resolvedDiskRead {
                 diskReadTotal = MetricReading(value: Double(resolvedDiskRead), unit: .bytes, timestamp: timestamp)
-                diskReadRate = processCounters.update(resolvedDiskRead, for: .diskRead(identity), at: timestamp)
-                    .reading(unit: .bytesPerSecond, timestamp: timestamp) { Double($0) / $1 }
+                diskReadRate = processRateReading(resolvedDiskRead, for: .diskRead(identity), capturedAt: diskCapturedAt,
+                                                  tick: timestamp, unit: .bytesPerSecond) { Double($0) / $1 }
             } else {
                 processCounters.remove(.diskRead(identity))
                 diskReadTotal = MetricReading(unavailable: .bytes, timestamp: timestamp, reason: fallbackReason)
@@ -692,8 +705,8 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             let diskWriteRate: MetricReading
             if let resolvedDiskWrite {
                 diskWriteTotal = MetricReading(value: Double(resolvedDiskWrite), unit: .bytes, timestamp: timestamp)
-                diskWriteRate = processCounters.update(resolvedDiskWrite, for: .diskWrite(identity), at: timestamp)
-                    .reading(unit: .bytesPerSecond, timestamp: timestamp) { Double($0) / $1 }
+                diskWriteRate = processRateReading(resolvedDiskWrite, for: .diskWrite(identity), capturedAt: diskCapturedAt,
+                                                   tick: timestamp, unit: .bytesPerSecond) { Double($0) / $1 }
             } else {
                 processCounters.remove(.diskWrite(identity))
                 diskWriteTotal = MetricReading(unavailable: .bytes, timestamp: timestamp, reason: fallbackReason)
@@ -725,9 +738,11 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                                       category: category))
             identities.insert(identity)
         }
-        processCounters.retain(Set(identities.flatMap {
+        let liveCounterKeys = Set(identities.flatMap {
             [ProcessCounterKey.cpu($0), .diskRead($0), .diskWrite($0)]
-        }))
+        })
+        processCounters.retain(liveCounterKeys)
+        helperCounterReadings = helperCounterReadings.filter { liveCounterKeys.contains($0.key) }
         processTextCache = processTextCache.filter { identities.contains($0.key) }
 
         let incompleteDetail: String?
@@ -739,6 +754,25 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             incompleteDetail = nil
         }
         return (records, incompleteDetail == nil, incompleteDetail)
+    }
+
+    /// Rate of a per-process monotonic counter. A local read is timed at the collection tick. A helper value with a
+    /// capture time is timed at that capture, because the helper refreshes asynchronously: a reused capture returns
+    /// its stored reading (not 0 %), and a new one is rated over the true time between captures (not a 2x spike).
+    private func processRateReading(_ value: UInt64, for key: ProcessCounterKey, capturedAt: Date?, tick: Date,
+                                    unit: MetricUnit,
+                                    valueTransform: (UInt64, TimeInterval) -> Double) -> MetricReading {
+        guard let capturedAt else {
+            return processCounters.update(value, for: key, at: tick)
+                .reading(unit: unit, timestamp: tick, valueTransform: valueTransform)
+        }
+        if let stored = helperCounterReadings[key], stored.capturedAt == capturedAt {
+            return stored.reading
+        }
+        let reading = processCounters.update(value, for: key, at: capturedAt)
+            .reading(unit: unit, timestamp: capturedAt, valueTransform: valueTransform)
+        helperCounterReadings[key] = HelperCounterReading(capturedAt: capturedAt, reading: reading)
+        return reading
     }
 
     private enum ProcessEnumerationFailure: Error {

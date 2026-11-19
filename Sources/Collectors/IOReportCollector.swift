@@ -47,13 +47,25 @@ final class IOReportCollector: @unchecked Sendable {
         let stateGetResidency: StateGetResidencyFn
     }
 
+    /// Per-tick result of one delta: energy summed per role (joules) and the GPU residency percentage.
+    private struct ParsedDelta {
+        var gpuPercent: Double?
+        var joules: [EnergyChannelRole: Double] = [:]
+    }
+
     private let lock = NSLock()
     private var symbols: Symbols?
     private var subscription: CFTypeRef?
     private var subscribedChannels: CFMutableDictionary?
+    /// Role of each subscribed "Energy Model" channel, keyed by channel name. Computed once at subscription.
+    private var channelRoles: [String: EnergyChannelRole] = [:]
     private var previousSample: CFDictionary?
     private var previousTimestamp: Date?
     private var initializationFailed = false
+    private var cpuEnergy = EnergyRateTracker()
+    private var gpuEnergy = EnergyRateTracker()
+    private var aneEnergy = EnergyRateTracker()
+    private var dramEnergy = EnergyRateTracker()
 
     deinit {
         lock.lock()
@@ -124,7 +136,24 @@ final class IOReportCollector: @unchecked Sendable {
         }
 
         let interval = DateInterval(start: previousTimestamp, end: timestamp)
-        return Self.parseDelta(delta, elapsed: elapsed, interval: interval, symbols: symbols)
+        let parsed = Self.parseDelta(delta, roles: channelRoles, symbols: symbols)
+
+        // Slow counters report 0 J on some ticks; each tracker holds its rate across those ticks.
+        let cpuW = Self.watts(parsed.joules[.cpu] ?? parsed.joules[.cpuCluster], tracker: &cpuEnergy, interval: interval)
+        let gpuW = Self.watts(parsed.joules[.gpu], tracker: &gpuEnergy, interval: interval)
+        let aneW = Self.watts(parsed.joules[.ane], tracker: &aneEnergy, interval: interval)
+        let dramW = Self.watts(parsed.joules[.dram], tracker: &dramEnergy, interval: interval)
+
+        let components: ComponentPowerReadings?
+        if cpuW != nil || gpuW != nil || aneW != nil || dramW != nil {
+            components = ComponentPowerReadings(cpuWatts: cpuW, gpuWatts: gpuW, aneWatts: aneW, dramWatts: dramW,
+                                                interval: interval, detail: "SoC Component Power (IOReport)")
+        } else {
+            components = nil
+        }
+
+        guard parsed.gpuPercent != nil || components != nil else { return nil }
+        return IOReportReading(gpuUtilizationPercent: parsed.gpuPercent, components: components, interval: interval)
         #else
         return nil
         #endif
@@ -157,14 +186,35 @@ final class IOReportCollector: @unchecked Sendable {
             return false
         }
 
-        let energy = copyGroup("Energy Model" as CFString, nil, 0, 0, 0)?.takeRetainedValue()
-        let gpu = copyGroup("GPU Stats" as CFString, nil, 0, 0, 0)?.takeRetainedValue()
+        let symbols = Symbols(
+            handle: handle,
+            copyChannelsInGroup: copyGroup,
+            mergeChannels: merge,
+            createSubscription: createSub,
+            createSamples: createSamples,
+            createSamplesDelta: createSamplesDelta,
+            iterate: iterate,
+            channelGetGroup: getGroup,
+            channelGetSubGroup: getSubGroup,
+            channelGetName: getName,
+            channelGetUnitLabel: getUnit,
+            simpleGetInt: simpleInt,
+            stateGetCount: stateCount,
+            stateGetName: stateName,
+            stateGetResidency: stateResidency
+        )
+
+        // Subscribe only to channels that feed a reading. The unfiltered groups hold hundreds of per-core and
+        // detail channels that are fetched and parsed on every tick for nothing.
+        let energySource = copyGroup("Energy Model" as CFString, nil, 0, 0, 0)?.takeRetainedValue()
+        let energySubset = energySource.flatMap { Self.energySubset(of: $0, symbols: symbols) }
+        let gpu = copyGroup("GPU Stats" as CFString, "GPU Performance States" as CFString, 0, 0, 0)?.takeRetainedValue()
 
         let combined: CFMutableDictionary
-        if let energy, let gpu {
-            merge(energy, gpu, nil)
-            combined = energy
-        } else if let only = energy ?? gpu {
+        if let energySubset, let gpu {
+            merge(energySubset.channels, gpu, nil)
+            combined = energySubset.channels
+        } else if let only = energySubset?.channels ?? gpu {
             combined = only
         } else {
             dlclose(handle)
@@ -183,71 +233,72 @@ final class IOReportCollector: @unchecked Sendable {
             return false
         }
 
-        symbols = Symbols(
-            handle: handle,
-            copyChannelsInGroup: copyGroup,
-            mergeChannels: merge,
-            createSubscription: createSub,
-            createSamples: createSamples,
-            createSamplesDelta: createSamplesDelta,
-            iterate: iterate,
-            channelGetGroup: getGroup,
-            channelGetSubGroup: getSubGroup,
-            channelGetName: getName,
-            channelGetUnitLabel: getUnit,
-            simpleGetInt: simpleInt,
-            stateGetCount: stateCount,
-            stateGetName: stateName,
-            stateGetResidency: stateResidency
-        )
+        self.symbols = symbols
         subscription = sub
         subscribedChannels = subDict
+        channelRoles = energySubset?.roles ?? [:]
         return true
     }
 
+    /// Returns a mutable copy of an "Energy Model" channel dictionary whose channel list holds only channels
+    /// with a role, together with those roles keyed by name. Nil when no channel has a role.
+    private static func energySubset(of source: CFMutableDictionary,
+                                     symbols: Symbols) -> (channels: CFMutableDictionary, roles: [String: EnergyChannelRole])? {
+        let dictionary = source as NSDictionary
+        guard let channels = dictionary["IOReportChannels"] as? [CFDictionary] else { return nil }
+
+        var kept: [CFDictionary] = []
+        var roles: [String: EnergyChannelRole] = [:]
+        for channel in channels {
+            let name = channelName(channel, symbols: symbols)
+            guard let role = EnergyChannelRole.role(forChannelName: name) else { continue }
+            kept.append(channel)
+            roles[name] = role
+        }
+
+        guard !kept.isEmpty,
+              let subset = dictionary.mutableCopy() as? NSMutableDictionary else { return nil }
+        // IOReport mutates this array while subscribing, so it must be a real mutable array, not a bridged Swift array.
+        let mutableChannels = NSMutableArray(capacity: kept.count)
+        for channel in kept {
+            mutableChannels.add(channel)
+        }
+        subset["IOReportChannels"] = mutableChannels
+        return (subset as CFMutableDictionary, roles)
+    }
+
+    private static func channelName(_ channel: CFDictionary, symbols: Symbols) -> String {
+        symbols.channelGetName(channel)?.takeUnretainedValue() as String? ?? ""
+    }
+
+    private static func watts(_ joules: Double?, tracker: inout EnergyRateTracker, interval: DateInterval) -> Double? {
+        guard let joules else { return nil }
+        return tracker.update(joules, interval: interval)
+    }
+
     private static func parseDelta(_ delta: CFDictionary,
-                                   elapsed: TimeInterval,
-                                   interval: DateInterval,
-                                   symbols: Symbols) -> IOReportReading? {
-        var exactCPUJoules: Double?
-        var fallbackClusterCPUJoules = 0.0
-        var hasClusterCPU = false
-        var gpuJoules: Double?
-        var exactANEJoules: Double?
-        var aneSubJoules = 0.0
-        var hasANESub = false
-        var dramJoules: Double?
-        var gpuPercent: Double?
-
+                                   roles: [String: EnergyChannelRole],
+                                   symbols: Symbols) -> ParsedDelta {
+        var parsed = ParsedDelta()
         symbols.iterate(delta) { channel in
-            let group = symbols.channelGetGroup(channel)?.takeUnretainedValue() as String? ?? ""
-            let subgroup = symbols.channelGetSubGroup(channel)?.takeUnretainedValue() as String? ?? ""
-            let name = symbols.channelGetName(channel)?.takeUnretainedValue() as String? ?? ""
-            let unit = symbols.channelGetUnitLabel(channel)?.takeUnretainedValue() as String? ?? ""
+            let name = channelName(channel, symbols: symbols)
 
-            if group == "Energy Model" {
+            if let role = roles[name] {
+                let group = symbols.channelGetGroup(channel)?.takeUnretainedValue() as String? ?? ""
+                guard group == "Energy Model" else { return 0 }
+                let unit = symbols.channelGetUnitLabel(channel)?.takeUnretainedValue() as String? ?? ""
                 let raw = symbols.simpleGetInt(channel, 0)
                 if raw >= 0, let joules = convertEnergyToJoules(Double(raw), unit: unit) {
-                    let upper = name.uppercased()
-                    if upper == "CPU ENERGY" || upper == "CPU" {
-                        exactCPUJoules = (exactCPUJoules ?? 0) + joules
-                    } else if upper.hasPrefix("ECPU") || upper.hasPrefix("PCPU") {
-                        hasClusterCPU = true
-                        fallbackClusterCPUJoules += joules
-                    } else if upper == "GPU ENERGY" || upper == "GPU" {
-                        gpuJoules = (gpuJoules ?? 0) + joules
-                    } else if upper == "ANE ENERGY" || upper == "ANE" {
-                        exactANEJoules = (exactANEJoules ?? 0) + joules
-                    } else if upper.hasPrefix("ANE") {
-                        hasANESub = true
-                        aneSubJoules += joules
-                    } else if upper == "DRAM" || upper == "DRAM ENERGY" {
-                        dramJoules = (dramJoules ?? 0) + joules
-                    }
+                    parsed.joules[role, default: 0] += joules
                 }
-            } else if group == "GPU Stats", subgroup == "GPU Performance States" {
+                return 0
+            }
+
+            let group = symbols.channelGetGroup(channel)?.takeUnretainedValue() as String? ?? ""
+            let subgroup = symbols.channelGetSubGroup(channel)?.takeUnretainedValue() as String? ?? ""
+            if group == "GPU Stats", subgroup == "GPU Performance States" {
                 let count = symbols.stateGetCount(channel)
-                if count > 0, name == "GPUPH" || gpuPercent == nil {
+                if count > 0, name == "GPUPH" || parsed.gpuPercent == nil {
                     var totalResidency: Int64 = 0
                     var idleResidency: Int64 = 0
                     for idx in 0..<count {
@@ -260,28 +311,13 @@ final class IOReportCollector: @unchecked Sendable {
                     }
                     if totalResidency > 0 {
                         let active = Double(totalResidency - idleResidency)
-                        gpuPercent = min(100, max(0, (active / Double(totalResidency)) * 100.0))
+                        parsed.gpuPercent = min(100, max(0, (active / Double(totalResidency)) * 100.0))
                     }
                 }
             }
             return 0
         }
-
-        let cpuW = (exactCPUJoules ?? (hasClusterCPU ? fallbackClusterCPUJoules : nil)).map { $0 / elapsed }
-        let gpuW = gpuJoules.map { $0 / elapsed }
-        let aneW = (exactANEJoules ?? (hasANESub ? aneSubJoules : nil)).map { $0 / elapsed }
-        let dramW = dramJoules.map { $0 / elapsed }
-
-        let components: ComponentPowerReadings?
-        if cpuW != nil || gpuW != nil || aneW != nil || dramW != nil {
-            components = ComponentPowerReadings(cpuWatts: cpuW, gpuWatts: gpuW, aneWatts: aneW, dramWatts: dramW,
-                                                interval: interval, detail: "SoC Component Power (IOReport)")
-        } else {
-            components = nil
-        }
-
-        guard gpuPercent != nil || components != nil else { return nil }
-        return IOReportReading(gpuUtilizationPercent: gpuPercent, components: components, interval: interval)
+        return parsed
     }
 
     private static func convertEnergyToJoules(_ value: Double, unit: String) -> Double? {

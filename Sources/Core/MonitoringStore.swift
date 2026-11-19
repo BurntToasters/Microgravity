@@ -288,7 +288,7 @@ extension MonitoringStore {
     public func start() { start(interval: .oneSecond) }
 }
 
-private extension MonitoringSnapshot {
+extension MonitoringSnapshot {
     func markingHistoryGap(reason: MetricUnavailableReason = .sleepGap,
                            markingAdvancedMetrics: Bool = false) -> MonitoringSnapshot {
         func gap(_ reading: MetricReading) -> MetricReading {
@@ -314,7 +314,9 @@ private extension MonitoringSnapshot {
             networkReceiveBytesPerSecond: gap(system.networkReceiveBytesPerSecond),
             networkTransmitBytesPerSecond: gap(system.networkTransmitBytesPerSecond),
             networkInterfaces: system.networkInterfaces,
-            processorTopology: system.processorTopology)
+            processorTopology: system.processorTopology,
+            power: system.power,
+            hardware: system.hardware)
         let nextGroups = processGroups.map { group in
             ProcessGroupSnapshot(
                 id: group.id, title: group.title, ownerUID: group.ownerUID,
@@ -324,7 +326,8 @@ private extension MonitoringSnapshot {
                 diskReadBytesPerSecond: gap(group.diskReadBytesPerSecond),
                 diskWriteBytesPerSecond: gap(group.diskWriteBytesPerSecond),
                 networkReceiveBytesPerSecond: gap(group.networkReceiveBytesPerSecond),
-                networkTransmitBytesPerSecond: gap(group.networkTransmitBytesPerSecond))
+                networkTransmitBytesPerSecond: gap(group.networkTransmitBytesPerSecond),
+                category: group.category)
         }
         let nextAdvancedMetrics = markingAdvancedMetrics
             ? advancedMetrics.mapValues(gap) : advancedMetrics

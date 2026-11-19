@@ -20,8 +20,6 @@ enum HelperLog {
     static let sample = Logger(subsystem: helperMachService, category: "sample")
 }
 
-private let helperNettopStream = NettopStreamService()
-
 private final class HelperFastMetricsCoordinator: @unchecked Sendable {
     private let lock = NSLock()
     private let processMetricsMinIntervalNanoseconds: UInt64 = 500_000_000
@@ -113,34 +111,9 @@ final class Service: NSObject, HelperProtocol {
         }
 
         switch request.kind {
-        case .nettopStream:
-            let stream = helperNettopStream.latestSnapshot(since: request.sinceSequence)
-            let payload = HelperNettopStreamPayload(
-                health: stream.health,
-                intervalStart: stream.interval?.start,
-                intervalEnd: stream.interval?.end,
-                sequence: stream.latestSequence,
-                entries: stream.totalsByPID.values
-                    .sorted(by: { $0.pid < $1.pid })
-                    .map { HelperNettopDeltaEntry(pid: $0.pid, bytesIn: $0.bytesIn, bytesOut: $0.bytesOut) },
-                detail: stream.error
-            )
-            let encoded = try? JSONEncoder().encode(payload)
-            if let encoded, encoded.count <= HelperSampleResponse.maximumOutputBytes {
-                encodeAndSend(HelperSampleResponse(version: helperProtocolVersion, kind: .nettopStream,
-                                                   capturedAt: stream.capturedAt,
-                                                   output: encoded,
-                                                   error: nil))
-            } else {
-                let errorCode = encoded == nil ? "encodeFailed" : "outputLimit"
-                encodeAndSend(HelperSampleResponse(version: helperProtocolVersion, kind: .nettopStream,
-                                                   capturedAt: stream.capturedAt,
-                                                   output: nil,
-                                                   error: errorCode))
-            }
         case .processMetrics:
             encodeAndSend(fastMetricsCoordinator.collectProcessMetrics(excludingUID: clientUID))
-        case .nettop, .powermetrics:
+        case .powermetrics:
             let xpcReply = XPCSampleReply(reply)
             SamplingRunner.shared.sample(request, cancellation: cancellation) { response in
                 let result = response.error ?? "ok"
@@ -163,10 +136,6 @@ final class Service: NSObject, HelperProtocol {
     func capabilities(_ reply: @escaping (Int, [String]) -> Void) {
         markVerified()
         var available: [String] = ["processMetrics"]
-        if FileManager.default.isExecutableFile(atPath: "/usr/bin/nettop") {
-            available.append("nettop")
-            available.append("nettopStream")
-        }
         if FileManager.default.isExecutableFile(atPath: "/usr/bin/powermetrics") {
             available.append("powermetrics")
         }
@@ -245,9 +214,6 @@ final class Lifecycle: @unchecked Sendable {
             scheduleIdleLocked()
         }
         lock.unlock()
-        if drained {
-            helperNettopStream.stop()
-        }
         if staleExit {
             HelperLog.connection.info("stale exit: helper executable changed on disk")
             exit(0)
@@ -262,7 +228,6 @@ final class Lifecycle: @unchecked Sendable {
         let staleExit = isStale && verifiedPeers == 0
         lock.unlock()
         if staleExit {
-            helperNettopStream.stop()
             HelperLog.connection.info("stale exit: helper executable changed on disk")
             exit(0)
         }
@@ -304,7 +269,6 @@ final class Lifecycle: @unchecked Sendable {
             return
         }
         lock.unlock()
-        helperNettopStream.stop()
         HelperLog.connection.info("idle exit: no verified client connections")
         exit(0)
     }

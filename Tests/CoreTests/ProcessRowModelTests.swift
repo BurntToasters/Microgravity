@@ -120,6 +120,52 @@ final class ProcessRowModelTests: XCTestCase {
         XCTAssertEqual(collapsed.topLevel, [.group(identity(100))])
     }
 
+    // MARK: Matching count
+
+    func testMatchingProcessCountEqualsTheProcessRowsOfAFlatBuild() {
+        let fixture = sampleFixture()
+        let queries = ["", "renderer", "RENDERER", "notes", "dev", "620", "root", "/applications", "no-such-thing"]
+        let scopes: [ProcessScopeFilter] = [.all, .apps, .myProcesses]
+        for query in queries {
+            for scope in scopes {
+                let flat = ProcessRowModel.build(input(fixture.processes, fixture.groups, query: query,
+                                                       grouping: .flat, scope: scope))
+                let flatProcessRows = flat.rows.values.filter { !$0.isGroup }.count
+                let count = ProcessRowModel.matchingProcessCount(input(fixture.processes, fixture.groups,
+                                                                       query: query, scope: scope))
+                XCTAssertEqual(count, flatProcessRows, "query=\(query) scope=\(scope)")
+            }
+        }
+    }
+
+    func testMatchingProcessCountCountsMembersOfCollapsedGroupsAndIgnoresGrouping() {
+        let fixture = sampleFixture()
+        XCTAssertEqual(ProcessRowModel.matchingProcessCount(input(fixture.processes, fixture.groups)),
+                       fixture.processes.count)
+        XCTAssertEqual(ProcessRowModel.matchingProcessCount(input(fixture.processes, fixture.groups,
+                                                                  query: "renderer")), 1)
+        XCTAssertEqual(ProcessRowModel.matchingProcessCount(input(fixture.processes, fixture.groups,
+                                                                  query: "dev")), 3)
+        XCTAssertEqual(ProcessRowModel.matchingProcessCount(input(fixture.processes, fixture.groups,
+                                                                  query: "no-such-thing")), 0)
+        let expanded = ProcessRowModel.matchingProcessCount(input(fixture.processes, fixture.groups,
+                                                                  expanded: [identity(100)]))
+        let byCategory = ProcessRowModel.matchingProcessCount(input(fixture.processes, fixture.groups,
+                                                                    grouping: .byCategory, expanded: [identity(100)]))
+        XCTAssertEqual(expanded, fixture.processes.count)
+        XCTAssertEqual(byCategory, fixture.processes.count)
+    }
+
+    func testMatchingProcessCountCountsARepeatedIdentityOnce() {
+        let fixture = sampleFixture()
+        let notes = fixture.processes[0]
+        let repeated = [notes, notes]
+        let flat = ProcessRowModel.build(input(repeated, [fixture.groups[0]], grouping: .flat))
+        XCTAssertEqual(ProcessRowModel.matchingProcessCount(input(repeated, [fixture.groups[0]])),
+                       flat.rows.values.filter { !$0.isGroup }.count)
+        XCTAssertEqual(ProcessRowModel.matchingProcessCount(input(repeated, [fixture.groups[0]])), 1)
+    }
+
     // MARK: Search
 
     func testSearchMatchesNameExecutablePathPIDAndUserCaseInsensitively() {
@@ -388,7 +434,8 @@ final class ProcessRowModelTests: XCTestCase {
                        query: String = "", grouping: ProcessGrouping = .byApp,
                        sort: ProcessSortState = ProcessSortState(column: .cpu, ascending: false),
                        expanded: Set<ProcessIdentity> = [], collapsed: Set<ProcessIdentity> = [],
-                       physicalMemory: Double? = 8_000_000_000) -> ProcessOutlineInput {
+                       physicalMemory: Double? = 8_000_000_000,
+                       scope: ProcessScopeFilter = .all) -> ProcessOutlineInput {
         ProcessOutlineInput(
             processes: processes, groups: groups,
             capabilities: [.processNetwork: MetricAvailability(available: true),
@@ -402,7 +449,7 @@ final class ProcessRowModelTests: XCTestCase {
                 case 0?: return "root"
                 case let other?: return "uid \(other)"
                 }
-            })
+            }, scopeFilter: scope)
     }
 
     private func topLevelTitles(_ query: String, _ fixture: Fixture) -> [String] {

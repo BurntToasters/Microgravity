@@ -82,7 +82,19 @@ struct NettopDeltaFrameParser: Sendable {
         return NettopDeltaEntry(pid: pid, name: namePart.isEmpty ? nil : namePart, bytesIn: bytesIn, bytesOut: bytesOut)
     }
 
-    mutating func consumeLine(_ rawLine: String, at timestamp: Date = Date()) -> NettopDeltaFrame? {
+    /// Removes what the pseudo-terminal in `script` adds: the echoed `^D` and backspaces (everything up to the
+    /// last U+0008) and the carriage return that ends every line.
+    static func sanitized(_ rawLine: String) -> String {
+        var line = rawLine
+        if let lastBackspace = line.lastIndex(of: "\u{8}") {
+            line = String(line[line.index(after: lastBackspace)...])
+        }
+        if line.hasSuffix("\r") { line.removeLast() }
+        return line
+    }
+
+    mutating func consumeLine(_ text: String, at timestamp: Date = Date()) -> NettopDeltaFrame? {
+        let rawLine = Self.sanitized(text)
         if Self.isHeaderLine(rawLine) {
             let emitted = commitPendingFrame(at: timestamp)
             inFrame = true
@@ -165,6 +177,12 @@ struct NettopDeltaFrameParser: Sendable {
 
 /// Manages a lazy, auto-stopping persistent `/usr/bin/nettop -t external -d` stream.
 final class NettopStreamService: @unchecked Sendable {
+    /// Rootless by design: the app runs this itself, so the privileged helper never runs nettop.
+    static let nettopCommand = SamplingRunner.Command(
+        executable: "/usr/bin/nettop",
+        arguments: ["-n", "-P", "-x", "-t", "external", "-d", "-L", "0", "-s", "1", "-J", "bytes_in,bytes_out"]
+    )
+
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "run.rosie.microgravity.nettop-stream")
     private let command: SamplingRunner.Command
@@ -186,8 +204,11 @@ final class NettopStreamService: @unchecked Sendable {
     private var lastFrameReceivedAt: Date?
     private var startedAt: Date?
     private var lastError: String?
+    private var lastSpawnFailureAt: Date?
+    private static let spawnRetryInterval: TimeInterval = 5.0
+    private static let scriptPath = "/usr/bin/script"
 
-    init(command: SamplingRunner.Command = SamplingRunner.fixedCommand(.nettopStream),
+    init(command: SamplingRunner.Command = NettopStreamService.nettopCommand,
          idleTimeoutSeconds: TimeInterval = 15.0,
          staleTimeoutSeconds: TimeInterval = 5.0) {
         self.command = command
@@ -202,7 +223,7 @@ final class NettopStreamService: @unchecked Sendable {
     func latestSnapshot(since sequence: UInt64? = nil, now: Date = Date()) -> NettopStreamSnapshot {
         lock.lock()
         lastClientPollAt = now
-        let shouldStart = !isRunning
+        let shouldStart = !isRunning && spawnRetryAllowedLocked(now: now)
         if shouldStart {
             startLocked(now: now)
         }
@@ -267,6 +288,16 @@ final class NettopStreamService: @unchecked Sendable {
         Self.terminateAndReap(runningChild)
     }
 
+#if DEBUG
+    /// Simulates the app dying: closes the read end and leaves the child running. Nothing is killed here;
+    /// the caller owns the returned child and must reap it.
+    func abandonTransportForTesting() -> SampledChild? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopLocked(resetFrames: false)
+    }
+#endif
+
     private func restartIfStale(now: Date) {
         lock.lock()
         let runningChild = stopLocked(resetFrames: false)
@@ -283,20 +314,31 @@ final class NettopStreamService: @unchecked Sendable {
         child.waitForExit()
     }
 
+    private func spawnRetryAllowedLocked(now: Date) -> Bool {
+        guard let failedAt = lastSpawnFailureAt else { return true }
+        return now.timeIntervalSince(failedAt) >= Self.spawnRetryInterval
+    }
+
     private func startLocked(now: Date) {
         guard !isRunning else { return }
 
-        guard let transport = Self.openOutputChannel() else {
+        // Under `script` nettop gets a controlling terminal, and output flows through a plain pipe. When this
+        // process dies the pipe closes, `script` gets SIGPIPE on its next write and exits, and nettop gets SIGHUP.
+        let useScript = FileManager.default.isExecutableFile(atPath: Self.scriptPath)
+        let launchCommand = useScript ? Self.scriptCommand(for: command) : command
+        guard let transport = useScript ? Self.openPipeChannel() : Self.openOutputChannel() else {
             lastError = "ptyFailed"
+            lastSpawnFailureAt = now
             return
         }
 
-        let launchedChild = SampledChild.launch(command, output: transport.slaveFD)
+        let launchedChild = SampledChild.launch(launchCommand, output: transport.slaveFD)
         if transport.slaveFD >= 0 { close(transport.slaveFD) }
 
         guard let launchedChild else {
             if transport.masterFD >= 0 { close(transport.masterFD) }
             lastError = "spawnFailed"
+            lastSpawnFailureAt = now
             return
         }
 
@@ -306,6 +348,7 @@ final class NettopStreamService: @unchecked Sendable {
         startedAt = now
         lastFrameReceivedAt = nil
         lastError = nil
+        lastSpawnFailureAt = nil
         lineBuffer.removeAll(keepingCapacity: false)
         parser = NettopDeltaFrameParser(initialSequence: highestSequence)
 
@@ -372,19 +415,22 @@ final class NettopStreamService: @unchecked Sendable {
             if count > 0 {
                 readAny = true
                 lock.lock()
-                lineBuffer.append(contentsOf: temp[0..<count])
-                if lineBuffer.count > NettopDeltaFrameParser.maximumFrameBytes {
-                    lineBuffer.removeAll(keepingCapacity: false)
+                // A handler left over from a stopped stream must not write into the next stream's buffer.
+                if isRunning && outputFD == fd {
+                    lineBuffer.append(contentsOf: temp[0..<count])
+                    if lineBuffer.count > NettopDeltaFrameParser.maximumFrameBytes {
+                        lineBuffer.removeAll(keepingCapacity: false)
+                    }
                 }
                 lock.unlock()
                 continue
             }
             if count == 0 {
                 lock.lock()
-                flushCompletedLinesLocked(now: Date())
-                commitPendingFrameLocked(now: Date())
                 var endedChild: SampledChild?
                 if isRunning && outputFD == fd {
+                    flushCompletedLinesLocked(now: Date())
+                    commitPendingFrameLocked(now: Date())
                     lastError = "streamEnded"
                     endedChild = stopLocked(resetFrames: false)
                 }
@@ -407,8 +453,10 @@ final class NettopStreamService: @unchecked Sendable {
 
         if readAny {
             lock.lock()
-            flushCompletedLinesLocked(now: Date())
-            scheduleFrameSettleLocked()
+            if isRunning && outputFD == fd {
+                flushCompletedLinesLocked(now: Date())
+                scheduleFrameSettleLocked()
+            }
             lock.unlock()
         }
     }
@@ -489,8 +537,19 @@ final class NettopStreamService: @unchecked Sendable {
         let slaveFD: Int32
     }
 
+    private static func scriptCommand(for command: SamplingRunner.Command) -> SamplingRunner.Command {
+        SamplingRunner.Command(executable: scriptPath,
+                               arguments: ["-q", "/dev/null", command.executable] + command.arguments)
+    }
+
     private static func openOutputChannel() -> OutputChannel? {
         // nettop block-buffers stdout on pipes when -L 0 runs continuously; a PTY gives immediate 1s flushes.
+        if let channel = openPTYChannel() { return channel }
+        // Fall back to a pipe if PTY allocation fails in restricted environments.
+        return openPipeChannel()
+    }
+
+    private static func openPTYChannel() -> OutputChannel? {
         let masterFD = posix_openpt(O_RDWR | O_NOCTTY)
         if masterFD >= 0 {
             _ = fcntl(masterFD, F_SETFD, FD_CLOEXEC)
@@ -514,8 +573,11 @@ final class NettopStreamService: @unchecked Sendable {
             }
             close(masterFD)
         }
+        return nil
+    }
 
-        // Fall back to a pipe if PTY allocation fails in restricted environments.
+    /// Plain pipe. The read end is non-blocking; closing it is what makes the writer's next write fail.
+    private static func openPipeChannel() -> OutputChannel? {
         var fds: [Int32] = [-1, -1]
         guard pipe(&fds) == 0 else { return nil }
         _ = fcntl(fds[0], F_SETFD, FD_CLOEXEC)

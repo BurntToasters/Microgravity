@@ -5,34 +5,16 @@ import XCTest
 final class HelperProtocolV2Tests: XCTestCase {
     func testProtocolVersionAndWirePayloadsRoundTrip() throws {
         XCTAssertEqual(helperProtocolVersion, 2)
+        XCTAssertEqual(Set(HelperSampleKind.allCases), [.powermetrics, .processMetrics])
 
-        let streamRequest = HelperSampleRequest(version: helperProtocolVersion, kind: .nettopStream, sinceSequence: 42)
-        let metricsRequest = HelperSampleRequest(version: helperProtocolVersion, kind: .processMetrics)
         let decoder = JSONDecoder()
         let encoder = JSONEncoder()
-
-        let decodedStreamRequest = try decoder.decode(HelperSampleRequest.self, from: encoder.encode(streamRequest))
-        XCTAssertEqual(decodedStreamRequest.version, 2)
-        XCTAssertEqual(decodedStreamRequest.kind, .nettopStream)
-        XCTAssertEqual(decodedStreamRequest.sinceSequence, 42)
-
-        let decodedMetricsRequest = try decoder.decode(HelperSampleRequest.self, from: encoder.encode(metricsRequest))
-        XCTAssertEqual(decodedMetricsRequest.version, 2)
-        XCTAssertEqual(decodedMetricsRequest.kind, .processMetrics)
-        XCTAssertNil(decodedMetricsRequest.sinceSequence)
-
-        let start = Date(timeIntervalSince1970: 1_800_000_000)
-        let end = start.addingTimeInterval(1)
-        let streamPayload = HelperNettopStreamPayload(
-            health: .healthy,
-            intervalStart: start,
-            intervalEnd: end,
-            sequence: 7,
-            entries: [HelperNettopDeltaEntry(pid: 123, bytesIn: 2_048, bytesOut: 1_024)],
-            detail: nil
-        )
-        let decodedStreamPayload = try decoder.decode(HelperNettopStreamPayload.self, from: encoder.encode(streamPayload))
-        XCTAssertEqual(decodedStreamPayload, streamPayload)
+        for kind in [HelperSampleKind.powermetrics, .processMetrics] {
+            let request = HelperSampleRequest(version: helperProtocolVersion, kind: kind)
+            let decoded = try decoder.decode(HelperSampleRequest.self, from: encoder.encode(request))
+            XCTAssertEqual(decoded.version, 2)
+            XCTAssertEqual(decoded.kind, kind)
+        }
 
         let metricsPayload = HelperProcessMetricsPayload(entries: [
             HelperProcessMetricEntry(
@@ -44,6 +26,14 @@ final class HelperProtocolV2Tests: XCTestCase {
         ])
         let decodedMetricsPayload = try decoder.decode(HelperProcessMetricsPayload.self, from: encoder.encode(metricsPayload))
         XCTAssertEqual(decodedMetricsPayload, metricsPayload)
+    }
+
+    func testRemovedNettopKindsDoNotDecode() {
+        let decoder = JSONDecoder()
+        for kind in ["nettop", "nettopStream"] {
+            let json = Data("{\"version\":2,\"kind\":\"\(kind)\"}".utf8)
+            XCTAssertThrowsError(try decoder.decode(HelperSampleRequest.self, from: json), kind)
+        }
     }
 
     func testHelperProcessMetricsReaderReadsCurrentProcessSafely() throws {

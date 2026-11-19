@@ -1,11 +1,13 @@
 # Implementation status
 
-Latest status for Microgravity 0.3.0 on branch `next-0.3.0`, checked 2026-11-18
-on `VirtualMac2,1` (macOS 27.2.1 build `26B131`, arm64). Historical 0.1.2 and
-0.1.0 gate records are kept under Earlier records below. Re-run signed release
-and UI gates from a clean checkout outside `~/Documents` (plus physical Apple
-Silicon and Intel hardware checks for live SMC/IOReport/AC-Battery power) before
-tagging.
+Latest status for Microgravity 0.3.0 on branch `next-0.3.0`, checked 2026-11-18.
+Core tests and the remaining checks for the latest telemetry changes are on a
+physical Apple M5 Pro (`Mac17,9`, macOS 27.2.1). The 0.3.0 gate results recorded
+earlier on a virtual machine (`VirtualMac2,1`) are superseded by the table below.
+Historical 0.1.2 and 0.1.0 gate records are kept under Earlier records below.
+Re-run signed release and UI gates from a clean checkout outside `~/Documents`
+(plus physical Apple Silicon and Intel hardware checks for live
+SMC/IOReport/AC-Battery power) before tagging.
 
 Intended behavior is in [UI acceptance](UI_ACCEPTANCE.md). Collector, history,
 and process-action regressions are in [core failure cases](FAILURE_CASES_CORE.md).
@@ -15,12 +17,14 @@ The release procedure and the 0.1.0 UI gate are in [RELEASING.md](RELEASING.md).
 
 Microgravity 0.3.0 overhauls live telemetry, process grouping, and Task Manager UI ergonomics:
 
-- **1-second hybrid telemetry (`helperProtocolVersion = 2`):** Adds native IOKit `AppleSMC` (`PSTR`/`PDTR`/`PB0R`) and `AppleSmartBattery`/`IOPowerSources` collectors (normalizing discharge sign across battery sources and prioritizing internal battery records), dynamic `libIOReport` GPU % (lazy channel initialization so Tick 1 avoids unnecessary fallback) and Apple Silicon component power rails (`CPU`, `GPU`, `ANE`, `DRAM`), cached static hardware specs (`HardwareSpecReader`), and a PTY-buffered rootless `nettop` external-socket delta stream (`NettopStreamService` with monotonic sequence continuity across restarts, stalled-before-first-frame recovery, and clean helper teardown), alongside helper XPC `.nettopStream` and `.processMetrics` (`proc_pidinfo`, `rusage_info_v4`, `proc_pidpath`) with XPC connection reuse. `HelperTerminationPolicy` single-process termination rules remain unchanged.
+- **1-second hybrid telemetry (`helperProtocolVersion = 2`):** Adds native IOKit `AppleSMC` (`PSTR`/`PDTR`/`PB0R`) and `AppleSmartBattery`/`IOPowerSources` collectors (normalizing discharge sign across battery sources and prioritizing internal battery records), dynamic `libIOReport` GPU % (lazy channel initialization so Tick 1 avoids unnecessary fallback) and Apple Silicon component power rails (`CPU`, `GPU`, `ANE`, `DRAM`), cached static hardware specs (`HardwareSpecReader`), and a rootless `nettop` external-socket delta stream (`NettopStreamService`, run by the app under `script` so it stops when the app dies, with monotonic sequence continuity across restarts and stalled-before-first-frame recovery). The helper serves `.processMetrics` (`proc_pidinfo`, `rusage_info_v4`, `proc_pidpath`) and `.powermetrics` over XPC with connection reuse; it no longer runs `nettop`. `HelperTerminationPolicy` single-process termination rules remain unchanged.
+- **Telemetry pacing:** Network refreshes synchronously at most every 0.9 s and never waits for the helper. The helper is refreshed in the background (0.9 s when healthy, 5 s after a failure, 60 s while unavailable). IOReport subscribes only to channels that feed a reading, and slow energy counters are rated over their measured refresh period, so CPU power no longer alternates between 0 W and twice its value. Helper per-process counters are rated over their capture time.
 - **Honest zeros & routine lifecycle handling:** Live processes absent from an active streaming `nettop` frame show `0 B/s` (`idleZeroInterval`) only when process identity lookup succeeded (instead of `!` unavailable badges or fake `0` when enumeration fails), while `.warmingUp`, `.processExited`, `.identityChanged`, and sub-50 ms interval jitter no longer trigger false `!` warnings in Processes or false `≥` gaps in App History.
 - **Grouping & Processes UI:** Deduplicates `.app` bundle groups by `(bundlePath, ownerUID)` selecting the main `Contents/MacOS` binary as leader, keeps `launchd` UID 0 from claiming standard-user trees, classifies processes into `Apps`, `Background processes`, and `System processes`, removes disclosure triangles from 1-process groups (trailing member-count pill with dynamic Light/Dark contrast), adds combined compact `Disk` (`0 B/s`) plus optional `Disk Read`/`Disk Write` columns, fixes `.inset` `fitNameColumn` width calculation, shows contextual `EmptyStateView` search/scope/unavailable overlays, uses group directional network rates in `ProcessInspector`, and updates the live summary strip on color changes.
 - **Performance, Details, Inventory, Settings & Window:** Adds hardware spec headers, `MemoryCompositionBarView` (with wrapping legend flow and proportional non-overflowing bar segments), AC + Battery `System Power` / thermal / adapter / component UI under Energy, sorted and collapsible virtual interfaces, frame-based `MetricStatsGridView`, `.detail`-scoped hover inspection, dynamic appearance redraws across custom Performance views, optional `Threads` / `Architecture` / `CPU Time` columns plus context-menu `Quit Process` / `Force Quit…` / `Inspect…` in Details, toolbar search & empty-search states on Startup/Services/Users, in-flight integration guards & wrapping Settings helper caption sizing, post-column `autosaveName` ordering, and `View > Always on Top` (`⌥⌘T`).
 
-The signed UI automation suite (`MicrogravityUITests`) and physical-Mac hardware checks have not yet been run for 0.3.0.
+The signed UI automation suite (`MicrogravityUITests`) has not been run for 0.3.0.
+Physical-Mac checks have started on the Apple M5 Pro; the rest are listed below.
 
 ## Verification
 
@@ -28,15 +32,13 @@ The signed UI automation suite (`MicrogravityUITests`) and physical-Mac hardware
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Version & project sync | `npm run sync-version -- --check && npm run project:sync -- --check` | pass (`0.3.0`, build `6`) |
+| Project sync | `npm run project:sync -- --check` | pass (current) |
 | Workspace validation | `npm run validate` | pass |
-| Node tests | `npm run test:node` | 37 passed, 0 failed, 0 skipped |
-| Debug build | `npm run build:debug` | pass (`** BUILD SUCCEEDED **`, zero warnings) |
-| Release smoke | `npm run build:release-smoke` | pass (`** BUILD SUCCEEDED **`, unsigned universal `arm64 x86_64`) |
-| Core XCTest | `xcodebuild -project Microgravity.xcodeproj -scheme Test -configuration Debug -derivedDataPath ~/Library/Developer/Xcode/DerivedData/Microgravity-Tests -clonedSourcePackagesDirPath "$PWD/DerivedData/SourcePackages" -packageCachePath "$PWD/DerivedData/PackageCache" -destination platform=macOS,arch=arm64 -parallel-testing-enabled NO -only-testing:MicrogravityCoreTests test CODE_SIGNING_ALLOWED=NO SPARKLE_ENABLE_AUTOMATIC_CHECKS=NO` | 421 executed, 0 failed (0 unexpected), 0 skipped |
-| Composite `npm run test:all -- --skip-ui` | `npm run test:all -- --skip-ui` | builds cleanly then hangs before test runner connection from `~/Documents` (`Sparkle.framework` Documents TCC prompt; use `-derivedDataPath` or checkout outside `~/Documents`) |
-| Signed UI XCTest | not run on 0.3.0 | Pending signed run outside `~/Documents` |
-| Physical Mac hardware & signed helper | not run on `VirtualMac2,1` | Pending physical Apple Silicon & Intel AC/Battery SMC, `libIOReport`, and signed Developer ID helper v2 XPC checks |
+| Core XCTest, Apple M5 Pro (`Mac17,9`, macOS 27.2.1) | full `MicrogravityCoreTests` suite | pass after the first batch of the telemetry changes. Final run after all changes pending. |
+| Node tests, debug build, release smoke | `npm run test:node`, `npm run build:debug`, `npm run build:release-smoke` | pending for this change set |
+| Composite `npm run test:all -- --skip-ui` | `npm run test:all -- --skip-ui` | pending. Earlier attempt hung before the test runner connected from `~/Documents` (`Sparkle.framework` Documents TCC prompt); use `-derivedDataPath` or a checkout outside `~/Documents`. |
+| Signed UI XCTest | `MicrogravityUITests` | pending. Run outside `~/Documents`. |
+| Physical Mac checks (M5 Pro) | see [ADVANCED_METRICS.md](ADVANCED_METRICS.md#verification-status) | pending: orphan check with `kill -9`, no root nettop, steady CPU power, DRAM shown, helper CPU % steady at 0.5 s, network without helper, UI parity. Intel and AC/Battery checks, and the signed Developer ID helper XPC checks, are also pending. |
 
 ### Earlier record: 0.1.2 (2026-11-08, branch `next-0.1.2`)
 
@@ -135,7 +137,7 @@ Integration:
 - The privileged helper checks the client code signature, accepts fixed
   commands only, bounds its output, and uses single-use authorization.
 - The three XPC single-reply wrappers share `XPCSingleReply`.
-- Advanced metrics run through the helper (see [ADVANCED_METRICS.md](ADVANCED_METRICS.md)). Process identities for helper network samples come from the `KERN_PROC_ALL` table, which includes other users' processes. Refreshes retry immediately when the app becomes active.
+- Advanced metrics merge two sources (see [ADVANCED_METRICS.md](ADVANCED_METRICS.md)): per-process network from the app's own nettop stream, and GPU, energy and per-process system counters from the helper. Process identities for network samples come from the `KERN_PROC_ALL` table, which includes other users' processes. A helper that was unavailable is checked again when the app becomes active.
 - Sparkle automatic checks stay off unless a public key is configured.
 
 UI (AppKit):

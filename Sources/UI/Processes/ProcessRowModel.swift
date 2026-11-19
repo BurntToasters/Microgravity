@@ -280,7 +280,7 @@ enum ProcessRowModel {
                                  category: group.category,
                                  isExpandable: isExpandable,
                                  expanded: expanded,
-                                 children: sorted(visibleMembers.map(context.rawProcess), by: input.sort)))
+                                 children: expanded ? sorted(visibleMembers.map(context.rawProcess), by: input.sort) : []))
         }
 
         if input.grouping == .byCategory {
@@ -334,6 +334,18 @@ enum ProcessRowModel {
             children[entry.raw.id] = entry.children.map(\.id)
         }
         return ProcessOutline(topLevel: entries.map(\.raw.id), children: children, rows: rows)
+    }
+
+    /// Number of process rows a flat `build` of the same input lists: processes passing the scope and search
+    /// filters. Group, section and child rows are not counted. Sorts nothing and builds no rows.
+    static func matchingProcessCount(_ input: ProcessOutlineInput) -> Int {
+        let context = Context(input: input, query: input.query.trimmingCharacters(in: .whitespacesAndNewlines))
+        // A flat build keys its rows by process identity, so a repeated identity counts once.
+        var identities = Set<ProcessIdentity>()
+        for process in input.processes where context.scopeMatches(process: process) && context.processMatches(process) {
+            identities.insert(process.id)
+        }
+        return identities.count
     }
 
     /// Operations that turn `old` into `new`. Both lists must hold unique IDs.
@@ -507,6 +519,7 @@ enum ProcessRowModel {
         let category: ProcessCategory
         let isExpandable: Bool
         let expanded: Bool
+        /// Sorted member rows. Empty unless `expanded`, because collapsed groups never show their members.
         let children: [RawRow]
     }
 

@@ -5,11 +5,39 @@ import Metal
 
 /// Reads largely static machine hardware descriptors once and caches them across ticks.
 final class HardwareSpecReader: @unchecked Sendable {
+    typealias NetworkDetailLookup = @Sendable (String) -> String?
+    typealias Clock = @Sendable () -> Date
+
+    /// How long a per-interface network detail stays cached before the IOKit lookup runs again.
+    static let networkDetailTTL: TimeInterval = 30
+
+    private struct CachedNetworkDetail {
+        let value: String?
+        let fetchedAt: Date
+    }
+
     private let lock = NSLock()
     private var cachedSpec: HardwareSpecSnapshot?
+    private var networkDetailCache: [String: CachedNetworkDetail] = [:]
+    private let networkDetailLookup: NetworkDetailLookup
+    private let now: Clock
+
+    convenience init() {
+        self.init(
+            networkDetailLookup: { HardwareSpecReader.networkDetail(for: $0) },
+            now: { Date() }
+        )
+    }
+
+    /// Test seam: injects the network detail lookup and the clock used for the detail cache TTL.
+    init(networkDetailLookup: @escaping NetworkDetailLookup, now: @escaping Clock) {
+        self.networkDetailLookup = networkDetailLookup
+        self.now = now
+    }
 
     func read(primaryNetworkInterface: NetworkInterfaceSnapshot? = nil) -> HardwareSpecSnapshot {
         lock.lock()
+        defer { lock.unlock() }
         let base: HardwareSpecSnapshot
         if let cachedSpec {
             base = cachedSpec
@@ -18,10 +46,9 @@ final class HardwareSpecReader: @unchecked Sendable {
             cachedSpec = discovered
             base = discovered
         }
-        lock.unlock()
 
         let activeNIC = primaryNetworkInterface?.name ?? base.primaryNetworkInterface
-        let activeNICDetail = Self.networkDetail(for: activeNIC) ?? base.primaryNetworkDetail
+        let activeNICDetail = cachedNetworkDetailLocked(for: activeNIC) ?? base.primaryNetworkDetail
         return HardwareSpecSnapshot(
             machineModel: base.machineModel,
             cpuName: base.cpuName,
@@ -73,25 +100,28 @@ final class HardwareSpecReader: @unchecked Sendable {
     }
 
     private static func readGPUInfo() -> (name: String?, coreCount: Int?) {
-        var name: String? = MTLCreateSystemDefaultDevice()?.name
+        var name: String?
         var coreCount: Int?
 
+        // The IORegistry already carries the GPU model and core count, so Metal is only a fallback.
         var iterator: io_iterator_t = 0
-        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOAccelerator"), &iterator) == KERN_SUCCESS else {
-            return (name, nil)
+        if IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOAccelerator"), &iterator) == KERN_SUCCESS {
+            defer { IOObjectRelease(iterator) }
+            while case let service = IOIteratorNext(iterator), service != 0 {
+                defer { IOObjectRelease(service) }
+                if let coresRef = IORegistryEntryCreateCFProperty(service, "gpu-core-count" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? NSNumber,
+                   coresRef.intValue > 0 {
+                    coreCount = coresRef.intValue
+                }
+                if name == nil,
+                   let model = IORegistryEntryCreateCFProperty(service, "model" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? String {
+                    name = model
+                }
+            }
         }
-        defer { IOObjectRelease(iterator) }
 
-        while case let service = IOIteratorNext(iterator), service != 0 {
-            defer { IOObjectRelease(service) }
-            if let coresRef = IORegistryEntryCreateCFProperty(service, "gpu-core-count" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? NSNumber,
-               coresRef.intValue > 0 {
-                coreCount = coresRef.intValue
-            }
-            if name == nil,
-               let model = IORegistryEntryCreateCFProperty(service, "model" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? String {
-                name = model
-            }
+        if name == nil {
+            name = MTLCreateSystemDefaultDevice()?.name
         }
         return (name, coreCount)
     }
@@ -161,6 +191,22 @@ final class HardwareSpecReader: @unchecked Sendable {
             IOObjectRelease(current)
         }
         return nil
+    }
+
+    /// Returns the cached detail for an interface, running the lookup again once the TTL has passed.
+    /// Must be called with `lock` held.
+    private func cachedNetworkDetailLocked(for interfaceName: String?) -> String? {
+        guard let interfaceName, !interfaceName.isEmpty else { return nil }
+        let current = now()
+        if let entry = networkDetailCache[interfaceName] {
+            let age = current.timeIntervalSince(entry.fetchedAt)
+            if age >= 0, age < Self.networkDetailTTL {
+                return entry.value
+            }
+        }
+        let value = networkDetailLookup(interfaceName)
+        networkDetailCache[interfaceName] = CachedNetworkDetail(value: value, fetchedAt: current)
+        return value
     }
 
     private static func networkDetail(for interfaceName: String?) -> String? {

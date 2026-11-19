@@ -534,9 +534,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             cachedMatchingProcessCount = nil
             return
         }
-        var input = makeInput()
-        input.grouping = .flat
-        cachedMatchingProcessCount = ProcessRowModel.build(input).rows.values.filter { !$0.isGroup }.count
+        cachedMatchingProcessCount = ProcessRowModel.matchingProcessCount(makeInput())
     }
 
     private func updateEmptyState(output: ProcessOutline) {
@@ -872,14 +870,12 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
                                  searching: searching)
     }
 
-    /// Processes passing the search and scope filter, from a flat build so collapsed groups still count their members.
+    /// Processes passing the search and scope filter, counted from the processes so collapsed groups still count their members.
     private func matchingProcessCount() -> Int {
         if let cachedMatchingProcessCount {
             return cachedMatchingProcessCount
         }
-        var input = makeInput()
-        input.grouping = .flat
-        let count = ProcessRowModel.build(input).rows.values.filter { !$0.isGroup }.count
+        let count = ProcessRowModel.matchingProcessCount(makeInput())
         cachedMatchingProcessCount = count
         return count
     }

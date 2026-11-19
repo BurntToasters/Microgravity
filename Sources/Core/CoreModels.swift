@@ -742,19 +742,23 @@ public struct CollectedProcessSystemMetrics: Codable, Equatable, Sendable {
     public let diskWriteBytes: UInt64?
     public let threadCount: Int32?
     public let executablePath: String?
+    /// When the helper captured these counters. Rates derived from them use this time, not the collection tick.
+    public let capturedAt: Date?
 
     public init(cpuTotalNanoseconds: UInt64? = nil,
                 memoryBytes: UInt64? = nil,
                 diskReadBytes: UInt64? = nil,
                 diskWriteBytes: UInt64? = nil,
                 threadCount: Int32? = nil,
-                executablePath: String? = nil) {
+                executablePath: String? = nil,
+                capturedAt: Date? = nil) {
         self.cpuTotalNanoseconds = cpuTotalNanoseconds
         self.memoryBytes = memoryBytes
         self.diskReadBytes = diskReadBytes
         self.diskWriteBytes = diskWriteBytes
         self.threadCount = threadCount
         self.executablePath = executablePath
+        self.capturedAt = capturedAt
     }
 }
 

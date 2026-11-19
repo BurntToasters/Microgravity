@@ -8,11 +8,17 @@ struct AppleSMCPowerReading: Equatable, Sendable {
 }
 
 /// Safe read-only AppleSMC IOKit reader. Returns nil cleanly on VMs and unsupported Macs.
+///
+/// The connection and key caches live in one shared `AppleSMCSession`, so a tick does not open the
+/// service or re-query key info. Any failed IOKit call closes the connection and clears the caches;
+/// the next tick reopens.
 enum AppleSMCReader {
-    private static let kSMCUserClientOpen: UInt32 = 0
-    private static let kSMCHandleYPCEvent: UInt32 = 2
-    private static let kSMCReadKey: UInt8 = 5
-    private static let kSMCGetKeyInfo: UInt8 = 9
+    fileprivate static let kSMCUserClientOpen: UInt32 = 0
+    fileprivate static let kSMCHandleYPCEvent: UInt32 = 2
+    fileprivate static let kSMCReadKey: UInt8 = 5
+    fileprivate static let kSMCGetKeyInfo: UInt8 = 9
+
+    fileprivate static let sharedSession = AppleSMCSession(transport: IOKitAppleSMCTransport())
 
     struct KeyInfoData {
         var dataSize: UInt32 = 0
@@ -64,68 +70,7 @@ enum AppleSMCReader {
     static var bytesOffset: Int? { MemoryLayout<SMCParamStruct>.offset(of: \.bytes) }
 
     static func readPower() -> AppleSMCPowerReading? {
-        guard MemoryLayout<SMCParamStruct>.size == 80 else { return nil }
-        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"))
-        guard service != 0 else { return nil }
-        defer { IOObjectRelease(service) }
-
-        var connection: io_connect_t = 0
-        guard IOServiceOpen(service, mach_task_self_, kSMCUserClientOpen, &connection) == KERN_SUCCESS,
-              connection != 0 else { return nil }
-        defer { IOServiceClose(connection) }
-
-        let systemTotal = firstValidKey(["PSTR"], on: connection)
-        let dcIn = firstValidKey(["PDTR"], on: connection)
-        let battery = firstValidKey(["PB0R", "PPBR"], on: connection)
-
-        guard systemTotal != nil || dcIn != nil || battery != nil else { return nil }
-        return AppleSMCPowerReading(systemTotalWatts: systemTotal, dcInWatts: dcIn, batteryWatts: battery)
-    }
-
-    private static func firstValidKey(_ keys: [String], on connection: io_connect_t) -> Double? {
-        for key in keys {
-            if let value = readNumericKey(key, on: connection), value.isFinite, abs(value) < 500 {
-                return value
-            }
-        }
-        return nil
-    }
-
-    private static func readNumericKey(_ key: String, on connection: io_connect_t) -> Double? {
-        guard let code = fourCC(key) else { return nil }
-
-        var infoInput = SMCParamStruct()
-        infoInput.key = code
-        infoInput.data8 = kSMCGetKeyInfo
-        guard let infoOutput = callSMC(&infoInput, on: connection),
-              infoOutput.keyInfo.dataSize > 0,
-              infoOutput.keyInfo.dataSize <= 32 else { return nil }
-
-        var readInput = SMCParamStruct()
-        readInput.key = code
-        readInput.keyInfo.dataSize = infoOutput.keyInfo.dataSize
-        readInput.data8 = kSMCReadKey
-        guard let readOutput = callSMC(&readInput, on: connection) else { return nil }
-
-        let dataType = decodeFourCC(infoOutput.keyInfo.dataType)
-        let size = Int(infoOutput.keyInfo.dataSize)
-        let rawBytes = withUnsafeBytes(of: readOutput.bytes) { Array($0.prefix(size)) }
-        return decode(dataType: dataType, bytes: rawBytes)
-    }
-
-    private static func callSMC(_ input: inout SMCParamStruct, on connection: io_connect_t) -> SMCParamStruct? {
-        var output = SMCParamStruct()
-        var outputSize = MemoryLayout<SMCParamStruct>.size
-        let status = IOConnectCallStructMethod(
-            connection,
-            kSMCHandleYPCEvent,
-            &input,
-            MemoryLayout<SMCParamStruct>.size,
-            &output,
-            &outputSize
-        )
-        guard status == KERN_SUCCESS, output.result == 0 else { return nil }
-        return output
+        sharedSession.readPower()
     }
 
     static func fourCC(_ string: String) -> UInt32? {
@@ -192,5 +137,160 @@ enum AppleSMCReader {
                 return Double(unsigned) / scale
             }
         }
+    }
+}
+
+/// Raw access to the AppleSMC user client. The IOKit implementation is the only production conformer;
+/// tests substitute a fake to exercise the connection and cache logic without hardware.
+protocol AppleSMCTransport: Sendable {
+    /// Returns a valid connection, or nil when the AppleSMC service cannot be opened.
+    func open() -> io_connect_t?
+    func close(_ connection: io_connect_t)
+    /// Returns the kernel output, or nil when the IOKit call itself failed. SMC-level status is in `result`.
+    func call(_ connection: io_connect_t, input: AppleSMCReader.SMCParamStruct) -> AppleSMCReader.SMCParamStruct?
+}
+
+struct IOKitAppleSMCTransport: AppleSMCTransport {
+    func open() -> io_connect_t? {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"))
+        guard service != 0 else { return nil }
+        defer { IOObjectRelease(service) }
+
+        var connection: io_connect_t = 0
+        guard IOServiceOpen(service, mach_task_self_, AppleSMCReader.kSMCUserClientOpen, &connection) == KERN_SUCCESS,
+              connection != 0 else { return nil }
+        return connection
+    }
+
+    func close(_ connection: io_connect_t) {
+        IOServiceClose(connection)
+    }
+
+    func call(_ connection: io_connect_t, input: AppleSMCReader.SMCParamStruct) -> AppleSMCReader.SMCParamStruct? {
+        var input = input
+        var output = AppleSMCReader.SMCParamStruct()
+        var outputSize = MemoryLayout<AppleSMCReader.SMCParamStruct>.size
+        let status = IOConnectCallStructMethod(
+            connection,
+            AppleSMCReader.kSMCHandleYPCEvent,
+            &input,
+            MemoryLayout<AppleSMCReader.SMCParamStruct>.size,
+            &output,
+            &outputSize
+        )
+        guard status == KERN_SUCCESS else { return nil }
+        return output
+    }
+}
+
+/// An IOKit call failed, or an SMC read failed for a key whose info was already known.
+fileprivate struct SMCConnectionFailure: Error {}
+
+/// Owns one AppleSMC connection and the key caches that belong to it. Every access is guarded by a lock
+/// because the power collector can run on more than one queue.
+final class AppleSMCSession: @unchecked Sendable {
+    private let transport: any AppleSMCTransport
+    private let lock = NSLock()
+    private var connection: io_connect_t?
+    private var keyInfoCache: [String: AppleSMCReader.KeyInfoData] = [:]
+    /// The battery key (`PB0R` or `PPBR`) that answered last time; nil until one does.
+    private var batteryKey: String?
+
+    init(transport: any AppleSMCTransport) {
+        self.transport = transport
+    }
+
+    func readPower() -> AppleSMCPowerReading? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard AppleSMCReader.paramStructSize == 80 else { return nil }
+
+        do {
+            let connection = try openConnectionLocked()
+            let systemTotal = try validatedValue(for: "PSTR", connection: connection)
+            let dcIn = try validatedValue(for: "PDTR", connection: connection)
+            let battery = try batteryValue(connection: connection)
+
+            guard systemTotal != nil || dcIn != nil || battery != nil else { return nil }
+            return AppleSMCPowerReading(systemTotalWatts: systemTotal, dcInWatts: dcIn, batteryWatts: battery)
+        } catch {
+            resetLocked()
+            return nil
+        }
+    }
+
+    private func openConnectionLocked() throws -> io_connect_t {
+        if let connection { return connection }
+        guard let opened = transport.open() else { throw SMCConnectionFailure() }
+        connection = opened
+        return opened
+    }
+
+    /// Closes the connection and forgets everything that was learned through it.
+    private func resetLocked() {
+        if let connection {
+            transport.close(connection)
+        }
+        connection = nil
+        keyInfoCache.removeAll()
+        batteryKey = nil
+    }
+
+    private func batteryValue(connection: io_connect_t) throws -> Double? {
+        let candidates = batteryKey.map { [$0] } ?? ["PB0R", "PPBR"]
+        for key in candidates {
+            if let value = try validatedValue(for: key, connection: connection) {
+                batteryKey = key
+                return value
+            }
+        }
+        // The cached key stopped answering; probe both candidates again on the next tick.
+        batteryKey = nil
+        return nil
+    }
+
+    private func validatedValue(for key: String, connection: io_connect_t) throws -> Double? {
+        guard let value = try numericValue(for: key, connection: connection),
+              value.isFinite, abs(value) < 500 else { return nil }
+        return value
+    }
+
+    private func numericValue(for key: String, connection: io_connect_t) throws -> Double? {
+        guard let code = AppleSMCReader.fourCC(key) else { return nil }
+
+        let info: AppleSMCReader.KeyInfoData
+        if let cached = keyInfoCache[key] {
+            info = cached
+        } else {
+            var infoInput = AppleSMCReader.SMCParamStruct()
+            infoInput.key = code
+            infoInput.data8 = AppleSMCReader.kSMCGetKeyInfo
+            let infoOutput = try call(infoInput, connection: connection)
+            // A non-zero SMC result means this Mac has no such key. That is normal (PB0R vs PPBR),
+            // so it reports nil for this key without tearing down the connection.
+            guard infoOutput.result == 0,
+                  infoOutput.keyInfo.dataSize > 0,
+                  infoOutput.keyInfo.dataSize <= 32 else { return nil }
+            info = infoOutput.keyInfo
+            keyInfoCache[key] = info
+        }
+
+        var readInput = AppleSMCReader.SMCParamStruct()
+        readInput.key = code
+        readInput.keyInfo.dataSize = info.dataSize
+        readInput.data8 = AppleSMCReader.kSMCReadKey
+        let readOutput = try call(readInput, connection: connection)
+        // The key was known to exist, so a rejected read is a failed call.
+        guard readOutput.result == 0 else { throw SMCConnectionFailure() }
+
+        let dataType = AppleSMCReader.decodeFourCC(info.dataType)
+        let size = Int(info.dataSize)
+        let rawBytes = withUnsafeBytes(of: readOutput.bytes) { Array($0.prefix(size)) }
+        return AppleSMCReader.decode(dataType: dataType, bytes: rawBytes)
+    }
+
+    private func call(_ input: AppleSMCReader.SMCParamStruct, connection: io_connect_t) throws -> AppleSMCReader.SMCParamStruct {
+        guard let output = transport.call(connection, input: input) else { throw SMCConnectionFailure() }
+        return output
     }
 }

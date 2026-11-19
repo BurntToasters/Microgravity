@@ -44,8 +44,6 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
         outline.gridStyleMask = []
         outline.indentationPerLevel = 14
         outline.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
-        outline.autosaveName = autosaveName
-        outline.autosaveTableColumns = autosaveName != nil
         outline.headerView?.setAccessibilityIdentifier("history.table.header")
 
         for column in AppHistoryColumn.allCases {
@@ -62,6 +60,9 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
             outline.addTableColumn(tableColumn)
         }
         outline.outlineTableColumn = outline.tableColumns.first
+        // Enable autosave after the columns exist so saved widths and visibility restore onto them.
+        outline.autosaveName = autosaveName
+        outline.autosaveTableColumns = autosaveName != nil
 
         let scroll = NSScrollView()
         scroll.documentView = outline

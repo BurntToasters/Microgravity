@@ -849,6 +849,58 @@ final class PerformanceViewControllerTests: XCTestCase {
         XCTAssertTrue(sparkline.trackingAreas.isEmpty, "sparklines never track the pointer")
         sparkline.setHover(x: sparkline.bounds.midX)
         XCTAssertNil(sparkline.hoverX)
+
+        let compact = MetricGraphView(style: .compact)
+        compact.setFrameSize(NSSize(width: 140, height: 48))
+        compact.update(series: series, mapping: .index(capacity: 60))
+        compact.updateTrackingAreas()
+        XCTAssertTrue(compact.trackingAreas.isEmpty, "compact core tiles never track the pointer")
+        compact.setHover(x: compact.bounds.midX)
+        XCTAssertNil(compact.hoverX)
+    }
+
+    func testEnergyDetailShowsDischargingOnBatteryEvenWithPositiveWattMagnitude() {
+        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let base = CoreTestFixtures.snapshot(timestamp: timestamp)
+        let original = base.system
+        let power = SystemPowerSnapshot(
+            systemPowerWatts: MetricReading(value: 14.0, unit: .watts, timestamp: timestamp),
+            componentPowerWatts: nil,
+            adapterPowerWatts: nil,
+            batteryPowerWatts: MetricReading(value: 14.0, unit: .watts, timestamp: timestamp),
+            cpuPowerWatts: nil, gpuPowerWatts: nil, anePowerWatts: nil, dramPowerWatts: nil,
+            powerSource: .battery,
+            batteryPercent: 72,
+            batteryCharging: false,
+            batteryTimeRemainingMinutes: 240,
+            adapterMaxWatts: nil,
+            thermalState: .nominal
+        )
+        let system = SystemMetricsSnapshot(
+            capacityCores: original.capacityCores, cpuPercent: original.cpuPercent,
+            perCoreCPUPercent: original.perCoreCPUPercent,
+            memoryUsedBytes: original.memoryUsedBytes, memoryAvailableBytes: original.memoryAvailableBytes,
+            memoryTotalBytes: original.memoryTotalBytes, memoryPressure: original.memoryPressure,
+            swapUsedBytes: original.swapUsedBytes, swapTotalBytes: original.swapTotalBytes,
+            diskReadBytesPerSecond: original.diskReadBytesPerSecond,
+            diskWriteBytesPerSecond: original.diskWriteBytesPerSecond,
+            networkReceiveBytesPerSecond: original.networkReceiveBytesPerSecond,
+            networkTransmitBytesPerSecond: original.networkTransmitBytesPerSecond,
+            networkInterfaces: [],
+            power: power
+        )
+        let snapshot = MonitoringSnapshot(
+            timestamp: timestamp, system: system, processes: [], processGroups: [],
+            startupItems: [], services: [], users: [], discoveryCoverage: [:],
+            capabilities: [.energy: MetricAvailability(available: true)],
+            advancedMetrics: [.energy: MetricReading(value: 14.0, unit: .watts, timestamp: timestamp)]
+        )
+        let model = PerformancePresenter.detail(
+            metric: .energy, snapshot: snapshot, samples: [MonitoringGraphSample(snapshot: snapshot)],
+            window: .oneMinute, cpuMode: .overall
+        )
+        let batteryStat = model.stats.first { $0.label == "Battery Power" }
+        XCTAssertEqual(batteryStat?.value.hasSuffix("· discharging"), true, batteryStat?.value ?? "nil")
     }
 
     func testHoverReadoutKeepsItsPositionWhenDataUpdatesAndDrawsAtTheRightEdge() throws {

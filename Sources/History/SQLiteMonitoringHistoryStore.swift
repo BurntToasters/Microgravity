@@ -1383,15 +1383,30 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
         return currentApplicationSamples
     }
 
+    private func isRoutineLifecycleUnavailability(_ reason: MetricUnavailableReason?) -> Bool {
+        switch reason {
+        case .warmingUp, .processExited, .identityChanged:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func intervalsMatchWithinJitter(_ lhs: DateInterval, _ rhs: DateInterval) -> Bool {
+        abs(lhs.start.timeIntervalSince(rhs.start)) <= 0.05 && abs(lhs.end.timeIntervalSince(rhs.end)) <= 0.05
+    }
+
     private func combine(_ readings: [MetricReading], unit: MetricUnit, timestamp: Date) -> MetricReading {
         guard !readings.isEmpty else {
             return MetricReading(unavailable: unit, timestamp: timestamp, reason: .notCollected)
         }
-        let unavailableCount = readings.filter { !$0.isAvailable }.count
+        let nonRoutineUnavailableCount = readings.filter {
+            !$0.isAvailable && !isRoutineLifecycleUnavailability($0.unavailableReason)
+        }.count
         let availableValues = readings.compactMap(\.value)
         let hasIncompatibleIntervals = hasIncompatibleMeasurementIntervals(readings)
         let isPartial = readings.contains(where: \.isPartial) || hasIncompatibleIntervals
-            || (!availableValues.isEmpty && unavailableCount > 0)
+            || (!availableValues.isEmpty && nonRoutineUnavailableCount > 0)
         guard !availableValues.isEmpty else {
             let unavailable = readings.first(where: { !$0.isAvailable })
             return MetricReading(unavailable: unit, timestamp: timestamp,
@@ -1399,8 +1414,8 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
                                  detail: unavailable?.detail, isPartial: isPartial)
         }
         var details = readings.compactMap(\.detail)
-        if unavailableCount > 0 {
-            details.append("Partial: \(unavailableCount) of \(readings.count) members unavailable")
+        if nonRoutineUnavailableCount > 0 {
+            details.append("Partial: \(nonRoutineUnavailableCount) of \(readings.count) members unavailable")
         }
         if hasIncompatibleIntervals {
             details.append("Measurement intervals differ across contributors")
@@ -1417,7 +1432,12 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
     private func commonMeasurementInterval(_ readings: [MetricReading]) -> DateInterval? {
         let available = readings.filter(\.isAvailable)
         guard let interval = available.first?.measurementInterval,
-              available.allSatisfy({ $0.measurementInterval == interval }) else { return nil }
+              available.allSatisfy({
+                  if let other = $0.measurementInterval {
+                      return intervalsMatchWithinJitter(interval, other)
+                  }
+                  return false
+              }) else { return nil }
         return interval
     }
 
@@ -1425,7 +1445,8 @@ public actor SQLiteMonitoringHistoryStore: MonitoringHistoryManaging {
         let available = readings.filter(\.isAvailable)
         let intervals = available.compactMap(\.measurementInterval)
         guard !intervals.isEmpty else { return false }
-        return intervals.count != available.count || intervals.contains { $0 != intervals[0] }
+        return intervals.count != available.count
+            || intervals.contains { !intervalsMatchWithinJitter($0, intervals[0]) }
     }
 
     private func execute(_ sql: String, on db: OpaquePointer) throws {

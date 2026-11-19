@@ -20,6 +20,41 @@ enum HelperLog {
     static let sample = Logger(subsystem: helperMachService, category: "sample")
 }
 
+private let helperNettopStream = NettopStreamService()
+
+private final class HelperFastMetricsCoordinator: @unchecked Sendable {
+    private let lock = NSLock()
+    private let processMetricsMinIntervalNanoseconds: UInt64 = 500_000_000
+    private var lastProcessMetricsUptime: UInt64?
+
+    func collectProcessMetrics(excludingUID: uid_t) -> HelperSampleResponse {
+        lock.lock()
+        let nowUptime = DispatchTime.now().uptimeNanoseconds
+        if let last = lastProcessMetricsUptime,
+           nowUptime &- last < processMetricsMinIntervalNanoseconds {
+            lock.unlock()
+            return HelperSampleResponse(version: helperProtocolVersion, kind: .processMetrics,
+                                        capturedAt: Date(), output: nil, error: "rateLimited")
+        }
+        lastProcessMetricsUptime = nowUptime
+        lock.unlock()
+
+        let payload = HelperProcessMetricsReader.collect(excludingUID: excludingUID)
+        guard let encoded = try? JSONEncoder().encode(payload) else {
+            return HelperSampleResponse(version: helperProtocolVersion, kind: .processMetrics,
+                                        capturedAt: Date(), output: nil, error: "encodeFailed")
+        }
+        guard encoded.count <= HelperSampleResponse.maximumOutputBytes else {
+            return HelperSampleResponse(version: helperProtocolVersion, kind: .processMetrics,
+                                        capturedAt: Date(), output: nil, error: "outputLimit")
+        }
+        return HelperSampleResponse(version: helperProtocolVersion, kind: .processMetrics,
+                                    capturedAt: Date(), output: encoded, error: nil)
+    }
+}
+
+private let fastMetricsCoordinator = HelperFastMetricsCoordinator()
+
 final class Service: NSObject, HelperProtocol {
     let cancellation = SamplingCancellation()
     let clientPID: Int32
@@ -60,12 +95,58 @@ final class Service: NSObject, HelperProtocol {
             reply(Data())
             return
         }
-        let xpcReply = XPCSampleReply(reply)
         let pid = clientPID
-        SamplingRunner.shared.sample(request, cancellation: cancellation) { response in
+        let encodeAndSend: (HelperSampleResponse) -> Void = { response in
             let result = response.error ?? "ok"
             HelperLog.sample.info("sample client pid=\(pid, privacy: .public) kind=\(request.kind.rawValue, privacy: .public) result=\(result, privacy: .public)")
-            xpcReply.send((try? JSONEncoder().encode(response)) ?? Data())
+            reply((try? JSONEncoder().encode(response)) ?? Data())
+        }
+        guard request.version == helperProtocolVersion else {
+            encodeAndSend(HelperSampleResponse(version: helperProtocolVersion, kind: request.kind,
+                                               capturedAt: Date(), output: nil, error: "incompatibleVersion"))
+            return
+        }
+        if idle.refuseIfStale() {
+            encodeAndSend(HelperSampleResponse(version: helperProtocolVersion, kind: request.kind,
+                                               capturedAt: Date(), output: nil, error: "disconnected"))
+            return
+        }
+
+        switch request.kind {
+        case .nettopStream:
+            let stream = helperNettopStream.latestSnapshot(since: request.sinceSequence)
+            let payload = HelperNettopStreamPayload(
+                health: stream.health,
+                intervalStart: stream.interval?.start,
+                intervalEnd: stream.interval?.end,
+                sequence: stream.latestSequence,
+                entries: stream.totalsByPID.values
+                    .sorted(by: { $0.pid < $1.pid })
+                    .map { HelperNettopDeltaEntry(pid: $0.pid, bytesIn: $0.bytesIn, bytesOut: $0.bytesOut) },
+                detail: stream.error
+            )
+            let encoded = try? JSONEncoder().encode(payload)
+            if let encoded, encoded.count <= HelperSampleResponse.maximumOutputBytes {
+                encodeAndSend(HelperSampleResponse(version: helperProtocolVersion, kind: .nettopStream,
+                                                   capturedAt: stream.capturedAt,
+                                                   output: encoded,
+                                                   error: nil))
+            } else {
+                let errorCode = encoded == nil ? "encodeFailed" : "outputLimit"
+                encodeAndSend(HelperSampleResponse(version: helperProtocolVersion, kind: .nettopStream,
+                                                   capturedAt: stream.capturedAt,
+                                                   output: nil,
+                                                   error: errorCode))
+            }
+        case .processMetrics:
+            encodeAndSend(fastMetricsCoordinator.collectProcessMetrics(excludingUID: clientUID))
+        case .nettop, .powermetrics:
+            let xpcReply = XPCSampleReply(reply)
+            SamplingRunner.shared.sample(request, cancellation: cancellation) { response in
+                let result = response.error ?? "ok"
+                HelperLog.sample.info("sample client pid=\(pid, privacy: .public) kind=\(request.kind.rawValue, privacy: .public) result=\(result, privacy: .public)")
+                xpcReply.send((try? JSONEncoder().encode(response)) ?? Data())
+            }
         }
     }
     func terminate(_ request: Data, authorization: Data, reply: @escaping (String) -> Void) {
@@ -81,8 +162,15 @@ final class Service: NSObject, HelperProtocol {
     }
     func capabilities(_ reply: @escaping (Int, [String]) -> Void) {
         markVerified()
-        let tools: [(String, String)] = [("nettop", "/usr/bin/nettop"), ("powermetrics", "/usr/bin/powermetrics")]
-        reply(helperProtocolVersion, tools.filter { FileManager.default.isExecutableFile(atPath: $0.1) }.map { $0.0 })
+        var available: [String] = ["processMetrics"]
+        if FileManager.default.isExecutableFile(atPath: "/usr/bin/nettop") {
+            available.append("nettop")
+            available.append("nettopStream")
+        }
+        if FileManager.default.isExecutableFile(atPath: "/usr/bin/powermetrics") {
+            available.append("powermetrics")
+        }
+        reply(helperProtocolVersion, available)
     }
 }
 
@@ -149,20 +237,36 @@ final class Lifecycle: @unchecked Sendable {
     }
 
     func peerClosed() {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         verifiedPeers -= 1
-        guard verifiedPeers == 0 else { return }
-        exitIfDrainedLocked()
-        scheduleIdleLocked()
+        let drained = verifiedPeers == 0
+        let staleExit = drained && stale
+        if drained && !staleExit {
+            scheduleIdleLocked()
+        }
+        lock.unlock()
+        if drained {
+            helperNettopStream.stop()
+        }
+        if staleExit {
+            HelperLog.connection.info("stale exit: helper executable changed on disk")
+            exit(0)
+        }
     }
 
     /// True once the on-disk executable differs from startup. Exits right away if no
     /// verified peer remains.
     func refuseIfStale() -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        guard refreshStaleLocked() else { return false }
-        exitIfDrainedLocked()
-        return true
+        lock.lock()
+        let isStale = refreshStaleLocked()
+        let staleExit = isStale && verifiedPeers == 0
+        lock.unlock()
+        if staleExit {
+            helperNettopStream.stop()
+            HelperLog.connection.info("stale exit: helper executable changed on disk")
+            exit(0)
+        }
+        return isStale
     }
 
     private func refreshStaleLocked() -> Bool {
@@ -172,13 +276,6 @@ final class Lifecycle: @unchecked Sendable {
             HelperLog.connection.info("helper executable changed on disk; draining")
         }
         return stale
-    }
-
-    // Caller holds lock.
-    private func exitIfDrainedLocked() {
-        guard stale, verifiedPeers == 0 else { return }
-        HelperLog.connection.info("stale exit: helper executable changed on disk")
-        exit(0)
     }
 
     private func scheduleStaleCheck() {
@@ -196,12 +293,18 @@ final class Lifecycle: @unchecked Sendable {
     }
 
     private func idleCheck(_ expected: Int) {
-        lock.lock(); defer { lock.unlock() }
-        guard expected == generation, verifiedPeers == 0 else { return }
-        if TerminationService.hasUnexpiredConsumedAuthorizations() {
-            scheduleIdleLocked()
+        lock.lock()
+        guard expected == generation, verifiedPeers == 0 else {
+            lock.unlock()
             return
         }
+        if TerminationService.hasUnexpiredConsumedAuthorizations() {
+            scheduleIdleLocked()
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+        helperNettopStream.stop()
         HelperLog.connection.info("idle exit: no verified client connections")
         exit(0)
     }

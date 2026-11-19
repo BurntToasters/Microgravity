@@ -93,6 +93,11 @@ final class MetricGraphView: NSView {
         refreshGapToolTips()
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         let plot = plotRect()
         guard plot.width > 1, plot.height > 1 else { return }
@@ -319,7 +324,7 @@ final class MetricGraphView: NSView {
         super.updateTrackingAreas()
         if let hoverArea { removeTrackingArea(hoverArea) }
         hoverArea = nil
-        guard style != .sparkline else { return }
+        guard style == .detail else { return }
         let area = NSTrackingArea(rect: .zero,
                                   options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
                                   owner: self, userInfo: nil)
@@ -345,7 +350,7 @@ final class MetricGraphView: NSView {
 
     /// Sets the cursor x for the readout. Values outside the plot's horizontal span clear it. Redraws only on change.
     func setHover(x: CGFloat?) {
-        guard style != .sparkline else { return }
+        guard style == .detail else { return }
         let plot = plotRect()
         let next = x.flatMap { $0 >= plot.minX && $0 <= plot.maxX ? $0 : nil }
         guard next != hoverX else { return }
@@ -409,7 +414,8 @@ final class MetricGraphView: NSView {
         // Sit right of the cursor; flip to the left when that would run past the right edge. Keep it inside bounds.
         var originX = x + 10
         if originX + boxSize.width > bounds.maxX { originX = x - 10 - boxSize.width }
-        originX = min(max(originX, bounds.minX + 2), bounds.maxX - boxSize.width - 2)
+        let maxOriginX = max(bounds.minX + 2, bounds.maxX - boxSize.width - 2)
+        originX = min(max(originX, bounds.minX + 2), maxOriginX)
         let originY = max(plot.maxY - boxSize.height, bounds.minY + 2)
         let rect = NSRect(origin: NSPoint(x: originX, y: originY), size: boxSize)
 
@@ -546,13 +552,18 @@ final class MemoryPressureStripView: NSView {
         case .critical: return .systemRed
         }
     }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
 }
 
 /// Used/total capacity bar. A nil fraction draws only the empty track.
 @MainActor
 final class CapacityBarView: NSView {
     private var fraction: Double?
-    private let tint: NSColor
+    private var tint: NSColor
 
     init(tint: NSColor) {
         self.tint = tint
@@ -567,6 +578,16 @@ final class CapacityBarView: NSView {
 
     func setFraction(_ value: Double?) {
         fraction = value.map { min(max($0, 0), 1) }
+        needsDisplay = true
+    }
+
+    func setTint(_ value: NSColor) {
+        tint = value
+        needsDisplay = true
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
         needsDisplay = true
     }
 

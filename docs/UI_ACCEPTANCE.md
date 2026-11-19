@@ -12,20 +12,22 @@ argument alone cannot switch a production build to fixture data.
 - Use a resizable native window. It opens at 1280 × 820, cannot be resized below
   960 × 600, and saves its frame between launches.
 - The window has a unified toolbar with page-specific items and a source-list
-  sidebar. The sidebar has two groups: **Monitor** (Processes, Performance, App
-  History) and **Inventory** (Startup, Users, Details, Services), with Settings
-  last. A status footer shows either "Paused" or the sampling interval, and the
-  time of the last sample.
+  sidebar. The sidebar has two groups: **Monitor** (Processes, Details,
+  Performance, App History, Users) and **Inventory** (Startup, Services,
+  Settings). A status footer shows either "Paused" or the sampling interval,
+  and the time of the last sample.
 - Command-1 through Command-8 select the sidebar pages in sidebar order.
-  Command-Option-S toggles the sidebar. Settings is also available as
-  Command-comma.
+  Command-Option-S toggles the sidebar. Command-Option-T toggles **Always on
+  Top** (`NSWindow.Level.floating`), remembered between launches outside fixture
+  mode. Settings is also available as Command-comma.
 - The menu bar has the standard application, File, Edit, View, Window, and Help
   menus, a Process menu for the selected process, and Check for Updates.
-- The View menu has **Pause Sampling** (Option-Command-P), which changes to
-  **Resume Sampling** while sampling is paused. Its **Refresh Interval** submenu
-  offers the same four intervals as Settings and marks the current one. The
-  Process menu has **Inspect…** (Option-Command-I), which works from any focus
-  inside the window.
+- The View menu has **Toggle Sidebar** (Option-Command-S), **Always on Top**
+  (Option-Command-T), and **Pause Sampling** (Option-Command-P), which changes
+  to **Resume Sampling** while sampling is paused. Its **Refresh Interval**
+  submenu offers the same four intervals as Settings and marks the current one.
+  The Process menu has **Inspect…** (Option-Command-I), which works from any
+  focus inside the window.
 - Closing the last window terminates the app. No storyboard or SwiftUI is used.
 - Sidebar items, tables, outline rows, headers, graph controls, toolbar items,
   actions, and dialogs have stable accessibility identifiers and keyboard
@@ -38,36 +40,46 @@ argument alone cannot switch a production build to fixture data.
 
 ## Processes and Details
 
-- Processes is a native outline view. It is searchable and sortable, with app
-  icons, subtle heat-mapped resource cells, and a grouping choice of **Group by
-  App** or **Flat List**. In grouped mode, related processes appear under an
-  expandable parent row. Expanded groups are remembered across launches by full
-  PID-plus-start-time identity, so a reused PID never inherits old expansion.
-  The grouping choice is also remembered across launches. Each resource column
-  tints its heat-mapped cells in its own color (CPU blue, Memory purple, Disk
-  green, Network orange) as a rounded fill inside the cell. Selecting any row
-  exposes its stable identity. **Show in Details** opens the flat inventory and
-  selects that same full process identity when it is still present.
-- **Inspect…** (row context menu, the Inspect button in the selection bar, or
-  Option-Command-I) opens a popover for the selected process. It shows the name,
-  PID, parent, owner, full start time, executable path, app bundle, live CPU,
-  memory, and disk read and write rates, disk read and written since the process
-  started, and network use. Values update while the popover is open, and it
-  closes when the process identity disappears. Unavailable values say so; they
-  are never shown as zero.
+- Processes is a native outline view with a clickable live system totals strip
+  above the table (CPU, Memory, Disk, Network; clicking jumps to Performance).
+  It is searchable, scope-filterable (**All Processes**, **Apps Only**, **My
+  Processes**), and sortable, with app icons, member-count pills on multi-process
+  groups, subtle heat-mapped resource cells, and grouping choices of **Group by
+  App**, **By Category** (Apps, Background processes, System processes), or
+  **Flat List**. Single-process rows never show disclosure triangles. Expanded
+  groups and categories, grouping choice, and scope are preserved appropriately.
+  Double-clicking an expandable group or section toggles expansion; double-clicking
+  a single process opens **Inspect…**. Each resource column tints its heat-mapped
+  cells in its own color (CPU blue, Memory purple, Disk green, Network orange).
+  The compact **Disk** column displays combined throughput (`0 B/s`, `391 KB/s`)
+  with Read/Write split in the hover tooltip and optional **Disk Read** / **Disk
+  Write** columns in the header menu. Selecting any row exposes its stable
+  identity. **Show in Details** opens the flat inventory and selects that same
+  full process identity when it is still present.
+- **Inspect…** (row context menu, double-clicking a leaf process, the Inspect
+  button in the selection bar, or Option-Command-I) opens a popover for the
+  selected process. It shows the name, PID, parent, owner, full start time,
+  architecture, threads, executable path, app bundle, live CPU, memory, and disk
+  read and write rates, disk read and written since the process started, and
+  network use (combined, receive, and send). Values update while the popover is
+  open, and it closes when the process identity disappears. Unavailable values
+  say so; they are never shown as zero.
 - Partial and unavailable readings are marked with a badge and a tooltip that
-  gives the reason. A selection bar at the bottom of the page shows the selected
-  process and its available actions. With nothing selected, it shows the process
-  and app counts (for example "12 processes · 4 apps"), or "K of N processes
-  match" while a search is active.
-- Details is a flat process inventory showing PID, owner, parent PID, executable
-  path, CPU, memory, disk, available network and GPU columns. Unsupported fields
-  are labeled unavailable; they are never presented as zero. Numeric columns
-  right-align their headers and trail-align their values. Right-clicking a row
-  offers **Show in Processes**, **Reveal in Finder**, **Copy Path**, and **Copy
-  PID**. Reveal in Finder and Copy Path are disabled when the path is unavailable.
-  Show in Processes opens Processes with that process selected and its group
-  expanded.
+  gives the reason. Routine one-tick subprocess warm-ups no longer trigger
+  false `!` badges on parent groups. A selection bar at the bottom of the page
+  shows the selected process and its available actions. With nothing selected,
+  it distinguishes true apps from background groups (for example "12 processes ·
+  4 apps · 5 background"), or "K of N processes match" while searching.
+- Details is a flat, searchable process inventory showing PID, owner, parent PID,
+  executable path, CPU, memory, compact disk, available network and GPU columns,
+  plus toggleable hidden-by-default **Threads**, **Architecture**, and **CPU
+  Time** columns. Unsupported fields are labeled unavailable; they are never
+  presented as zero. Numeric columns right-align their headers and trail-align
+  their values. Right-clicking a row offers **Quit Process** (or **Relaunch Finder**),
+  **Force Quit…**, **Inspect…**, **Show in Processes**, **Reveal in Finder**,
+  **Copy Path**, and **Copy PID**. Reveal in Finder and Copy Path are disabled
+  when the path is unavailable. Show in Processes opens Processes with that
+  process selected and its group expanded.
 - Quit asks the core to act on the selected stable identity. Force Quit requires
   confirmation in a window sheet. The core must revalidate that identity at
   action time; if the PID was reused or the target exited, the UI reports that
@@ -92,8 +104,9 @@ and the Settings caption must match it.
   and PID, and the helper writes its text. Cancel sends no signal. The approval
   covers only the process the helper signals. See
   [ADVANCED_METRICS.md](ADVANCED_METRICS.md#helper-trust-and-authorization).
-- Settings states the limit: "Lets you quit processes owned by other standard
-  users. System and root processes stay protected."
+- Settings states the policy: "Enables CPU, memory, disk, and network readings
+  for root and other users’ processes, and lets you quit processes owned by
+  other standard users. System and root processes stay protected."
 - Widening this policy is a product decision. It requires updating this section,
   the Settings caption, and the helper policy tests together.
 
@@ -117,12 +130,21 @@ and the Settings caption must match it.
 - Graph history keeps up to 3600 samples, which is one hour at one-second
   sampling. The Performance header subtitle tells the user to hover a graph to
   read a sample.
-- The Memory detail shows Used, Available, Total, App memory, Wired, Compressed,
-  and Cached files. A breakdown value that was not collected shows as not
-  collected, never as zero.
-- Network totals exclude loopback, virtual, and tunnel interfaces. Those
-  interfaces remain in the per-interface list and are marked as excluded from
-  totals.
+- Hardware specifications (CPU chip/model, RAM, boot disk model/capacity, GPU
+  model/cores, active interface) appear in detail headers when reported.
+- The Memory detail adds a segmented **Memory composition** bar (App, Wired,
+  Compressed, Cached, Free) alongside Used, Available, Total, App memory, Wired,
+  Compressed, and Cached files stats. A breakdown value that was not collected
+  shows as not collected, never as zero.
+- Network totals exclude loopback, virtual, and tunnel interfaces. Active
+  physical interfaces sort first in the per-interface list, and excluded virtual
+  interfaces collapse behind a "Show N virtual interfaces" toggle.
+- Energy shows total **System Power** (W) on both AC and battery when sensors
+  report it, alongside Power Source and Thermal Pressure chips, component power
+  rails (CPU, GPU, ANE, DRAM), adapter input watts, and battery charge/discharge
+  telemetry. Component-only fallbacks are labeled explicitly as Component Power.
+- Startup, Services, and Users include toolbar search fields to filter entries
+  live by name, path, state, UID, or login session.
 - CPU percentages are normalized across logical cores: a process consuming one
   full core reports `100 / N` percent on an N-core system, and a fully saturated
   system totals approximately 100 percent.

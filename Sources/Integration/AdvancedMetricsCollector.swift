@@ -39,10 +39,16 @@ protocol AdvancedSamplingClient: Sendable {
     /// Runs once per refresh, before any sample. Returning false ends the refresh without sampling.
     func prepareRefresh() async -> Bool
     func sample(_ kind: HelperSampleKind) async -> HelperSampleResponse
+    var supportsProtocolV2: Bool { get }
+    func sample(_ kind: HelperSampleKind, sinceSequence: UInt64?) async -> HelperSampleResponse
 }
 
 extension AdvancedSamplingClient {
     func prepareRefresh() async -> Bool { true }
+    var supportsProtocolV2: Bool { false }
+    func sample(_ kind: HelperSampleKind, sinceSequence: UInt64?) async -> HelperSampleResponse {
+        await sample(kind)
+    }
 }
 
 extension HelperSamplingClient: AdvancedSamplingClient {}
@@ -58,14 +64,15 @@ struct ProcessIdentityLookup: Sendable {
     }
 }
 
-/// A single in-flight helper refresh runs at most every five seconds, or every sixty seconds while
-/// the helper is unavailable. Callers receive a cached snapshot immediately; readings retain capture timestamps.
+/// Coordinates privileged helper sampling (v1 5s or v2 1s streaming) plus optional unprivileged nettop fallback.
 actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
     /// Maximum age of a helper reading, measured from its capture time to read time.
     static let maximumSampleAge: TimeInterval = 30
-    /// Minimum spacing between refreshes while the helper responds.
+    /// Minimum spacing between refreshes while using legacy v1 polling or powermetrics.
     static let refreshInterval: TimeInterval = 5
-    /// Minimum spacing between refreshes after a refresh found the helper unavailable.
+    /// Minimum spacing between fast 1s refreshes for streaming nettop and helper process metrics.
+    static let fastRefreshInterval: TimeInterval = 0.9
+    /// Minimum spacing between helper availability rechecks when the helper is absent.
     static let helperUnavailableRetryInterval: TimeInterval = 60
     private static let maximumClockSkew: TimeInterval = 1
     private static let networkKinds: [MetricKind] = [.processNetwork, .processNetworkReceive, .processNetworkTransmit]
@@ -75,6 +82,8 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
                                                                detail: "Per-process GPU time is not collected.")
 
     private let client: any AdvancedSamplingClient
+    private let localNettopStream: NettopStreamService?
+    private let shouldSamplePowermetrics: @Sendable () -> Bool
     private let now: @Sendable () -> Date
     private let processIdentities: @Sendable () -> ProcessIdentityLookup
     private var network = AdvancedNetworkAccumulator()
@@ -82,6 +91,10 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
         NativeAdvancedMetricsCollector.sampledKinds.map { ($0, MetricAvailability(available: false, reason: .warmingUp)) }
             + [(MetricKind.processGPUTime, NativeAdvancedMetricsCollector.processGPUTimeAvailability)]))
     private var lastCompleted: Date?
+    private var lastHelperCheck: Date?
+    private var lastPowermetricsSampleAt: Date?
+    private var lastHelperNettopSequence: UInt64?
+    private var lastLocalNettopSequence: UInt64?
     private var lastResultWasHelperUnavailable = false
     /// Set by retryHelperSoon(); honored only while the last result was helper-unavailable.
     private var helperRetryRequested = false
@@ -90,10 +103,14 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
     private var refreshCompletionCount = 0
 
     init(client: any AdvancedSamplingClient = HelperSamplingClient(),
+         localNettopStream: NettopStreamService? = nil,
+         shouldSamplePowermetrics: @escaping @Sendable () -> Bool = { true },
          now: @escaping @Sendable () -> Date = { Date() },
          processIdentities: (@Sendable () -> [Int32: ProcessIdentity])? = nil,
          processIdentityLookup: (@Sendable () -> ProcessIdentityLookup)? = nil) {
         self.client = client
+        self.localNettopStream = localNettopStream
+        self.shouldSamplePowermetrics = shouldSamplePowermetrics
         self.now = now
         let lookup: @Sendable () -> ProcessIdentityLookup
         if let processIdentityLookup {
@@ -115,6 +132,40 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
 
     func collectAdvancedMetrics(at timestamp: Date) async -> AdvancedMetricsSnapshot {
         let currentTime = now()
+        if !client.supportsProtocolV2 && localNettopStream == nil {
+            return await collectLegacySnapshot(at: currentTime)
+        }
+
+        let helperRecheckDue = helperRetryRequested || !lastResultWasHelperUnavailable || (lastHelperCheck.map {
+            currentTime.timeIntervalSince($0) >= Self.helperUnavailableRetryInterval || currentTime < $0
+        } ?? true)
+
+        let effectiveInterval = (!lastResultWasHelperUnavailable || localNettopStream != nil)
+            ? Self.fastRefreshInterval
+            : Self.helperUnavailableRetryInterval
+        let refreshDue = helperRetryRequested || (lastCompleted.map {
+            currentTime.timeIntervalSince($0) >= effectiveInterval || currentTime < $0
+        } ?? true)
+
+        if !inFlight && refreshDue {
+            inFlight = true
+            helperRetryRequested = false
+            refreshRequestCount += 1
+            let shouldProbeHelper = helperRecheckDue
+            Task { await self.refreshV2(probeHelper: shouldProbeHelper) }
+        }
+
+        if !lastResultWasHelperUnavailable || localNettopStream != nil, let completed = lastCompleted,
+           currentTime.timeIntervalSince(completed) > Self.maximumSampleAge {
+            let unavailable = MetricAvailability(available: false, reason: .collectionFailed, detail: "Advanced sample is stale")
+            var capabilities = Dictionary(uniqueKeysWithValues: Self.sampledKinds.map { ($0, unavailable) })
+            capabilities[.processGPUTime] = Self.processGPUTimeAvailability
+            return AdvancedMetricsSnapshot(capabilities: capabilities)
+        }
+        return freshReadings(in: cache, at: currentTime)
+    }
+
+    private func collectLegacySnapshot(at currentTime: Date) async -> AdvancedMetricsSnapshot {
         let interval = lastResultWasHelperUnavailable ? Self.helperUnavailableRetryInterval : Self.refreshInterval
         let retryNow = helperRetryRequested && lastResultWasHelperUnavailable
         let refreshDue = retryNow || (lastCompleted.map {
@@ -124,9 +175,8 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
             inFlight = true
             helperRetryRequested = false
             refreshRequestCount += 1
-            Task { await self.refresh() }
+            Task { await self.refreshLegacy() }
         }
-        // An unavailable-helper cache holds no readings to age out, and its cached reason stays accurate.
         if !lastResultWasHelperUnavailable, let completed = lastCompleted,
            currentTime.timeIntervalSince(completed) > Self.maximumSampleAge {
             let unavailable = MetricAvailability(available: false, reason: .collectionFailed, detail: "Advanced sample is stale")
@@ -162,14 +212,16 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
         for kind in staleKinds {
             capabilities[kind] = MetricAvailability(available: false, reason: .collectionFailed, detail: "Advanced sample is stale")
         }
-        return AdvancedMetricsSnapshot(system: system, perProcess: perProcess, capabilities: capabilities)
+        let idleInterval = capabilities[.processNetwork]?.available == true ? snapshot.idleZeroInterval : nil
+        return AdvancedMetricsSnapshot(system: system, perProcess: perProcess, capabilities: capabilities,
+                                       idleZeroInterval: idleInterval,
+                                       perProcessSystemMetrics: snapshot.perProcessSystemMetrics)
     }
 
     func refreshRequestCountForTesting() -> Int { refreshRequestCount }
     func refreshCompletionCountForTesting() -> Int { refreshCompletionCount }
 
-    private func refresh() async {
-        // Cleared on every exit path, including cancellation, so a stuck flag cannot stop future refreshes.
+    private func refreshLegacy() async {
         defer { inFlight = false; refreshCompletionCount += 1 }
         guard await client.prepareRefresh() else {
             recordHelperUnavailable()
@@ -185,6 +237,8 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
         let power = await powerResponse
         let identityFailure = beforeLookup.failureDetail ?? afterLookup.failureDetail
         let responseTime = now()
+        let existingFresh = freshReadings(in: cache, at: responseTime)
+
         var perProcess: [ProcessIdentity: [MetricKind: MetricReading]] = [:]
         var capabilities: [MetricKind: MetricAvailability] = [:]
         if net.error == nil, let data = net.output, data.count <= AdvancedMetricsParser.maximumBytes,
@@ -197,37 +251,324 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
                                          detail: identityFailure ?? "No process identities could be verified")
                     : MetricAvailability(available: true)
             }
+        } else if Self.isTransientRateError(net.error),
+                  !existingFresh.perProcess.isEmpty,
+                  existingFresh.capabilities[.processNetwork]?.available == true {
+            perProcess = existingFresh.perProcess
+            for kind in Self.networkKinds {
+                capabilities[kind] = existingFresh.capabilities[kind] ?? MetricAvailability(available: true)
+            }
         } else {
             for kind in Self.networkKinds {
                 capabilities[kind] = Self.failureAvailability(net.error, fallback: "Network sample unavailable or invalid")
             }
         }
+
         var system: [MetricKind: MetricReading] = [:]
-        if power.error == nil, let data = power.output, abs(responseTime.timeIntervalSince(power.capturedAt)) <= Self.maximumSampleAge {
-            let parsed = AdvancedMetricsParser.power(data)
-            if let percent = parsed.gpuPercent {
-                system[.gpu] = MetricReading(value: percent, unit: .percent, timestamp: power.capturedAt)
-                capabilities[.gpu] = MetricAvailability(available: true)
-            } else {
-                capabilities[.gpu] = MetricAvailability(available: false, reason: .unsupported, detail: "GPU activity schema unavailable")
-            }
-            if let watts = parsed.watts {
-                system[.energy] = MetricReading(value: watts, unit: .watts, timestamp: power.capturedAt)
-                capabilities[.energy] = MetricAvailability(available: true)
-            } else {
-                capabilities[.energy] = MetricAvailability(available: false, reason: .unsupported, detail: "Combined or component power (mW) unavailable")
-            }
-        } else {
-            for kind in [MetricKind.gpu, .energy] {
-                capabilities[kind] = Self.failureAvailability(power.error, fallback: "Power sample unavailable or stale")
-            }
-        }
+        applyPowermetricsResponse(power, at: responseTime, existingFresh: existingFresh,
+                                  system: &system, capabilities: &capabilities)
+
         capabilities[.processGPUTime] = Self.processGPUTimeAvailability
         lastResultWasHelperUnavailable = net.error == HelperSamplingClient.unavailableError
             || power.error == HelperSamplingClient.unavailableError
         cache = AdvancedMetricsSnapshot(system: system, perProcess: perProcess, capabilities: capabilities)
         lastCompleted = now()
         if !lastResultWasHelperUnavailable { helperRetryRequested = false }
+    }
+
+    private func refreshV2(probeHelper: Bool) async {
+        defer { inFlight = false; refreshCompletionCount += 1 }
+        let responseTime = now()
+        let existingFresh = freshReadings(in: cache, at: responseTime)
+
+        var helperReady = false
+        if probeHelper {
+            lastHelperCheck = responseTime
+            helperReady = await client.prepareRefresh()
+        } else {
+            helperReady = !lastResultWasHelperUnavailable
+        }
+
+        guard helperReady else {
+            lastResultWasHelperUnavailable = true
+            collectUnprivilegedFallback(at: responseTime)
+            return
+        }
+
+        let beforeLookup = processIdentities()
+        let before = beforeLookup.identities
+        let shouldPollPowermetrics = shouldSamplePowermetrics() && (lastPowermetricsSampleAt.map {
+            responseTime.timeIntervalSince($0) >= Self.refreshInterval || responseTime < $0
+        } ?? true)
+
+        async let streamResponse = client.sample(.nettopStream, sinceSequence: lastHelperNettopSequence)
+        async let processResponse = client.sample(.processMetrics, sinceSequence: nil)
+        let netResponse = await streamResponse
+        let helperProcResponse = await processResponse
+        let afterLookup = processIdentities()
+        let after = afterLookup.identities
+        let identityFailure = beforeLookup.failureDetail ?? afterLookup.failureDetail
+
+        var perProcess: [ProcessIdentity: [MetricKind: MetricReading]] = [:]
+        var capabilities: [MetricKind: MetricAvailability] = [:]
+        var idleZeroInterval: DateInterval?
+        var perProcessSystemMetrics: [ProcessIdentity: CollectedProcessSystemMetrics] = [:]
+
+        var networkHandledByHelper = false
+        if netResponse.error == nil,
+           let output = netResponse.output,
+           abs(responseTime.timeIntervalSince(netResponse.capturedAt)) <= Self.maximumSampleAge,
+           let payload = try? JSONDecoder().decode(HelperNettopStreamPayload.self, from: output) {
+            networkHandledByHelper = true
+            if payload.sequence > 0 { lastHelperNettopSequence = payload.sequence }
+            switch payload.health {
+            case .healthy:
+                if let start = payload.intervalStart, let end = payload.intervalEnd, end > start {
+                    let interval = DateInterval(start: start, end: end)
+                    if before.isEmpty && after.isEmpty {
+                        for kind in Self.networkKinds {
+                            capabilities[kind] = MetricAvailability(available: false, reason: .notCollected,
+                                                                    detail: identityFailure ?? "No process identities could be verified")
+                        }
+                    } else {
+                        idleZeroInterval = interval
+                        perProcess = Self.rates(from: payload.entries, interval: interval, before: before, after: after)
+                        for kind in Self.networkKinds {
+                            capabilities[kind] = MetricAvailability(available: true)
+                        }
+                    }
+                } else {
+                    for kind in Self.networkKinds {
+                        capabilities[kind] = MetricAvailability(available: false, reason: .warmingUp,
+                                                                detail: identityFailure ?? "Network stream warming up")
+                    }
+                }
+            case .warmingUp:
+                for kind in Self.networkKinds {
+                    capabilities[kind] = MetricAvailability(available: false, reason: .warmingUp)
+                }
+            case .unavailable:
+                for kind in Self.networkKinds {
+                    capabilities[kind] = Self.failureAvailability(payload.detail, fallback: "Network stream unavailable")
+                }
+            }
+        } else if Self.isTransientRateError(netResponse.error),
+                  existingFresh.capabilities[.processNetwork]?.available == true {
+            networkHandledByHelper = true
+            perProcess = existingFresh.perProcess
+            idleZeroInterval = existingFresh.idleZeroInterval
+            for kind in Self.networkKinds {
+                capabilities[kind] = existingFresh.capabilities[kind] ?? MetricAvailability(available: true)
+            }
+        }
+
+        if !networkHandledByHelper {
+            if let localStream = localNettopStream,
+               !Self.isTransientRateError(netResponse.error) {
+                let localSnapshot = localStream.latestSnapshot(since: lastLocalNettopSequence, now: responseTime)
+                applyLocalNettopSnapshot(localSnapshot, before: before, after: after,
+                                         identityFailure: identityFailure,
+                                         perProcess: &perProcess, capabilities: &capabilities,
+                                         idleZeroInterval: &idleZeroInterval)
+            } else {
+                for kind in Self.networkKinds {
+                    capabilities[kind] = Self.failureAvailability(netResponse.error, fallback: "Network sample unavailable")
+                }
+            }
+        }
+
+        if helperProcResponse.error == nil,
+           let procData = helperProcResponse.output,
+           let payload = try? JSONDecoder().decode(HelperProcessMetricsPayload.self, from: procData) {
+            for entry in payload.entries {
+                let identity = ProcessIdentity(
+                    pid: entry.pid,
+                    startTime: ProcessStartTime(secondsSinceEpoch: entry.startSeconds,
+                                                microseconds: entry.startMicroseconds)
+                )
+                guard before[entry.pid] == identity || after[entry.pid] == identity else { continue }
+                perProcessSystemMetrics[identity] = CollectedProcessSystemMetrics(
+                    cpuTotalNanoseconds: entry.cpuTotalNanoseconds,
+                    memoryBytes: entry.memoryBytes,
+                    diskReadBytes: entry.diskReadBytes,
+                    diskWriteBytes: entry.diskWriteBytes,
+                    threadCount: entry.threadCount,
+                    executablePath: entry.executablePath
+                )
+            }
+        } else if Self.isTransientRateError(helperProcResponse.error) {
+            perProcessSystemMetrics = existingFresh.perProcessSystemMetrics
+        }
+
+        var system = existingFresh.system
+        if shouldPollPowermetrics {
+            let power = await client.sample(.powermetrics, sinceSequence: nil)
+            lastPowermetricsSampleAt = responseTime
+            applyPowermetricsResponse(power, at: responseTime, existingFresh: existingFresh,
+                                      system: &system, capabilities: &capabilities)
+        } else if let gpuCap = existingFresh.capabilities[.gpu], let energyCap = existingFresh.capabilities[.energy] {
+            capabilities[.gpu] = gpuCap
+            capabilities[.energy] = energyCap
+        } else {
+            capabilities[.gpu] = MetricAvailability(available: false, reason: .unsupported)
+            capabilities[.energy] = MetricAvailability(available: false, reason: .unsupported)
+        }
+
+        capabilities[.processGPUTime] = Self.processGPUTimeAvailability
+        lastResultWasHelperUnavailable = netResponse.error == HelperSamplingClient.unavailableError
+            || helperProcResponse.error == HelperSamplingClient.unavailableError
+        cache = AdvancedMetricsSnapshot(system: system, perProcess: perProcess, capabilities: capabilities,
+                                        idleZeroInterval: idleZeroInterval,
+                                        perProcessSystemMetrics: perProcessSystemMetrics)
+        lastCompleted = now()
+        if !lastResultWasHelperUnavailable { helperRetryRequested = false }
+    }
+
+    private func collectUnprivilegedFallback(at responseTime: Date) {
+        let unavailableHelper = MetricAvailability(available: false, reason: .notCollected,
+                                                   detail: Self.helperRequiredDetail)
+        var capabilities = Dictionary(uniqueKeysWithValues: Self.sampledKinds.map { ($0, unavailableHelper) })
+        capabilities[.processGPUTime] = Self.processGPUTimeAvailability
+
+        var perProcess: [ProcessIdentity: [MetricKind: MetricReading]] = [:]
+        var idleZeroInterval: DateInterval?
+
+        if let localNettopStream {
+            let beforeLookup = processIdentities()
+            let streamSnapshot = localNettopStream.latestSnapshot(since: lastLocalNettopSequence, now: responseTime)
+            let afterLookup = processIdentities()
+            let identityFailure = beforeLookup.failureDetail ?? afterLookup.failureDetail
+            applyLocalNettopSnapshot(streamSnapshot,
+                                     before: beforeLookup.identities,
+                                     after: afterLookup.identities,
+                                     identityFailure: identityFailure,
+                                     perProcess: &perProcess,
+                                     capabilities: &capabilities,
+                                     idleZeroInterval: &idleZeroInterval)
+        }
+
+        cache = AdvancedMetricsSnapshot(perProcess: perProcess, capabilities: capabilities,
+                                        idleZeroInterval: idleZeroInterval)
+        lastCompleted = now()
+    }
+
+    private func applyLocalNettopSnapshot(_ stream: NettopStreamSnapshot,
+                                          before: [Int32: ProcessIdentity],
+                                          after: [Int32: ProcessIdentity],
+                                          identityFailure: String?,
+                                          perProcess: inout [ProcessIdentity: [MetricKind: MetricReading]],
+                                          capabilities: inout [MetricKind: MetricAvailability],
+                                          idleZeroInterval: inout DateInterval?) {
+        if stream.latestSequence > 0 { lastLocalNettopSequence = stream.latestSequence }
+        switch stream.health {
+        case .healthy:
+            if let interval = stream.interval, interval.duration > 0 {
+                if before.isEmpty && after.isEmpty {
+                    for kind in Self.networkKinds {
+                        capabilities[kind] = MetricAvailability(available: false, reason: .notCollected,
+                                                                detail: identityFailure ?? "No process identities could be verified")
+                    }
+                } else {
+                    idleZeroInterval = interval
+                    let entries = stream.totalsByPID.values.map {
+                        HelperNettopDeltaEntry(pid: $0.pid, bytesIn: $0.bytesIn, bytesOut: $0.bytesOut)
+                    }
+                    perProcess = Self.rates(from: entries, interval: interval, before: before, after: after)
+                    for kind in Self.networkKinds {
+                        capabilities[kind] = MetricAvailability(available: true)
+                    }
+                }
+            } else {
+                for kind in Self.networkKinds {
+                    capabilities[kind] = MetricAvailability(available: false, reason: .warmingUp,
+                                                            detail: identityFailure ?? "Network stream warming up")
+                }
+            }
+        case .warmingUp:
+            for kind in Self.networkKinds {
+                capabilities[kind] = MetricAvailability(available: false, reason: .warmingUp)
+            }
+        case .unavailable:
+            for kind in Self.networkKinds {
+                capabilities[kind] = MetricAvailability(available: false, reason: .collectionFailed,
+                                                        detail: stream.error ?? "Local network stream unavailable")
+            }
+        }
+    }
+
+    private func applyPowermetricsResponse(_ power: HelperSampleResponse,
+                                           at responseTime: Date,
+                                           existingFresh: AdvancedMetricsSnapshot,
+                                           system: inout [MetricKind: MetricReading],
+                                           capabilities: inout [MetricKind: MetricAvailability]) {
+        if power.error == nil, let data = power.output,
+           abs(responseTime.timeIntervalSince(power.capturedAt)) <= Self.maximumSampleAge {
+            let parsed = AdvancedMetricsParser.power(data)
+            if let percent = parsed.gpuPercent {
+                system[.gpu] = MetricReading(value: percent, unit: .percent, timestamp: power.capturedAt)
+                capabilities[.gpu] = MetricAvailability(available: true)
+            } else {
+                capabilities[.gpu] = MetricAvailability(available: false, reason: .unsupported,
+                                                        detail: "GPU activity schema unavailable")
+            }
+            if let watts = parsed.watts {
+                system[.energy] = MetricReading(value: watts, unit: .watts, timestamp: power.capturedAt)
+                capabilities[.energy] = MetricAvailability(available: true)
+            } else {
+                capabilities[.energy] = MetricAvailability(available: false, reason: .unsupported,
+                                                           detail: "Combined or component power (mW) unavailable")
+            }
+        } else if Self.isTransientRateError(power.error) {
+            if let cachedGPU = existingFresh.system[.gpu], existingFresh.capabilities[.gpu]?.available == true {
+                system[.gpu] = cachedGPU
+                capabilities[.gpu] = existingFresh.capabilities[.gpu]
+            } else {
+                capabilities[.gpu] = Self.failureAvailability(power.error, fallback: "GPU sample unavailable or stale")
+            }
+            if let cachedEnergy = existingFresh.system[.energy], existingFresh.capabilities[.energy]?.available == true {
+                system[.energy] = cachedEnergy
+                capabilities[.energy] = existingFresh.capabilities[.energy]
+            } else {
+                system[.energy] = nil
+                capabilities[.energy] = Self.failureAvailability(power.error, fallback: "Power sample unavailable or stale")
+            }
+        } else {
+            system[.gpu] = nil
+            system[.energy] = nil
+            for kind in [MetricKind.gpu, .energy] {
+                capabilities[kind] = Self.failureAvailability(power.error, fallback: "Power sample unavailable or stale")
+            }
+        }
+    }
+
+    private static func rates(from entries: [HelperNettopDeltaEntry],
+                              interval: DateInterval,
+                              before: [Int32: ProcessIdentity],
+                              after: [Int32: ProcessIdentity]) -> [ProcessIdentity: [MetricKind: MetricReading]] {
+        let elapsed = max(0.05, interval.duration)
+        var result: [ProcessIdentity: [MetricKind: MetricReading]] = [:]
+        result.reserveCapacity(entries.count)
+        for entry in entries {
+            guard let identity = before[entry.pid], after[entry.pid] == identity else { continue }
+            let rxRate = Double(entry.bytesIn) / elapsed
+            let txRate = Double(entry.bytesOut) / elapsed
+            let receive = MetricReading(value: rxRate, unit: .bytesPerSecond, timestamp: interval.end,
+                                        measurementInterval: interval)
+            let transmit = MetricReading(value: txRate, unit: .bytesPerSecond, timestamp: interval.end,
+                                         measurementInterval: interval)
+            let combined = MetricReading(value: rxRate + txRate, unit: .bytesPerSecond, timestamp: interval.end,
+                                         measurementInterval: interval)
+            result[identity] = [
+                .processNetworkReceive: receive,
+                .processNetworkTransmit: transmit,
+                .processNetwork: combined
+            ]
+        }
+        return result
+    }
+
+    private static func isTransientRateError(_ code: String?) -> Bool {
+        code == "rateLimited" || code == "busy"
     }
 
     /// A missing helper is an optional feature that is not set up, not a failed collection.

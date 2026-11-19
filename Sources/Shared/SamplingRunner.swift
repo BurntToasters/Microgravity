@@ -156,8 +156,17 @@ final class SamplingRunner: @unchecked Sendable {
     }
     static func fixedCommand(_ kind: HelperSampleKind) -> Command {
         switch kind {
-        case .nettop: return Command(executable: "/usr/bin/nettop", arguments: ["-n", "-P", "-x", "-L", "1", "-J", "bytes_in,bytes_out"])
-        case .powermetrics: return Command(executable: "/usr/bin/powermetrics", arguments: ["-f", "plist", "-i", "1000", "-n", "1", "-s", "cpu_power,gpu_power"])
+        case .nettop:
+            return Command(executable: "/usr/bin/nettop",
+                           arguments: ["-n", "-P", "-x", "-t", "external", "-L", "1", "-J", "bytes_in,bytes_out"])
+        case .powermetrics:
+            return Command(executable: "/usr/bin/powermetrics",
+                           arguments: ["-f", "plist", "-i", "1000", "-n", "1", "-s", "cpu_power,gpu_power"])
+        case .nettopStream:
+            return Command(executable: "/usr/bin/nettop",
+                           arguments: ["-n", "-P", "-x", "-t", "external", "-d", "-L", "0", "-s", "1", "-J", "bytes_in,bytes_out"])
+        case .processMetrics:
+            return Command(executable: "/usr/bin/true", arguments: [])
         }
     }
 

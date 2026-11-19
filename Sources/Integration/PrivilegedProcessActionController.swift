@@ -88,7 +88,16 @@ actor PrivilegedProcessActionController: ProcessActioning {
         case "authorizationDenied": outcome = .rejected(.permissionDenied, detail: "Administrator authorization was not granted.")
         case "approvalExpired": outcome = .rejected(.permissionDenied, detail: "Administrator approval came too late. No signal was sent.")
         case "authorizationUnavailable": outcome = .rejected(.helperUnavailable, detail: "The helper could not register its authorization right.")
-        case "targetRejected": outcome = .rejected(.protectedProcess, detail: "The target exited, changed identity, or is protected.")
+        case "targetRejected":
+            if let current = HelperTerminationPolicy.lookupTarget(pid: identity.pid) {
+                if current.seconds != target.seconds || current.microseconds != target.microseconds {
+                    outcome = .rejected(.identityChanged, detail: "The target identity changed before termination.")
+                } else {
+                    outcome = .rejected(.protectedProcess, detail: "The target is protected.")
+                }
+            } else {
+                outcome = .rejected(.processExited, detail: "The target exited before termination.")
+            }
         case "signalFailed": outcome = .rejected(.signalFailed, detail: "The helper could not signal the process.")
         default: outcome = .rejected(.helperUnavailable, detail: result)
         }

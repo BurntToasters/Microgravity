@@ -31,13 +31,29 @@ enum UserAggregation {
 }
 
 @MainActor
-final class UsersViewController: NSViewController, SnapshotUpdating {
+final class UsersViewController: NSViewController, SnapshotUpdating, PageToolbarProviding, NSSearchFieldDelegate {
+    private static let searchIdentifier = NSToolbarItem.Identifier("users.toolbar.search")
+
     private let table: NSTableView
     private let scrollView: NSScrollView
     private let model: AccessibleTableModel
     private let state = StatusBannerView(style: .info)
     /// One image instance for every row, so the table's diffing sees unchanged icons.
     private let userIcon: NSImage
+    private var latestSnapshot: MonitoringSnapshot?
+    private lazy var searchItem: NSSearchToolbarItem = {
+        let item = NSSearchToolbarItem(itemIdentifier: Self.searchIdentifier)
+        item.label = String(localized: "Search")
+        item.paletteLabel = String(localized: "Search users")
+        item.toolTip = String(localized: "Filter users by name, UID, or session")
+        item.preferredWidthForSearchField = 200
+        let field = item.searchField
+        field.placeholderString = String(localized: "Search users")
+        field.setAccessibilityIdentifier("users.search")
+        field.delegate = self
+        (field.cell as? NSSearchFieldCell)?.sendsSearchStringImmediately = true
+        return item
+    }()
 
     init() {
         let tableParts = makeAccessibleTable(identifier: "users.table")
@@ -85,12 +101,32 @@ final class UsersViewController: NSViewController, SnapshotUpdating {
         ])
     }
 
+    var toolbarItemIdentifiers: [NSToolbarItem.Identifier] { [Self.searchIdentifier] }
+
+    func toolbarItem(for identifier: NSToolbarItem.Identifier) -> NSToolbarItem? {
+        identifier == Self.searchIdentifier ? searchItem : nil
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        if let snapshot = latestSnapshot {
+            update(snapshot: snapshot)
+        }
+    }
+
     func update(snapshot: MonitoringSnapshot) {
+        latestSnapshot = snapshot
         let processAvailability = snapshot.capabilities[.processes]
         let processesByUID = UserAggregation.processesByUID(snapshot.processes)
+        let query = searchItem.searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let sorted = UserAggregation.users(sessions: snapshot.users, processOwners: Set(processesByUID.keys),
                                            name: { UIFormat.ownerName($0) })
             .sorted { $0.shortName.localizedStandardCompare($1.shortName) == .orderedAscending }
+            .filter { user in
+                guard !query.isEmpty else { return true }
+                return user.shortName.localizedCaseInsensitiveContains(query)
+                    || String(user.uid).localizedCaseInsensitiveContains(query)
+                    || user.loginSessions.contains { $0.localizedCaseInsensitiveContains(query) }
+            }
         let userSlugCounts = Dictionary(grouping: sorted, by: { slug($0.shortName) }).mapValues(\.count)
         let timestamp = snapshot.timestamp
         let rows = sorted.map { user -> AccessibleTableRow in
@@ -128,8 +164,12 @@ final class UsersViewController: NSViewController, SnapshotUpdating {
             )
         }
         model.replaceRows(rows, in: table)
-        model.configureEmptyState(symbolName: "person.2", title: String(localized: "No user sessions"),
-                                  caption: emptyCaption(snapshot: snapshot))
+        let emptyTitle = query.isEmpty
+            ? String(localized: "No user sessions")
+            : String(localized: "No users match “\(query)”")
+        model.configureEmptyState(symbolName: query.isEmpty ? "person.2" : "magnifyingglass",
+                                  title: emptyTitle,
+                                  caption: emptyCaption(snapshot: snapshot, query: query))
         // Only missing session or process data is a problem worth a warning; a normal listing is information.
         if let capability = snapshot.capabilities[.userSessions], !capability.available {
             state.setMessage(UIFormat.availability(capability), style: .warning)
@@ -137,13 +177,17 @@ final class UsersViewController: NSViewController, SnapshotUpdating {
             state.setMessage(String(localized: "Process data unavailable · ") + UIFormat.availability(capability), style: .warning)
         } else {
             let noun = sorted.count == 1 ? String(localized: "user record") : String(localized: "user records")
-            state.setMessage("\(sorted.count) \(noun) · updated \(UIFormat.time(snapshot.timestamp))", style: .info)
+            let updatedTime = UIFormat.time(snapshot.timestamp)
+            state.setMessage(String(localized: "\(sorted.count) \(noun) · updated \(updatedTime)"), style: .info)
         }
     }
 
-    private func emptyCaption(snapshot: MonitoringSnapshot) -> String {
+    private func emptyCaption(snapshot: MonitoringSnapshot, query: String) -> String {
         if let capability = snapshot.capabilities[.userSessions], !capability.available {
             return UIFormat.availability(capability)
+        }
+        if !query.isEmpty {
+            return String(localized: "Try a different user name, UID, or session.")
         }
         return String(localized: "Discovery reported no user records.")
     }

@@ -7,12 +7,14 @@ final class MainWindowController: NSWindowController {
     static let helpURL = URL(string: "https://github.com/BurntToasters/Microgravity")!
     static let issuesURL = URL(string: "https://github.com/BurntToasters/Microgravity/issues")!
     nonisolated static let frameAutosaveName = "Main"
+    static let alwaysOnTopDefaultsKey = "window.alwaysOnTop"
     private static let fixtureVisualWindowIdentifier = NSUserInterfaceItemIdentifier("ui-test.visual-window")
     private static let fixtureContentSizeArgumentPrefix = "--ui-test-window-content-size="
 
     private let dependencies: AppDependencies
     let root: RootViewController
     private let mainToolbar: MainToolbar
+    private(set) var isAlwaysOnTop = false
 
     /// `initialContentSize` is only supplied by DEBUG fixture launches; nil opens at `defaultContentSize`.
     init(dependencies: AppDependencies, frameAutosaveName: String? = MainWindowController.frameAutosaveName,
@@ -29,6 +31,10 @@ final class MainWindowController: NSWindowController {
         self.root = root
         self.mainToolbar = mainToolbar
         super.init(window: window)
+        if !dependencies.fixtureMode {
+            isAlwaysOnTop = UserDefaults.standard.bool(forKey: Self.alwaysOnTopDefaultsKey)
+            window.level = isAlwaysOnTop ? .floating : .normal
+        }
 
         // The first page was chosen while the root loaded, before this callback existed.
         mainToolbar.setPage(root.currentPageToolbarProvider)
@@ -128,6 +134,14 @@ final class MainWindowController: NSWindowController {
         root.toggleSidebar(sender)
     }
 
+    @objc func toggleAlwaysOnTop(_ sender: Any?) {
+        isAlwaysOnTop.toggle()
+        window?.level = isAlwaysOnTop ? .floating : .normal
+        if !dependencies.fixtureMode {
+            UserDefaults.standard.set(isAlwaysOnTop, forKey: Self.alwaysOnTopDefaultsKey)
+        }
+    }
+
     @objc func toggleSampling(_ sender: Any?) {
         SamplingControls.togglePause(store: dependencies.monitoringStore)
     }
@@ -188,6 +202,8 @@ extension MainWindowController: NSUserInterfaceValidations {
             let intervals = MonitoringInterval.allCases
             let isCurrent = intervals.indices.contains(menuItem.tag) && intervals[menuItem.tag] == store.interval
             menuItem.state = isCurrent ? .on : .off
+        } else if item.action == #selector(toggleAlwaysOnTop(_:)), let menuItem = item as? NSMenuItem {
+            menuItem.state = isAlwaysOnTop ? .on : .off
         }
         return true
     }

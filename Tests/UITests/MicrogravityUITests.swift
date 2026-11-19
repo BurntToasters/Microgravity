@@ -221,7 +221,8 @@ final class MicrogravityUITests: XCTestCase {
         element("process.force-quit.confirm", in: app).click()
 
         XCTAssertFalse(row("process.row.411", in: "process.table", app: app).waitForExistence(timeout: 3))
-        XCTAssertTrue(row("process.row.410", in: "process.table", app: app).exists)
+        XCTAssertTrue(row("process.group.fixture-editor", in: "process.table", app: app).exists)
+        XCTAssertEqual(app.staticTexts["process.group.fixture-editor.pid"].label, "410")
         assertProcessSelectionEmpty(app)
         XCTAssertFalse(app.sheets.firstMatch.exists)
     }
@@ -575,6 +576,32 @@ final class MicrogravityUITests: XCTestCase {
 
         app.typeKey("w", modifierFlags: .command)
         XCTAssertTrue(app.wait(for: .notRunning, timeout: 5))
+    }
+
+    func testProcessesEmptySearchAndGroupingAreReachable() {
+        let app = launchFixture()
+        let search = app.searchFields.matching(identifier: "process.search").firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.click()
+        search.typeText("no-such-fixture-process")
+        XCTAssertTrue(app.staticTexts["No processes match “no-such-fixture-process”"].waitForExistence(timeout: 3))
+    }
+
+    func testPerformanceShowsMemoryCompositionAndEnergyCards() {
+        let app = launchFixture()
+        element("navigation.item.performance", in: app).click()
+
+        let memoryRow = element("performance.rail.memory.title", in: app)
+        XCTAssertTrue(memoryRow.waitForExistence(timeout: 5))
+        memoryRow.click()
+        XCTAssertTrue(element("performance.memory.composition", in: app).waitForExistence(timeout: 3))
+        XCTAssertTrue(element("performance.graph.memory-pressure", in: app).exists)
+
+        let energyRow = element("performance.rail.energy.title", in: app)
+        XCTAssertTrue(energyRow.waitForExistence(timeout: 3))
+        energyRow.click()
+        XCTAssertTrue(element("performance.energy.source", in: app).waitForExistence(timeout: 3))
+        XCTAssertTrue(element("performance.energy.thermal", in: app).exists)
     }
 
     private func launchFixture(arguments: [String] = []) -> XCUIApplication {

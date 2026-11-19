@@ -10,13 +10,15 @@ enum DetailsPresentation {
 }
 
 @MainActor
-final class DetailsViewController: NSViewController, SnapshotUpdating {
+final class DetailsViewController: NSViewController, SnapshotUpdating, NSPopoverDelegate {
     private static let searchIdentifier = NSToolbarItem.Identifier("details.search")
 
+    private let dependencies: PageDependencies?
     private let table: NSTableView
     private let scrollView: NSScrollView
     private let model: AccessibleTableModel
     private let capability = StatusBannerView(style: .info)
+    private var currentSnapshot: MonitoringSnapshot?
     private var allRows: [AccessibleTableRow] = []
     private var selectedRowID: String?
     private var selectedProcessIdentity: ProcessIdentity?
@@ -29,6 +31,9 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
     private var networkColumnUnavailable: Bool?
     private var gpuColumnUnavailable: Bool?
     private var processesUnavailableText: String?
+    private var inspectorPopover: NSPopover?
+    private var inspectorController: ProcessInspectorViewController?
+    private var inspectedProcessIdentity: ProcessIdentity?
 
     private lazy var searchItem: NSSearchToolbarItem = {
         let item = NSSearchToolbarItem(itemIdentifier: DetailsViewController.searchIdentifier)
@@ -45,26 +50,36 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
     }()
 
     /// - Parameter autosaveName: Persists column layout under this name. Tests pass nil to keep defaults out of the app domain.
-    init(autosaveName: String? = "Microgravity.details.columns.v2") {
+    init(dependencies: PageDependencies? = nil, autosaveName: String? = "Microgravity.details.columns.v3") {
+        self.dependencies = dependencies
         let tableParts = makeAccessibleTable(identifier: "details.table")
         table = tableParts.0
         table.setAccessibilityLabel(String(localized: "Process details"))
         scrollView = tableParts.1
+        let hasSavedLayout = autosaveName.map {
+            UserDefaults.standard.object(forKey: "NSTableView Columns v3 \($0)") != nil
+        } ?? false
         // Executable path is the last column so it alone absorbs spare width (lastColumnOnly autoresizing).
-        // Fixed columns sum to 862 pt; with the 180 pt path column all ten fit in about 1040 pt. Narrower
-        // tables scroll horizontally rather than squeezing the numeric columns below their values.
         model = AccessibleTableModel(table: table, columns: [
             TableColumnSpec("name", String(localized: "Process"), width: 170),
             TableColumnSpec("pid", String(localized: "PID"), width: 56, alignment: .right),
             TableColumnSpec("owner", String(localized: "Owner"), width: 84),
             TableColumnSpec("parent", String(localized: "Parent PID"), width: 70, alignment: .right),
+            TableColumnSpec("threads", String(localized: "Threads"), width: 66, alignment: .right),
+            TableColumnSpec("arch", String(localized: "Architecture"), width: 92),
+            TableColumnSpec("cpu-time", String(localized: "CPU Time"), width: 78, alignment: .right),
             TableColumnSpec("cpu", String(localized: "CPU"), width: 60, alignment: .right),
             TableColumnSpec("memory", String(localized: "Memory"), width: 80, alignment: .right),
-            TableColumnSpec("disk", String(localized: "Disk R / W"), width: 170, alignment: .right),
+            TableColumnSpec("disk", String(localized: "Disk"), width: 92, alignment: .right),
             TableColumnSpec("network", String(localized: "Network"), width: 92, alignment: .right),
             TableColumnSpec("gpu", String(localized: "GPU"), width: 80, alignment: .right),
             TableColumnSpec("path", String(localized: "Executable path"), width: 180)
         ], autosaveName: autosaveName, showsIconsInFirstColumn: true)
+        if !hasSavedLayout {
+            model.setColumnHidden("threads", true)
+            model.setColumnHidden("arch", true)
+            model.setColumnHidden("cpu-time", true)
+        }
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         table.tableColumns.first { $0.identifier.rawValue == "path" }?.minWidth = 120
         super.init(nibName: nil, bundle: nil)
@@ -73,7 +88,7 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
             self?.selectedProcessIdentity = rowID.flatMap { self?.processIdentityByRowID[$0] }
         }
         contextMenu.delegate = self
-        // Items set their own enabled state (Reveal and Copy Path need a path).
+        // Items set their own enabled state (Reveal, Copy Path, Quit).
         contextMenu.autoenablesItems = false
         table.menu = contextMenu
     }
@@ -104,6 +119,7 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
     }
 
     func update(snapshot: MonitoringSnapshot) {
+        currentSnapshot = snapshot
         let networkCapability = snapshot.capabilities[.processNetwork]
         let gpuCapability = snapshot.capabilities[.processGPUTime]
         let sorted = snapshot.processes.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
@@ -125,12 +141,15 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
             // Cells show the number (or "—"); the reason for a partial or missing value goes to the tooltip.
             let cpu = MetricCellPresentation(process.cpuPercent)
             let memory = MetricCellPresentation(process.memoryBytes)
-            let disk = MetricCellPresentation.combined([
-                (label: String(localized: "R"), presentation: MetricCellPresentation(process.diskReadBytesPerSecond)),
-                (label: String(localized: "W"), presentation: MetricCellPresentation(process.diskWriteBytesPerSecond))
-            ])
+            let disk = ProcessRowModel.diskPresentation(read: process.diskReadBytesPerSecond,
+                                                      write: process.diskWriteBytesPerSecond)
             let networkCell = MetricCellPresentation(network)
             let gpuCell = MetricCellPresentation(gpu)
+            let threadText = process.threadCount.map { String($0) } ?? "—"
+            let archText = ProcessInspectorModel.architectureLabel(process.architecture)
+            let cpuTimeReading = process.cpuTotalSeconds
+                ?? MetricReading(unavailable: .seconds, timestamp: snapshot.timestamp, reason: .notCollected)
+            let cpuTimeCell = MetricCellPresentation(cpuTimeReading)
             return AccessibleTableRow(
                 id: "details.process.\(process.id.pid)",
                 values: [
@@ -138,6 +157,9 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
                     String(process.id.pid),
                     UIFormat.ownerName(process.ownerUID),
                     process.parentIdentity.map { String($0.pid) } ?? "—",
+                    threadText,
+                    archText,
+                    cpuTimeCell.valueText,
                     cpu.valueText,
                     memory.valueText,
                     disk.valueText,
@@ -150,6 +172,9 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
                     .number(Double(process.id.pid)),
                     .text(UIFormat.ownerName(process.ownerUID)),
                     .numeric(process.parentIdentity.map { Double($0.pid) }),
+                    .numeric(process.threadCount.map { Double($0) }),
+                    .text(archText),
+                    .numeric(process.cpuTotalSeconds?.value),
                     .numeric(process.cpuPercent.value),
                     .numeric(process.memoryBytes.value),
                     diskSortKey,
@@ -159,7 +184,8 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
                 ],
                 icon: AppIconProvider.icon(forBundlePath: DetailsPresentation.appBundlePath(forExecutable: process.executablePath)),
                 cellDetails: [
-                    nil, nil, nil, nil,
+                    nil, nil, nil, nil, nil, nil,
+                    AccessibleTableCellDetail(cpuTimeCell),
                     AccessibleTableCellDetail(cpu),
                     AccessibleTableCellDetail(memory),
                     AccessibleTableCellDetail(disk),
@@ -212,6 +238,7 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
             }
         }
         filterRows()
+        refreshInspector()
     }
 
     /// True when the network capability is missing because the optional helper is not installed or not running.
@@ -250,6 +277,16 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         }
         let hasPath = process.executablePath != nil
+        let isFinder = ProcessesViewController.isRelaunchableFinder(process)
+        let canTerminate = dependencies != nil && !ProcessesViewController.isProtectedFromQuit(process)
+
+        let quitTitle = isFinder ? String(localized: "Relaunch Finder") : String(localized: "Quit Process")
+        menu.addItem(contextItem(quitTitle, #selector(quitClickedProcess(_:)), process,
+                                 enabled: dependencies != nil && (canTerminate || isFinder)))
+        menu.addItem(contextItem(String(localized: "Force Quit…"), #selector(forceQuitClickedProcess(_:)), process,
+                                 enabled: canTerminate && !isFinder))
+        menu.addItem(.separator())
+        menu.addItem(contextItem(String(localized: "Inspect…"), #selector(inspectClickedProcess(_:)), process))
         menu.addItem(contextItem(String(localized: "Show in Processes"), #selector(showSelectedProcessInProcesses(_:)), process))
         menu.addItem(.separator())
         menu.addItem(contextItem(String(localized: "Reveal in Finder"), #selector(revealProcessPath(_:)), process, enabled: hasPath))
@@ -264,6 +301,90 @@ final class DetailsViewController: NSViewController, SnapshotUpdating {
         item.representedObject = process
         item.isEnabled = enabled
         return item
+    }
+
+    @objc private func quitClickedProcess(_ sender: NSMenuItem) {
+        guard let process = sender.representedObject as? ProcessSnapshot else { return }
+        performProcessTermination(process, force: false)
+    }
+
+    @objc private func forceQuitClickedProcess(_ sender: NSMenuItem) {
+        guard let process = sender.representedObject as? ProcessSnapshot else { return }
+        performProcessTermination(process, force: true)
+    }
+
+    @objc private func inspectClickedProcess(_ sender: NSMenuItem) {
+        guard let process = sender.representedObject as? ProcessSnapshot,
+              let snapshot = currentSnapshot,
+              let rowID = rowIDByProcessIdentity[process.id],
+              let rowIndex = model.rows.firstIndex(where: { $0.id == rowID }) else { return }
+        closeInspector()
+        table.scrollRowToVisible(rowIndex)
+
+        let controller = ProcessInspectorViewController()
+        let popover = NSPopover()
+        popover.behavior = .semitransient
+        popover.delegate = self
+        popover.contentViewController = controller
+        inspectorPopover = popover
+        inspectorController = controller
+        inspectedProcessIdentity = process.id
+        refreshInspector(snapshot: snapshot)
+        guard inspectorPopover === popover else { return }
+        popover.show(relativeTo: table.rect(ofRow: rowIndex), of: table, preferredEdge: .minY)
+    }
+
+    private func refreshInspector(snapshot explicitSnapshot: MonitoringSnapshot? = nil) {
+        guard let inspectedIdentity = inspectedProcessIdentity,
+              inspectorPopover != nil,
+              let controller = inspectorController,
+              let snapshot = explicitSnapshot ?? currentSnapshot else { return }
+        guard let process = snapshot.processes.first(where: { $0.id == inspectedIdentity }),
+              let rowID = rowIDByProcessIdentity[inspectedIdentity],
+              model.rows.contains(where: { $0.id == rowID }) else {
+            closeInspector()
+            return
+        }
+        let rows = ProcessInspectorModel.rows(process: process, group: nil, snapshot: snapshot,
+                                              ownerName: { UIFormat.ownerName($0) })
+        let icon = AppIconProvider.icon(forBundlePath: DetailsPresentation.appBundlePath(forExecutable: process.executablePath))
+        controller.update(title: process.name, icon: icon, executablePath: process.executablePath, rows: rows)
+    }
+
+    private func closeInspector() {
+        let popover = inspectorPopover
+        inspectorPopover = nil
+        inspectorController = nil
+        inspectedProcessIdentity = nil
+        popover?.close()
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        guard let popover = notification.object as? NSPopover, popover === inspectorPopover else { return }
+        inspectorPopover = nil
+        inspectorController = nil
+        inspectedProcessIdentity = nil
+    }
+
+    private func performProcessTermination(_ process: ProcessSnapshot, force: Bool) {
+        guard let dependencies else { return }
+        if !force, ProcessesViewController.isRelaunchableFinder(process) {
+            let window = view.window
+            Task {
+                await ProcessesViewController.presentFinderRelaunchFlow(identity: process.id,
+                                                                      on: window,
+                                                                      dependencies: dependencies)
+            }
+            return
+        }
+        guard !ProcessesViewController.isProtectedFromQuit(process) else { return }
+        let window = view.window
+        Task {
+            await ProcessesViewController.presentTerminationFlow(process: process,
+                                                                 force: force,
+                                                                 on: window,
+                                                                 dependencies: dependencies)
+        }
     }
 
     @objc private func showSelectedProcessInProcesses(_ sender: NSMenuItem) {

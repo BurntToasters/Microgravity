@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 let helperMachService = "run.rosie.microgravity.helper"
-let helperProtocolVersion = 1
+let helperProtocolVersion = 2
 let appSigningIdentifier = "run.rosie.microgravity"
 let helperSigningIdentifier = "run.rosie.microgravity.helper"
 

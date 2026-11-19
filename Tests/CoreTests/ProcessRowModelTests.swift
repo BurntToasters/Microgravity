@@ -255,19 +255,36 @@ final class ProcessRowModelTests: XCTestCase {
 
     func testDuplicateGroupTitlesGetDistinctRowAndToggleIdentifiers() {
         let first = identity(410, offset: 1)
+        let firstChild = identity(411, offset: 2)
         let second = identity(620, offset: 3)
+        let secondChild = identity(621, offset: 4)
         let groups = [
-            group(first, title: "Fixture Editor", members: [first]),
-            group(second, title: "Fixture Editor", members: [second])
+            group(first, title: "Fixture Editor", members: [first, firstChild]),
+            group(second, title: "Fixture Editor", members: [second, secondChild])
         ]
-        let processes = [process(410, name: "A", cpu: reading(1), identity: first),
-                         process(620, name: "B", cpu: reading(1), identity: second)]
+        let processes = [
+            process(410, name: "A", cpu: reading(1), identity: first),
+            process(411, name: "A Worker", cpu: reading(0.5), identity: firstChild),
+            process(620, name: "B", cpu: reading(1), identity: second),
+            process(621, name: "B Worker", cpu: reading(0.5), identity: secondChild)
+        ]
         let output = ProcessRowModel.build(input(processes, groups))
         let firstRow = output.rows[.group(first)]
         let secondRow = output.rows[.group(second)]
+        XCTAssertEqual(firstRow?.isExpandable, true)
+        XCTAssertEqual(secondRow?.isExpandable, true)
         XCTAssertNotEqual(firstRow?.accessibilityID, secondRow?.accessibilityID)
         XCTAssertNotEqual(firstRow?.toggleID, secondRow?.toggleID)
         XCTAssertTrue(firstRow?.toggleID?.hasPrefix("process.group.toggle.fixture-editor.pid-410-start-") == true)
+
+        // Single-member groups are never expandable and carry no toggle identifier.
+        let solo = identity(730, offset: 5)
+        let soloOutput = ProcessRowModel.build(input(
+            [process(730, name: "Solo", cpu: reading(1), identity: solo)],
+            [group(solo, title: "Solo App", members: [solo])]
+        ))
+        XCTAssertEqual(soloOutput.rows[.group(solo)]?.isExpandable, false)
+        XCTAssertNil(soloOutput.rows[.group(solo)]?.toggleID)
     }
 
     func testSingleGroupTitleKeepsThePlainSlugIdentifier() {

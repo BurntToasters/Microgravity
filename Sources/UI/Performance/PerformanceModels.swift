@@ -95,6 +95,15 @@ struct NetworkInterfaceRow {
     let rates: String
     let totals: String
     let membership: String
+    let includedInTotals: Bool
+
+    init(name: String, rates: String, totals: String, membership: String, includedInTotals: Bool = true) {
+        self.name = name
+        self.rates = rates
+        self.totals = totals
+        self.membership = membership
+        self.includedInTotals = includedInTotals
+    }
 }
 
 struct CoreTileModel {
@@ -133,6 +142,13 @@ struct MemoryDetailModel {
     var swapMaximum: Double?
 }
 
+struct EnergyDetailModel {
+    var powerSourceText: String?
+    var powerSourceTint: NSColor
+    var thermalStateText: String
+    var thermalStateTint: NSColor
+}
+
 /// Everything the detail card shows for one metric. Built by `PerformancePresenter`; contains no views.
 struct MetricDetailModel {
     let metric: PerformanceMetric
@@ -140,6 +156,7 @@ struct MetricDetailModel {
     let cpuMode: CPUDetailMode
     let title: String
     var subtitle: String
+    var hardwareSpecText: String? = nil
     var bigValue: String
     let graphIdentifier: String
     var graphAccessibilityLabel: String
@@ -161,6 +178,8 @@ struct MetricDetailModel {
     var coreSections: [CoreSectionModel] = []
     var interfaces: [NetworkInterfaceRow] = []
     var memory: MemoryDetailModel? = nil
+    var memoryComposition: MemoryCompositionModel? = nil
+    var energy: EnergyDetailModel? = nil
 
     /// Every processor tile in display order.
     var cores: [CoreTileModel] { coreSections.flatMap(\.cores) }
@@ -244,7 +263,7 @@ enum PerformancePresenter {
         case .gpu: model = advancedDetail(.gpu, kind: .gpu, snapshot: snapshot, visible: visible, window: window, cpuMode: cpuMode)
         case .energy: model = advancedDetail(.energy, kind: .energy, snapshot: snapshot, visible: visible, window: window, cpuMode: cpuMode)
         }
-        model.subtitle = "\(model.subtitle) over \(span.long)"
+        model.subtitle = String(localized: "\(model.subtitle) over \(span.long)")
         model.timeSpan = window.duration
         // The left edge of the plot is the window length, not the span of the data currently present.
         model.spanLabel = spanText(window.duration).short
@@ -324,11 +343,17 @@ enum PerformancePresenter {
                                   _ window: PerformanceWindow, _ cpuMode: CPUDetailMode) -> MetricDetailModel {
         let cpu = snapshot.system.cpuPercent
         var model = MetricDetailModel(metric: .cpu, window: window, cpuMode: cpuMode, title: String(localized: "CPU"),
-                                      subtitle: "% Utilization", bigValue: shortValue(cpu),
+                                      subtitle: String(localized: "% Utilization"), bigValue: shortValue(cpu),
                                       graphIdentifier: "performance.graph.cpu-total",
                                       graphAccessibilityLabel: String(localized: "Total CPU usage percentage over time"))
         model.bigValueIdentifier = "performance.cpu-total.value"
         model.isBigValueUnavailable = cpu.value == nil
+        if let hw = snapshot.system.hardware {
+            var parts: [String] = []
+            if let cpuName = hw.cpuName { parts.append(cpuName) }
+            if let machine = hw.machineModel { parts.append(machine) }
+            if !parts.isEmpty { model.hardwareSpecText = parts.joined(separator: " · ") }
+        }
         model.series = [series(String(localized: "CPU"), .cpu, visible.map(\.cpuPercent))]
         model.maximum = 100
         model.topLabel = "100%"
@@ -447,6 +472,9 @@ enum PerformancePresenter {
                                       graphAccessibilityLabel: String(localized: "Memory in use over time"))
         model.bigValueIdentifier = "performance.memory.value"
         model.isBigValueUnavailable = used.value == nil
+        model.hardwareSpecText = system.hardware?.memorySummary.map {
+            String(localized: "\($0) Physical Memory")
+        }
         model.series = [series(String(localized: "Used"), .memory, visible.map(\.memoryUsedBytes))]
         model.maximum = total.value
         model.topLabel = total.value == nil ? nil : shortValue(total)
@@ -463,6 +491,26 @@ enum PerformancePresenter {
             MetricStat(label: String(localized: "Compressed"), value: breakdown(system.memoryCompressedBytes)),
             MetricStat(label: String(localized: "Cached files"), value: breakdown(system.memoryCachedFilesBytes))
         ]
+        if let totalBytes = total.value, totalBytes > 0 {
+            var segments: [MemoryCompositionSegment] = []
+            func appendSegment(_ title: String, bytes: Double?, color: NSColor) {
+                guard let bytes, bytes.isFinite, bytes > 0 else { return }
+                segments.append(MemoryCompositionSegment(title: title, bytes: bytes, color: color,
+                                                         formattedBytes: UIFormat.bytes(bytes)))
+            }
+            appendSegment(String(localized: "App"), bytes: system.memoryAppBytes?.value, color: .systemBlue)
+            appendSegment(String(localized: "Wired"), bytes: system.memoryWiredBytes?.value, color: .systemOrange)
+            appendSegment(String(localized: "Compressed"), bytes: system.memoryCompressedBytes?.value, color: .systemYellow)
+            appendSegment(String(localized: "Cached"), bytes: system.memoryCachedFilesBytes?.value, color: .systemTeal)
+            let accounted = segments.reduce(0.0) { $0 + $1.bytes }
+            let freeBytes = max(0, totalBytes - accounted)
+            if freeBytes > 0 {
+                appendSegment(String(localized: "Free"), bytes: freeBytes, color: .systemGray.withAlphaComponent(0.35))
+            }
+            if !segments.isEmpty {
+                model.memoryComposition = MemoryCompositionModel(totalBytes: totalBytes, segments: segments)
+            }
+        }
         var memory = MemoryDetailModel()
         memory.pressureLevel = system.memoryPressure.level
         memory.pressureText = pressureText(system.memoryPressure)
@@ -496,6 +544,13 @@ enum PerformancePresenter {
             series(String(localized: "Read"), .disk, readHistory),
             series(String(localized: "Write"), .disk, writeHistory, secondary: true)
         ]
+        if let hw = system.hardware, let diskModel = hw.bootDiskModel {
+            if let cap = hw.bootDiskCapacityBytes {
+                model.hardwareSpecText = "\(diskModel) · \(UIFormat.bytes(Double(cap)))"
+            } else {
+                model.hardwareSpecText = diskModel
+            }
+        }
         applyThroughputScale(&model, presentation: presentation, readings: readHistory + writeHistory,
                              identifier: "performance.graph.disk.scale")
         model.stats = [
@@ -525,6 +580,9 @@ enum PerformancePresenter {
             series(String(localized: "Receive"), .network, receiveHistory),
             series(String(localized: "Send"), .network, sendHistory, secondary: true)
         ]
+        if let hw = system.hardware, let nic = hw.primaryNetworkInterface {
+            model.hardwareSpecText = hw.primaryNetworkDetail.map { "\(nic) · \($0)" } ?? nic
+        }
         applyThroughputScale(&model, presentation: presentation, readings: receiveHistory + sendHistory,
                              identifier: "performance.graph.network.scale")
         model.stats = [
@@ -533,12 +591,18 @@ enum PerformancePresenter {
             MetricStat(label: String(localized: "Send"), value: UIFormat.metric(system.networkTransmitBytesPerSecond),
                        identifier: "performance.network.send.value", accessibilityLabel: presentation.secondAccessibilityLabel)
         ]
-        model.interfaces = system.networkInterfaces.map { interface in
+        let sortedInterfaces = system.networkInterfaces.sorted { lhs, rhs in
+            if lhs.includedInTotals != rhs.includedInTotals { return lhs.includedInTotals && !rhs.includedInTotals }
+            if lhs.isUp != rhs.isUp { return lhs.isUp && !rhs.isUp }
+            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
+        model.interfaces = sortedInterfaces.map { interface in
             NetworkInterfaceRow(
                 name: interface.name,
                 rates: "↓ \(shortValue(interface.receiveBytesPerSecond)) · ↑ \(shortValue(interface.transmitBytesPerSecond))",
                 totals: String(localized: "Total ↓ \(shortValue(interface.receiveTotalBytes)) · ↑ \(shortValue(interface.transmitTotalBytes))"),
-                membership: membership(interface))
+                membership: membership(interface),
+                includedInTotals: interface.includedInTotals)
         }
         return model
     }
@@ -546,6 +610,9 @@ enum PerformancePresenter {
     private static func advancedDetail(_ metric: PerformanceMetric, kind: MetricKind, snapshot: MonitoringSnapshot,
                                        visible: [MonitoringGraphSample], window: PerformanceWindow,
                                        cpuMode: CPUDetailMode) -> MetricDetailModel {
+        if kind == .energy {
+            return energyDetail(snapshot, visible, window, cpuMode)
+        }
         let reading = snapshot.advancedMetrics[kind]
         let availability = snapshot.capabilities[kind]
         let unit = reading?.unit ?? visible.last?.advancedMetrics[kind]?.unit ?? defaultUnit(kind)
@@ -557,39 +624,36 @@ enum PerformancePresenter {
                                                           reason: availability?.reason ?? .notCollected,
                                                           detail: availability?.detail)
         }
-        let isComponentPower = kind == .energy && unit == .watts && current.value != nil
-        let title = isComponentPower ? String(localized: "Estimated component power") : metric.title
-        let subject = metric == .energy ? unitSubject(unit) : "% Utilization"
-        var model = MetricDetailModel(metric: metric, window: window, cpuMode: cpuMode, title: title,
-                                      subtitle: subject,
+        var model = MetricDetailModel(metric: metric, window: window, cpuMode: cpuMode, title: metric.title,
+                                      subtitle: String(localized: "% Utilization"),
                                       bigValue: unavailable ? String(localized: "Unavailable") : shortValue(current),
                                       graphIdentifier: "performance.graph.\(metric.rawValue)",
-                                      graphAccessibilityLabel: "\(metric.title) over time")
+                                      graphAccessibilityLabel: String(localized: "\(metric.title) over time"))
+        if let hw = snapshot.system.hardware, let gpuName = hw.gpuName {
+            if let cores = hw.gpuCoreCount, cores > 0 {
+                model.hardwareSpecText = String(localized: "\(gpuName) (\(cores) cores)")
+            } else {
+                model.hardwareSpecText = gpuName
+            }
+        }
         model.isBigValueUnavailable = current.value == nil
         model.stateText = unavailable
             ? UIFormat.unavailable(availability?.reason)
             : UIFormat.metric(current)
-        model.stateIdentifier = "performance.\(metric.rawValue).state"
+        model.stateIdentifier = "performance.gpu.state"
         if unavailable {
-            // Availability text can end with a period of its own; never append a second one.
             var availabilityText = UIFormat.availability(availability)
             if availabilityText.hasSuffix(".") { availabilityText.removeLast() }
             model.banner = DetailBanner(
-                message: "\(availabilityText). Shown as no data, never as zero.",
+                message: String(localized: "\(availabilityText). Shown as no data, never as zero."),
                 style: .info)
         } else if current.isPartial {
             model.banner = DetailBanner(message: UIFormat.metric(current), style: .warning)
         }
         model.series = [series(metric.title, metric, readings)]
-        model.maximum = kind == .gpu ? 100 : nil
-        model.topLabel = kind == .gpu ? "100%" : maximumLabel(readings, unit: unit, timestamp: snapshot.timestamp)
-        if metric == .gpu {
-            model.caption = String(localized: "GPU activity is shown only when a provider reports it.")
-        } else {
-            model.caption = isComponentPower
-                ? String(localized: "Estimated CPU + GPU + ANE component power; not total device power.")
-                : String(localized: "Energy or power is shown in the source unit supplied by its provider.")
-        }
+        model.maximum = 100
+        model.topLabel = "100%"
+        model.caption = String(localized: "GPU activity is shown only when a provider reports it.")
         let status: String
         if unavailable {
             status = UIFormat.unavailable(availability?.reason)
@@ -598,12 +662,171 @@ enum PerformancePresenter {
         } else {
             status = String(localized: "Reporting")
         }
-        model.stats = [
+        var stats: [MetricStat] = [
             MetricStat(label: String(localized: "Unit"), value: unitName(unit)),
             MetricStat(label: String(localized: "Status"), value: status),
             MetricStat(label: String(localized: "Source"), value: current.detail ?? availability?.detail ?? String(localized: "Not reported"))
         ]
+        if let gpuPower = snapshot.system.power?.gpuPowerWatts, gpuPower.value != nil {
+            stats.append(MetricStat(label: String(localized: "GPU Power"), value: shortValue(gpuPower)))
+        }
+        model.stats = stats
         return model
+    }
+
+    private static func energyDetail(_ snapshot: MonitoringSnapshot, _ visible: [MonitoringGraphSample],
+                                     _ window: PerformanceWindow, _ cpuMode: CPUDetailMode) -> MetricDetailModel {
+        let power = snapshot.system.power
+        let reading = power?.primaryPowerWatts ?? snapshot.advancedMetrics[.energy]
+        let availability = snapshot.capabilities[.energy]
+        let unit = reading?.unit ?? visible.last?.power?.primaryPowerWatts?.unit ?? visible.last?.advancedMetrics[.energy]?.unit ?? .watts
+        let hasPowerValue = reading?.value != nil
+        let unavailable = !hasPowerValue && isUnavailable(.energy, in: snapshot)
+        let current = reading ?? MetricReading(unavailable: unit, timestamp: snapshot.timestamp,
+                                               reason: availability?.reason ?? .warmingUp, detail: availability?.detail)
+        let readings = visible.map { sample in
+            sample.power?.primaryPowerWatts
+                ?? sample.advancedMetrics[.energy]
+                ?? MetricReading(unavailable: unit, timestamp: sample.timestamp,
+                                 reason: availability?.reason ?? .notCollected,
+                                 detail: availability?.detail)
+        }
+        let isSystemTotal = power?.systemPowerWatts?.value != nil
+        let isComponentPower = !isSystemTotal && unit == .watts && current.value != nil
+        let title: String
+        if isSystemTotal {
+            title = String(localized: "System Power")
+        } else if isComponentPower {
+            title = String(localized: "Component Power")
+        } else {
+            title = PerformanceMetric.energy.title
+        }
+
+        var model = MetricDetailModel(metric: .energy, window: window, cpuMode: cpuMode, title: title,
+                                      subtitle: unitSubject(unit),
+                                      bigValue: unavailable ? String(localized: "Unavailable") : shortValue(current),
+                                      graphIdentifier: "performance.graph.energy",
+                                      graphAccessibilityLabel: String(localized: "System power over time"))
+        model.isBigValueUnavailable = current.value == nil
+        model.stateText = unavailable
+            ? UIFormat.unavailable(availability?.reason)
+            : UIFormat.metric(current)
+        model.stateIdentifier = "performance.energy.state"
+
+        if unavailable {
+            var availabilityText = UIFormat.availability(availability)
+            if availabilityText.hasSuffix(".") { availabilityText.removeLast() }
+            model.banner = DetailBanner(
+                message: String(localized: "\(availabilityText). Shown as no data, never as zero."),
+                style: .info)
+        } else if current.isPartial {
+            model.banner = DetailBanner(message: UIFormat.metric(current), style: .warning)
+        }
+
+        model.series = [series(title, .energy, readings)]
+        model.maximum = nil
+        model.topLabel = maximumLabel(readings, unit: unit, timestamp: snapshot.timestamp)
+        if isSystemTotal {
+            model.caption = String(localized: "Total platform power across AC adapter and battery.")
+        } else if isComponentPower {
+            model.caption = String(localized: "Estimated SoC component power (CPU, GPU, ANE, DRAM); excludes display and external load.")
+        } else {
+            model.caption = String(localized: "Energy or power is shown in the source unit supplied by its provider.")
+        }
+
+        var stats: [MetricStat] = []
+        if let power {
+            if let cpuW = power.cpuPowerWatts { stats.append(MetricStat(label: String(localized: "CPU Power"), value: shortValue(cpuW))) }
+            if let gpuW = power.gpuPowerWatts { stats.append(MetricStat(label: String(localized: "GPU Power"), value: shortValue(gpuW))) }
+            if let aneW = power.anePowerWatts { stats.append(MetricStat(label: String(localized: "ANE Power"), value: shortValue(aneW))) }
+            if let dramW = power.dramPowerWatts { stats.append(MetricStat(label: String(localized: "DRAM Power"), value: shortValue(dramW))) }
+            if let adapterW = power.adapterPowerWatts {
+                let valueText = power.adapterMaxWatts.map {
+                    String(localized: "\(shortValue(adapterW)) (\($0) W max)")
+                } ?? shortValue(adapterW)
+                stats.append(MetricStat(label: String(localized: "Adapter Input"), value: valueText))
+            }
+            if let batteryW = power.batteryPowerWatts, let rawWatts = batteryW.value {
+                let stateWord: String
+                if power.batteryCharging == true {
+                    stateWord = String(localized: "charging")
+                } else if power.powerSource == .battery {
+                    stateWord = rawWatts.magnitude > 0.05 ? String(localized: "discharging") : String(localized: "idle")
+                } else if rawWatts > 0.05 && power.batteryCharging == nil {
+                    stateWord = String(localized: "charging")
+                } else if rawWatts < -0.05 {
+                    stateWord = String(localized: "discharging")
+                } else {
+                    stateWord = String(localized: "idle")
+                }
+                let formatted = UIFormat.value(MetricReading(value: abs(rawWatts), unit: .watts, timestamp: batteryW.timestamp)) ?? shortValue(batteryW)
+                stats.append(MetricStat(label: String(localized: "Battery Power"), value: "\(formatted) · \(stateWord)"))
+            }
+            if let pct = power.batteryPercent {
+                var detail = "\(Int(pct.rounded()))%"
+                if let mins = power.batteryTimeRemainingMinutes, mins > 0 {
+                    let hrs = mins / 60
+                    let rem = mins % 60
+                    detail += hrs > 0 ? " · \(hrs)h \(rem)m" : " · \(rem)m"
+                } else if power.batteryCharging == true {
+                    detail += " · " + String(localized: "Charging")
+                }
+                stats.append(MetricStat(label: String(localized: "Battery"), value: detail))
+            }
+            model.energy = EnergyDetailModel(
+                powerSourceText: powerSourceLabel(power.powerSource),
+                powerSourceTint: powerSourceTint(power.powerSource),
+                thermalStateText: thermalStateLabel(power.thermalState),
+                thermalStateTint: thermalStateTint(power.thermalState)
+            )
+        }
+        if stats.isEmpty {
+            let status = unavailable ? UIFormat.unavailable(availability?.reason)
+                : (current.value == nil ? UIFormat.unavailable(current.unavailableReason) : String(localized: "Reporting"))
+            stats = [
+                MetricStat(label: String(localized: "Unit"), value: unitName(unit)),
+                MetricStat(label: String(localized: "Status"), value: status),
+                MetricStat(label: String(localized: "Source"), value: current.detail ?? availability?.detail ?? String(localized: "Not reported"))
+            ]
+        }
+        model.stats = stats
+        return model
+    }
+
+    private static func powerSourceLabel(_ source: PowerSourceKind) -> String? {
+        switch source {
+        case .ac: return String(localized: "AC Power")
+        case .battery: return String(localized: "Battery")
+        case .ups: return String(localized: "UPS")
+        case .unknown: return nil
+        }
+    }
+
+    private static func powerSourceTint(_ source: PowerSourceKind) -> NSColor {
+        switch source {
+        case .ac: return .systemGreen
+        case .battery: return .systemOrange
+        case .ups: return .systemYellow
+        case .unknown: return .tertiaryLabelColor
+        }
+    }
+
+    private static func thermalStateLabel(_ state: SystemThermalState) -> String {
+        switch state {
+        case .nominal: return String(localized: "Thermal: Nominal")
+        case .fair: return String(localized: "Thermal: Fair")
+        case .serious: return String(localized: "Thermal: Serious")
+        case .critical: return String(localized: "Thermal: Critical")
+        }
+    }
+
+    private static func thermalStateTint(_ state: SystemThermalState) -> NSColor {
+        switch state {
+        case .nominal: return .systemGreen
+        case .fair: return .systemYellow
+        case .serious: return .systemOrange
+        case .critical: return .systemRed
+        }
     }
 
     // MARK: Helpers

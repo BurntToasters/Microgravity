@@ -297,6 +297,38 @@ final class IntegrationAdvancedMetricsTests: XCTestCase {
         XCTAssertEqual(snapshot.capabilities[.processNetworkReceive]?.detail, cap)
     }
 
+    func testV2FailureDoesNotEmitFakeIdleZerosWhenIdentityLookupIsEmpty() async throws {
+        let start = Date(timeIntervalSince1970: 1_800_001_000)
+        let payload = HelperNettopStreamPayload(
+            health: .healthy,
+            intervalStart: start.addingTimeInterval(-1),
+            intervalEnd: start,
+            sequence: 1,
+            entries: [HelperNettopDeltaEntry(pid: 42, bytesIn: 500, bytesOut: 100)],
+            detail: nil
+        )
+        let streamData = try JSONEncoder().encode(payload)
+        let client = V2StubAdvancedSamplingClient([
+            .nettopStream: response(.nettopStream, at: start, output: streamData),
+            .processMetrics: response(.processMetrics, at: start, error: "commandFailed")
+        ])
+        let collector = NativeAdvancedMetricsCollector(
+            client: client,
+            shouldSamplePowermetrics: { false },
+            now: { start },
+            processIdentityLookup: {
+                ProcessIdentityLookup(identities: [:], failureDetail: SystemMonitorCollector.processEnumerationCapDetail)
+            }
+        )
+
+        _ = await collector.collectAdvancedMetrics(at: start)
+        let snapshot = try await waitForNetworkCapability(false, reason: .notCollected,
+                                                          collector: collector, at: start)
+        XCTAssertNil(snapshot.idleZeroInterval)
+        XCTAssertEqual(snapshot.capabilities[.processNetwork]?.detail,
+                       SystemMonitorCollector.processEnumerationCapDetail)
+    }
+
 }
 
 private func gpuSample(at timestamp: Date) throws -> HelperSampleResponse {
@@ -355,6 +387,17 @@ private actor ToggleHelperClient: AdvancedSamplingClient {
 }
 
 private actor FixedAdvancedSamplingClient: AdvancedSamplingClient {
+    private let responses: [HelperSampleKind: HelperSampleResponse]
+
+    init(_ responses: [HelperSampleKind: HelperSampleResponse]) { self.responses = responses }
+
+    func sample(_ kind: HelperSampleKind) async -> HelperSampleResponse {
+        responses[kind] ?? response(kind, at: Date(timeIntervalSince1970: 0), error: "no queued response")
+    }
+}
+
+private actor V2StubAdvancedSamplingClient: AdvancedSamplingClient {
+    nonisolated var supportsProtocolV2: Bool { true }
     private let responses: [HelperSampleKind: HelperSampleResponse]
 
     init(_ responses: [HelperSampleKind: HelperSampleResponse]) { self.responses = responses }

@@ -17,6 +17,24 @@ enum AdvancedMetricsParser {
     struct Power {
         let watts: Double?
         let gpuPercent: Double?
+        let cpuWatts: Double?
+        let gpuWatts: Double?
+        let aneWatts: Double?
+        let dramWatts: Double?
+
+        init(watts: Double?,
+             gpuPercent: Double?,
+             cpuWatts: Double? = nil,
+             gpuWatts: Double? = nil,
+             aneWatts: Double? = nil,
+             dramWatts: Double? = nil) {
+            self.watts = watts
+            self.gpuPercent = gpuPercent
+            self.cpuWatts = cpuWatts
+            self.gpuWatts = gpuWatts
+            self.aneWatts = aneWatts
+            self.dramWatts = dramWatts
+        }
     }
     static func hasNettopHeader(_ input: String) -> Bool {
         guard input.utf8.count <= maximumBytes, let first = input.split(whereSeparator: \.isNewline).first else { return false }
@@ -111,15 +129,19 @@ enum AdvancedMetricsParser {
         let ratio = number(gpu?["idle_ratio"])
         let percent = ratio.flatMap { $0 <= 1 ? (1 - $0) * 100 : nil }
         let processor = root["processor"] as? [String: Any] ?? [:]
+        let cpuW = number(processor["cpu_power"]).map { $0 / 1_000 }
+        let gpuW = number(processor["gpu_power"]).map { $0 / 1_000 }
+        let aneW = number(processor["ane_power"]).map { $0 / 1_000 }
+        let dramW = number(processor["dram_power"]).map { $0 / 1_000 }
         var watts: Double?
         if processor["combined_power"] != nil {
             watts = number(processor["combined_power"]).map { $0 / 1_000 }
-        } else if let cpuMilliwatts = number(processor["cpu_power"]),
-                  let gpuMilliwatts = number(processor["gpu_power"]),
-                  let aneMilliwatts = number(processor["ane_power"]),
-                  (cpuMilliwatts + gpuMilliwatts + aneMilliwatts).isFinite {
-            watts = (cpuMilliwatts + gpuMilliwatts + aneMilliwatts) / 1_000
+        } else if let cpuW, let gpuW, let aneW, (cpuW + gpuW + aneW).isFinite {
+            watts = cpuW + gpuW + aneW
+        } else if processor["package_watts"] != nil {
+            watts = number(processor["package_watts"])
         }
-        return Power(watts: watts, gpuPercent: percent)
+        return Power(watts: watts, gpuPercent: percent,
+                     cpuWatts: cpuW, gpuWatts: gpuW, aneWatts: aneW, dramWatts: dramW)
     }
 }

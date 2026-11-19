@@ -1,29 +1,35 @@
 # Advanced metrics collection
 
-Advanced sampling is optional and runs through the authenticated helper. The app requests fixed `nettop` and `powermetrics` commands, never arbitrary arguments. Sampling is asynchronous and has at most one refresh in flight. Each refresh checks helper registration and signing once, then requests one `nettop` and one `powermetrics` sample. Refreshes run no more often than every five seconds while the helper responds, and no more often than every 60 seconds after a refresh reports `helperUnavailable`; the first successful sample restores the five-second cadence. When the app becomes active (`NSApplication.didBecomeActiveNotification`, observed in `AppComposition`), the next sample requests a refresh immediately even inside that 60-second backoff, so approving the helper in System Settings takes effect on return. This request has no effect while the helper is responding. The helper also enforces its own five-second minimum spacing per sample kind. Cached readings keep the helper capture time; samples older than 30 seconds are unavailable. Helper absence, denial, command failure, invalid output and stale data are not zeros.
+Microgravity 0.3.0 uses a hybrid telemetry pipeline that pairs unprivileged 1-second native hardware/network readers inside `Microgravity.app` with an upgraded v2 privileged helper (`MicrogravityHelper`) for root/other-user process metrics and Intel/fallback sampling.
 
-`nettop -n -P -x -L 1 -J bytes_in,bytes_out` requests raw per-process CSV totals. `man nettop` documents `-P`, `-x`, `-L`, and column selection. The observed raw layout has an unlabeled first process column followed by `bytes_in` and `bytes_out`, with an optional trailing empty CSV field; the parser also accepts labeled `interface` layouts with other columns such as time or state. Input is limited to 4 MiB. The parser handles quoted CSV names and rejects malformed schemas, malformed quoting, and ambiguous duplicate PIDs. Process identities (PID plus start time) are read before and after the command from the `KERN_PROC_ALL` sysctl table (`SystemMonitorCollector.processIdentityLookup`), which covers processes of all users, including root. Earlier builds read identities with `proc_pidinfo(PROC_PIDTBSDINFO)`, which missed other users' processes. A missing or changed identity is discarded. If the table cannot be read, per-process network readings are unavailable with the enumeration detail. A table cut at the 16,384-process cap keeps the identities it read; processes beyond the cap get no per-process network reading. Rates use monotonic counter differences, with warm-up, counter reset, and long gaps represented as unavailable. No socket destinations or command output are persisted.
+## Native unprivileged collectors (1s tick)
 
-## Power and GPU (powermetrics)
+- **System power and battery telemetry (`AppleSMCReader` + `PowerTelemetryCollector`):** Safely opens read-only `AppleSMC` keys (`PSTR` System Total Power, `PDTR` DC-In, `PB0R`/`PPBR` Battery Power) and reads `AppleSmartBattery` (`PowerTelemetryData`, charge, voltage/amperage, adapter rating) plus `IOPSCopyPowerSourcesInfo` and `ProcessInfo thermalState`. Reconciles true System Power (W) on **both AC and Battery**, falling back to labeled Component Power only when platform total sensors are unavailable (such as on virtual machines).
+- **Apple Silicon GPU % and SoC component power (`IOReportCollector`):** Dynamically loads `/usr/lib/libIOReport.dylib` via `dlopen`/`dlsym` (`#if arch(arm64)`, zero link-time dependency, clean no-op fallback on `x86_64` and virtualized Macs) and subscribes to `"Energy Model"` (CPU, GPU, ANE, DRAM watts) and `"GPU Stats"` (`GPU Performance States` utilization %) at 1-second deltas.
+- **Unprivileged streaming external `nettop` fallback (`NettopStreamService`):** When the helper is absent, lazily runs `/usr/bin/nettop -n -P -x -t external -d -L 0 -s 1 -J bytes_in,bytes_out` over a PTY (`posix_openpt` with `~ECHO & ~OPOST`, preventing C `stdio` block-buffering on continuous `-L 0` output) and stops automatically after 15 seconds of inactivity or on app quit. Frame 0's cumulative totals are skipped; frames `>= 1` emit 1-second external deltas parsed from the right so commas inside process names never misalign columns.
+- **Hardware spec metadata (`HardwareSpecReader`):** Cached read-once machine model, CPU brand, GPU model and core count (`Metal` / `IOAccelerator`), physical RAM summary, boot disk model and capacity, and active primary interface metadata.
 
-The app runs:
+## Privileged helper sampling (Protocol v2)
+
+Helper sampling is optional and runs through the authenticated XPC helper (`helperProtocolVersion = 2`) using a reused cached `NSXPCConnection` that invalidates cleanly on disconnect, timeout, or on-disk Sparkle update replacement:
+
+- **Streaming external `nettop` (`.nettopStream`):** Maintains a lazy streaming `NettopStreamService` (`-t external -d -L 0 -s 1`) across all users' sockets without socket-close counter resets, accumulated seamlessly across any UI refresh cadence (`0.5s`, `1s`, `2s`, `5s`).
+- **Privileged process metrics (`.processMetrics`):** Reads `proc_pidinfo(PROC_PIDTASKINFO)`, `proc_pid_rusage(RUSAGE_INFO_V4)`, and `proc_pidpath` as root for non-caller UIDs (rate-limited at 0.5s, capped at 4,096 PIDs, with `KERN_PROC_PID` start-time revalidation after reads) so root/system processes (`WindowServer`, `launchd`, `mds_stores`) report real CPU, memory, disk, threads, and paths without `EPERM` `?` markers.
+- **`powermetrics` fallback (`.powermetrics`):** Still runs at a 5-second cadence (`powermetrics -f plist -i 1000 -n 1 -s cpu_power,gpu_power`) only when native `IOReport`/power sensors are unavailable (such as Intel Macs), extended to parse Intel `processor.package_watts` as well as Apple Silicon keys.
+
+When streaming `nettop` (helper or local fallback) is healthy, verified live processes absent from a delta frame report **`0 B/s`** with the frame's `idleZeroInterval` rather than `.notCollected`. On transient `"rateLimited"` / `"busy"` helper errors, fresh (`<= 30s`) cached readings are preserved instead of flickering to unavailable. Helper absence (`helperUnavailable`) is checked on a 60-second backoff and retried immediately when `NSApplication.didBecomeActiveNotification` fires after System Settings approval. No socket destinations or raw command outputs are persisted.
+
+Process identities (PID plus start time) are read before and after sampling from `KERN_PROC_ALL` (`SystemMonitorCollector.processIdentityLookup`), covering all users up to 16,384 entries. Routine one-tick subprocess warm-ups (`warmingUp`), exits (`processExited`), identity changes, and sub-50ms frame timestamp jitter no longer mark parent application groups partial (`!`) or record false App History gaps.
+
+## Power and GPU (`powermetrics` fallback)
+
+When helper `powermetrics` runs:
 
 ```
 powermetrics -f plist -i 1000 -n 1 -s cpu_power,gpu_power
 ```
 
-This emits NUL-separated plist records according to local `powermetrics --help`. The parser reads the last record. Per-process GPU time is not requested and not collected: `tasks` sampling and `--show-process-gpu` were removed, and the `processGPUTime` capability always reports unsupported with the detail "Per-process GPU time is not collected."
-
-**GPU activity.** On the observed plist shape, `gpu.idle_ratio` is a fraction; GPU active percentage is `100 * (1 - idle_ratio)`. The parser requires a finite numeric value in [0,1]. This key is an observed schema, not a public compatibility guarantee; for an example consumer see [thor's parser](https://github.com/okuvshynov/thor/commit/bcc34324af629813b38d8958b3e2eb828b7f0eb3).
-
-**Energy (system power).** Power keys are in milliwatts and are converted to watts. The parser uses:
-
-1. `processor.combined_power` when that key is present. A present but invalid value yields unavailable; the parser does not fall back to components.
-2. Otherwise, `processor.cpu_power`, `processor.gpu_power` and `processor.ane_power`, all three required. A partial set is unavailable.
-
-Values must be finite, non-negative numbers; booleans, strings, and negative values are rejected. The earlier `*_mw` field names were hypothetical and are no longer read. Output that carries none of these keys, which is what the parser expects on Intel (unverified), reports energy as unsupported.
-
-**These key names have not been verified against Apple output.** They come from public open-source consumers of `powermetrics` plist output, not from a capture made by this project. Confirm them against a captured `sudo powermetrics -f plist -n 1 -s cpu_power,gpu_power` on Apple silicon and on Intel before relying on energy readings. Synthetic tests encode these shapes and do not claim a hardware capture.
+Per-process GPU time is not requested or collected (`processGPUTime` remains `.unsupported`). GPU activity computes `100 * (1 - gpu.idle_ratio)` when in `[0, 1]`. Energy uses `processor.combined_power` (mW -> W) when present and valid, else `processor.cpu_power + gpu_power + ane_power` (mW -> W), else Intel `processor.package_watts` (W). Individual `cpu_power`, `gpu_power`, `ane_power`, and `dram_power` keys are also surfaced when present. Values must be finite and non-negative.
 
 ## Helper trust and authorization
 
@@ -43,7 +49,7 @@ The requirement needs the Developer ID intermediate (OID 1.2.840.113635.100.6.2.
 anchor apple generic and identifier "run.rosie.microgravity.helper" and certificate leaf[subject.OU] = "TEAMID"
 ```
 
-**Shipped builds.** The shipped 0.2.0 app and helper satisfy the Release requirement, checked with `codesign --verify -R`.
+**Shipped builds.** Shipped release builds satisfy the Release requirement, checked with `codesign --verify -R`.
 
 **Helper lifetime.** The helper computes its requirement once, at startup, not on each connection. A Sparkle update can replace the helper on disk while an older helper is still running, and that process keeps its startup requirement until it exits. The helper exits in two cases, and launchd then starts the current on-disk binary on the next connection:
 

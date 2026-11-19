@@ -5,8 +5,8 @@
 
 | <img height="20" src="https://github.com/user-attachments/assets/42d7e887-4616-4e8c-b1d3-e44e01340f8c" /> macOS |
 | :-- |
-| **ZIP: [universal](https://github.com/BurntToasters/Microgravity/releases/download/v0.2.1/Microgravity-0.2.1.zip)** |
-| **Checksums: [SHA256SUMS](https://github.com/BurntToasters/Microgravity/releases/download/v0.2.1/SHA256SUMS) / [GPG signature](https://github.com/BurntToasters/Microgravity/releases/download/v0.2.1/SHA256SUMS.asc)** |
+| **ZIP: [universal](https://github.com/BurntToasters/Microgravity/releases/download/v0.3.0/Microgravity-0.3.0.zip)** |
+| **Checksums: [SHA256SUMS](https://github.com/BurntToasters/Microgravity/releases/download/v0.3.0/SHA256SUMS) / [GPG signature](https://github.com/BurntToasters/Microgravity/releases/download/v0.3.0/SHA256SUMS.asc)** |
 
 > Requires macOS 14 or later. The universal build runs natively on Apple silicon and Intel Macs.
 
@@ -18,6 +18,18 @@
 
 ### ℹ️ Enjoying Microgravity? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 <!-- downloads:end -->
+
+## 0.3.0
+
+- **Live Telemetry (Rootless 1-Second Path):** Added native IOKit `AppleSMC` (`PSTR`/`PDTR`/`PB0R`) and `AppleSmartBattery`/`IOPowerSources` power collectors, dynamic `libIOReport` GPU utilization and Apple Silicon component power rails (`CPU`, `GPU`, `ANE`, `DRAM`), cached static hardware specs (`HardwareSpecReader`), and a PTY-buffered rootless `nettop` delta stream (`NettopStreamService`) so live CPU, memory, disk, per-process network, GPU, and system power update every second even without the privileged helper.
+- **System Power & Energy Overhaul:** Energy on the Performance page now reports full `System Power` on AC adapter as well as battery (from SMC, SmartBattery telemetry, or component power fallback), displays live `AC Power` / `Battery` source and macOS thermal pressure chips, and breaks out adapter wattage, battery wattage/percentage/time remaining, and per-component rails.
+- **Accurate Per-Process Counts & Honest Zeros:** Live processes verified idle by an active streaming `nettop` frame now display `0 B/s` instead of missing `!` badges; routine `.warmingUp`, `.processExited`, and `.identityChanged` sibling states and sub-50 ms interval jitter no longer trigger false `!` warnings in Processes or false `≥` gaps in App History.
+- **Privileged Helper Protocol v2:** Upgraded `MicrogravityHelper` (`helperProtocolVersion = 2`) with a persistent 1-second all-user external socket delta stream (`.nettopStream`), root and other-user `proc_pidinfo`/`rusage_info_v4`/`proc_pidpath` sampling (`.processMetrics` with start-time revalidation), XPC connection reuse in `HelperSamplingClient`, and transient cache preservation across rate limits.
+- **Process Grouping:** Deduplicated `.app` bundle groups by `(bundlePath, ownerUID)` selecting the main `Contents/MacOS` binary as leader, stopped `launchd` from claiming standard-user processes, classified processes into `Apps`, `Background processes`, and `System processes`, and added `By Category` grouping and scope filtering (`All Processes`, `Apps Only`, `My Processes`).
+- **Processes Table & Columns:** Removed empty disclosure triangles from 1-process groups (showing a member-count pill instead), added compact combined `Disk` (`0 B/s`) with R/W hover breakdown plus optional `Disk Read` and `Disk Write` columns, fixed `.inset` table width calculation so right columns no longer clip, and added double-click expand/inspect and the clickable top summary strip.
+- **Performance & Memory:** Added hardware specification headers across CPU, Memory, Disk, Network, and GPU detail views, added a Task Manager-style stacked `MemoryCompositionBarView` under Memory, showed GPU model and power, and sorted and collapsed virtual network interfaces under a toggle.
+- **Details, Inventory & Users:** Added optional `Threads`, `Architecture`, and `CPU Time` columns plus context-menu `Quit Process`, `Force Quit…`, and `Inspect…` in Details, and added live toolbar search to Startup, Services, and Users.
+- **Window & Inspector:** Added `View > Always on Top` (`⌥⌘T`) persisted outside fixture launches, and added architecture, thread count, and separate receive/send rates to Process Inspector.
 
 ## 0.2.1
 

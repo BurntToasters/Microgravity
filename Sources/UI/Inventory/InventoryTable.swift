@@ -29,10 +29,6 @@ final class InventoryTableController: NSObject, NSTableViewDataSource, NSTableVi
         table.intercellSpacing = .zero
         table.gridStyleMask = []
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
-        if let autosaveName {
-            table.autosaveName = autosaveName
-            table.autosaveTableColumns = true
-        }
         table.headerView?.setAccessibilityIdentifier(identifier + ".header")
         for column in InventoryColumn.allCases {
             let tableColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(column.rawValue))
@@ -43,6 +39,11 @@ final class InventoryTableController: NSObject, NSTableViewDataSource, NSTableVi
             tableColumn.headerCell.setAccessibilityIdentifier(column.rawValue)
             tableColumn.sortDescriptorPrototype = NSSortDescriptor(key: column.rawValue, ascending: true)
             table.addTableColumn(tableColumn)
+        }
+        // Enable autosave after the columns exist so saved widths restore onto them cleanly.
+        if let autosaveName {
+            table.autosaveName = autosaveName
+            table.autosaveTableColumns = true
         }
         self.table = table
 

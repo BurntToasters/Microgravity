@@ -29,7 +29,7 @@ enum InventoryKind {
 
 /// Read-only Startup and Services page. Coverage is a banner; the selected item's path sits in a bottom bar.
 @MainActor
-final class InventoryViewController: NSViewController, SnapshotUpdating, PageToolbarProviding {
+final class InventoryViewController: NSViewController, SnapshotUpdating, PageToolbarProviding, NSSearchFieldDelegate {
     private let kind: InventoryKind
     private let dependencies: PageDependencies
     private let table: InventoryTableController
@@ -38,11 +38,30 @@ final class InventoryViewController: NSViewController, SnapshotUpdating, PageToo
     private let revealButton = NSButton(title: String(localized: "Reveal in Finder"), target: nil, action: nil)
     private let toolbarRevealButton = NSButton(title: String(localized: "Reveal in Finder"), target: nil, action: nil)
     private let toolbarSettingsButton = NSButton(title: String(localized: "Open Login Items Settings"), target: nil, action: nil)
+    private lazy var searchItem: NSSearchToolbarItem = {
+        let item = NSSearchToolbarItem(itemIdentifier: searchIdentifier)
+        item.label = String(localized: "Search")
+        item.paletteLabel = String(localized: "Search \(kind.title)")
+        item.toolTip = String(localized: "Filter \(kind.title.lowercased()) entries")
+        item.preferredWidthForSearchField = 200
+        let field = item.searchField
+        field.placeholderString = String(localized: "Search \(kind.title.lowercased())")
+        field.setAccessibilityIdentifier("\(kind.pageIdentifier).search")
+        field.delegate = self
+        (field.cell as? NSSearchFieldCell)?.sendsSearchStringImmediately = true
+        return item
+    }()
     private var toolbarItems: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
+    private var latestEntries: [DiscoveredEntrySnapshot] = []
+    private var latestCoverage: DiscoveryCoverage?
     private var rowsByID: [String: InventoryRow] = [:]
     private var selectedEntry: DiscoveredEntrySnapshot?
     private var coverageReasons: [String] = []
     private var coverageDetailsPopover: NSPopover?
+
+    private var searchIdentifier: NSToolbarItem.Identifier {
+        NSToolbarItem.Identifier("\(kind.pageIdentifier).toolbar.search")
+    }
 
     private var revealIdentifier: NSToolbarItem.Identifier {
         NSToolbarItem.Identifier("\(kind.pageIdentifier).toolbar.reveal")
@@ -75,9 +94,10 @@ final class InventoryViewController: NSViewController, SnapshotUpdating, PageToo
 
     // MARK: PageToolbarProviding
 
-    var toolbarItemIdentifiers: [NSToolbarItem.Identifier] { [revealIdentifier, loginItemsIdentifier] }
+    var toolbarItemIdentifiers: [NSToolbarItem.Identifier] { [searchIdentifier, revealIdentifier, loginItemsIdentifier] }
 
     func toolbarItem(for identifier: NSToolbarItem.Identifier) -> NSToolbarItem? {
+        if identifier == searchIdentifier { return searchItem }
         if let item = toolbarItems[identifier] { return item }
         let item: NSToolbarItem
         if identifier == revealIdentifier {
@@ -156,15 +176,40 @@ final class InventoryViewController: NSViewController, SnapshotUpdating, PageToo
     }
 
     func update(snapshot: MonitoringSnapshot) {
-        let entries = kind == .startup ? snapshot.startupItems : snapshot.services
-        let rows = InventoryRows.rows(for: entries, pageIdentifier: kind.pageIdentifier)
+        latestEntries = kind == .startup ? snapshot.startupItems : snapshot.services
+        latestCoverage = coverage(snapshot)
+        applyInventoryFilter()
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        applyInventoryFilter()
+    }
+
+    private func applyInventoryFilter() {
+        let query = searchItem.searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filteredEntries: [DiscoveredEntrySnapshot]
+        if query.isEmpty {
+            filteredEntries = latestEntries
+        } else {
+            filteredEntries = latestEntries.filter { entry in
+                entry.name.localizedCaseInsensitiveContains(query)
+                    || (entry.path?.localizedCaseInsensitiveContains(query) ?? false)
+                    || (entry.detail?.localizedCaseInsensitiveContains(query) ?? false)
+                    || entry.state.rawValue.localizedCaseInsensitiveContains(query)
+            }
+        }
+        let rows = InventoryRows.rows(for: filteredEntries, pageIdentifier: kind.pageIdentifier)
         rowsByID = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let coverage = coverage(snapshot)
 
         table.update(rows: rows)
-        updateBanner(coverage: coverage, count: entries.count)
-        let empty = emptyStateText(coverage: coverage)
-        table.setEmptyState(title: empty.title, caption: empty.caption)
+        updateBanner(coverage: latestCoverage, count: latestEntries.count)
+        if !query.isEmpty && rows.isEmpty {
+            table.setEmptyState(title: String(localized: "No entries match \"\(query)\""),
+                                caption: String(localized: "Try a different name, path, or state."))
+        } else {
+            let empty = emptyStateText(coverage: latestCoverage)
+            table.setEmptyState(title: empty.title, caption: empty.caption)
+        }
         selectedEntry = table.selectedRowID.flatMap { rowsByID[$0]?.entry }
         updateSelectedItem()
     }

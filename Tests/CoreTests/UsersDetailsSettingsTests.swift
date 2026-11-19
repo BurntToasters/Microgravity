@@ -60,7 +60,7 @@ final class UsersDetailsSettingsTests: XCTestCase {
     }
 
     func testSettingsHelperCaptionWrapsInsideFormAtMinimumWindowSize() {
-        let caption = "Lets you quit processes owned by other standard users. System and root processes stay protected."
+        let caption = SettingsViewController.helperPolicyCaption
         let controller = MainWindowController(dependencies: makeAppDependencies(), frameAutosaveName: nil)
         let window = try! XCTUnwrap(controller.window)
         defer { window.close() }
@@ -159,7 +159,7 @@ final class UsersDetailsSettingsTests: XCTestCase {
             ("parent", "1"),
             ("cpu", UIFormat.metric(busy.cpuPercent)),
             ("memory", UIFormat.metric(busy.memoryBytes)),
-            ("disk", "R \(UIFormat.metric(busy.diskReadBytesPerSecond)) · W \(UIFormat.metric(busy.diskWriteBytesPerSecond))"),
+            ("disk", UIFormat.bytesPerSecond(12_288)),
             ("network", UIFormat.metric(network)),
             ("gpu", UIFormat.metric(gpu)),
             ("path", path)
@@ -168,6 +168,10 @@ final class UsersDetailsSettingsTests: XCTestCase {
             let label = try XCTUnwrap(cellLabel(in: table, row: row, key: key), "missing cell \(key)")
             XCTAssertEqual(label.accessibilityIdentifier(), "\(rowID).\(key)")
             XCTAssertEqual(label.stringValue, text, "cell \(key) shows the wrong value")
+            if key == "disk" {
+                XCTAssertTrue(label.toolTip?.contains("Read: ") == true, label.toolTip ?? "missing disk tooltip")
+                XCTAssertTrue(label.toolTip?.contains("Write: ") == true, label.toolTip ?? "missing disk tooltip")
+            }
         }
 
         table.sortDescriptors = [NSSortDescriptor(key: "cpu", ascending: true)]
@@ -288,7 +292,8 @@ final class UsersDetailsSettingsTests: XCTestCase {
         // Partly unavailable disk pair: the measured half stays visible and the missing half is "—".
         let disk = try XCTUnwrap(cellLabel(in: table, row: row, key: "disk"))
         XCTAssertEqual(disk.stringValue, "R — · W \(UIFormat.bytesPerSecond(2_048))")
-        XCTAssertTrue(disk.toolTip?.hasPrefix("R: ") == true, disk.toolTip ?? "no tooltip")
+        XCTAssertTrue(disk.toolTip?.hasPrefix("Read: ") == true, disk.toolTip ?? "no tooltip")
+        XCTAssertTrue(disk.toolTip?.contains("Write: ") == true, disk.toolTip ?? "no tooltip")
         let diskCell = try XCTUnwrap(cellView(in: table, row: row, key: "disk"))
         XCTAssertTrue(hasMarker(diskCell))
 
@@ -446,6 +451,69 @@ final class UsersDetailsSettingsTests: XCTestCase {
                        "The helper did not respond in time.")
         XCTAssertEqual(NativeAdvancedMetricsCollector.describe(helperError: "somethingNew"), "somethingNew")
         XCTAssertNil(NativeAdvancedMetricsCollector.describe(helperError: nil))
+    }
+
+    func testProcessesAndUsersSearchEmptyStatesReflectQuery() throws {
+        let store = FixtureMonitoringStore(configuration: FixtureConfiguration(arguments: []))
+        let snapshot = try XCTUnwrap(store.latestSnapshot)
+        let dependencies = makeAppDependencies()
+
+        let suite = "SearchEmptyTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let processes = ProcessesViewController(dependencies: PageDependencies(
+            monitoringStore: dependencies.monitoringStore,
+            processActions: dependencies.processActions,
+            integrations: dependencies.integrations,
+            fixtureMode: true
+        ), defaults: defaults)
+        processes.loadViewIfNeeded()
+        processes.update(snapshot: snapshot)
+
+        let procSearch = try XCTUnwrap(processes.toolbarItem(for: processes.toolbarItemIdentifiers[0]) as? NSSearchToolbarItem)
+        procSearch.searchField.stringValue = "no-such-process"
+        processes.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: procSearch.searchField))
+        let procEmpty = try XCTUnwrap(allDescendants(of: processes.view).compactMap { $0 as? EmptyStateView }.first)
+        XCTAssertFalse(procEmpty.isHidden)
+        XCTAssertNotNil(labelField(stringValue: "No processes match “no-such-process”", in: procEmpty))
+
+        let users = UsersViewController()
+        users.loadViewIfNeeded()
+        users.update(snapshot: snapshot)
+        let userSearch = try XCTUnwrap(users.toolbarItem(for: users.toolbarItemIdentifiers[0]) as? NSSearchToolbarItem)
+        userSearch.searchField.stringValue = "no-such-user"
+        users.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: userSearch.searchField))
+        let userEmpty = try XCTUnwrap(allDescendants(of: users.view).compactMap { $0 as? EmptyStateView }.first)
+        XCTAssertFalse(userEmpty.isHidden)
+        XCTAssertNotNil(labelField(stringValue: "No users match “no-such-user”", in: userEmpty))
+    }
+
+    func testSamplingControlsAndFixtureCategoryPreservation() throws {
+        let store = FixtureMonitoringStore(configuration: FixtureConfiguration(arguments: []))
+        let suite = "SamplingControlsTest-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let receivedExpectation = expectation(description: "samplingStateDidChange notification")
+        let token = NotificationCenter.default.addObserver(forName: .samplingStateDidChange, object: nil, queue: .main) { _ in
+            receivedExpectation.fulfill()
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        SamplingControls.setInterval(.twoSeconds, store: store, defaults: defaults)
+        waitForExpectations(timeout: 1)
+        XCTAssertEqual(store.interval, .twoSeconds)
+        XCTAssertEqual(defaults.double(forKey: SamplingControls.refreshIntervalDefaultsKey), MonitoringInterval.twoSeconds.rawValue)
+
+        let initial = try XCTUnwrap(store.latestSnapshot)
+        let worker = try XCTUnwrap(initial.processes.first { $0.id.pid == 411 })
+        XCTAssertNotNil(worker.advancedMetrics[.processNetworkReceive]?.value)
+        XCTAssertNotNil(worker.advancedMetrics[.processNetworkTransmit]?.value)
+        store.removeProcessForFixtureAction(worker.id)
+        let updated = try XCTUnwrap(store.latestSnapshot)
+        let editorGroup = try XCTUnwrap(updated.processGroups.first { $0.title == "Fixture Editor" })
+        XCTAssertEqual(editorGroup.category, .application)
     }
 
     private func makeProcess(pid: Int32, uid: UInt32, path: String? = nil) -> ProcessSnapshot {

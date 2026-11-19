@@ -74,10 +74,20 @@ enum UIFormat {
         return percentFormatter.string(from: NSNumber(value: value / 100)) ?? "\(value)%"
     }
 
-    /// Throughput in decimal units (KB = 1000 bytes), matching Activity Monitor.
+    /// Formatted byte count in binary/memory units (e.g. "4.3 GB").
+    static func bytes(_ value: Double) -> String {
+        guard value.isFinite else { return String(localized: "Unavailable") }
+        return memoryFormatter.string(fromByteCount: boundedInt64(value))
+    }
+
+    /// Throughput in decimal units (KB = 1000 bytes), matching Activity Monitor, with compact "B/s" below 1 KB/s.
     static func bytesPerSecond(_ value: Double) -> String {
         guard value.isFinite else { return String(localized: "Unavailable") }
-        let count = throughputFormatter.string(fromByteCount: boundedInt64(value))
+        let bounded = boundedInt64(value)
+        if bounded < 1_000 {
+            return "\(bounded) B/s"
+        }
+        let count = throughputFormatter.string(fromByteCount: bounded)
         return "\(count)/s"
     }
 

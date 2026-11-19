@@ -68,6 +68,10 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         let diskWriteRate: MetricReading
         let diskReadTotal: MetricReading
         let diskWriteTotal: MetricReading
+        let threadCount: Int32?
+        let cpuTotalSeconds: MetricReading?
+        let architecture: ProcessArchitecture
+        let category: ProcessCategory
     }
 
     private struct CachedLaunchDiscovery {
@@ -83,6 +87,7 @@ public actor SystemMonitorCollector: MonitoringCollecting {
     private struct CachedBundleMetadata {
         let bundleID: String?
         let title: String
+        let executablePath: String?
     }
 
     /// Name and executable path are read once per ProcessIdentity and evicted with the identity.
@@ -121,6 +126,10 @@ public actor SystemMonitorCollector: MonitoringCollecting {
 
     private let advancedCollector: (any AdvancedMetricsCollecting)?
     private let memoryPressureLevelReader: @Sendable () -> Int32?
+    private let ioReportCollector: IOReportCollector?
+    private let hardwareSpecReader: HardwareSpecReader?
+    private let powerCollector: (@Sendable (ComponentPowerReadings?, Date) -> SystemPowerSnapshot)?
+    private let regularAppPIDsProvider: (@Sendable () -> Set<Int32>)?
     private var systemCounters = CounterDeltaTracker<CounterKey>()
     private var processCounters = CounterDeltaTracker<ProcessCounterKey>()
     private var processTextCache: [ProcessIdentity: CachedProcessText] = [:]
@@ -137,22 +146,46 @@ public actor SystemMonitorCollector: MonitoringCollecting {
 
     public init(advancedCollector: (any AdvancedMetricsCollecting)? = nil,
                 memoryPressureLevelReader: (@Sendable () -> Int32?)? = nil) {
+        self.init(advancedCollector: advancedCollector,
+                  memoryPressureLevelReader: memoryPressureLevelReader,
+                  ioReportCollector: nil,
+                  hardwareSpecReader: nil,
+                  powerCollector: nil,
+                  regularAppPIDsProvider: nil)
+    }
+
+    init(advancedCollector: (any AdvancedMetricsCollecting)? = nil,
+         memoryPressureLevelReader: (@Sendable () -> Int32?)? = nil,
+         ioReportCollector: IOReportCollector?,
+         hardwareSpecReader: HardwareSpecReader?,
+         powerCollector: (@Sendable (ComponentPowerReadings?, Date) -> SystemPowerSnapshot)?,
+         regularAppPIDsProvider: (@Sendable () -> Set<Int32>)?) {
         self.advancedCollector = advancedCollector
         self.memoryPressureLevelReader = memoryPressureLevelReader ?? { Self.kernelMemoryPressureLevel() }
+        self.ioReportCollector = ioReportCollector
+        self.hardwareSpecReader = hardwareSpecReader
+        self.powerCollector = powerCollector
+        self.regularAppPIDsProvider = regularAppPIDsProvider
     }
 
     public func collect(at timestamp: Date) async -> MonitoringSnapshot {
         startMemoryPressureSourceIfNeeded()
 
+        let advanced = await advancedCollector?.collectAdvancedMetrics(at: timestamp) ?? AdvancedMetricsSnapshot()
         let cpu = collectCPU(at: timestamp)
         let memory = collectMemory(at: timestamp)
         let disk = collectDisk(at: timestamp)
         let network = collectNetwork(at: timestamp)
-        let processResult = collectProcesses(at: timestamp, capacityCores: cpu.capacityCores)
+        let regularAppPIDs = regularAppPIDsProvider?()
+        let processResult = collectProcesses(at: timestamp,
+                                             capacityCores: cpu.capacityCores,
+                                             supplementedMetrics: advanced.perProcessSystemMetrics,
+                                             regularAppPIDs: regularAppPIDs)
         let rawProcesses = processResult.processes
         let processIncompleteDetail = processResult.incompleteDetail
         let baseProcesses = linkProcesses(rawProcesses)
-        let advanced = await advancedCollector?.collectAdvancedMetrics(at: timestamp) ?? AdvancedMetricsSnapshot()
+        let isHealthyNetworkStream = advanced.capabilities[.processNetwork]?.available == true
+            && advanced.idleZeroInterval != nil
         let processes = baseProcesses.map { process in
             var values = advanced.perProcess[process.id] ?? [:]
             if values[.processGPUTime] == nil {
@@ -160,20 +193,34 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                                                                       timestamp: timestamp, snapshot: advanced,
                                                                       hasProvider: advancedCollector != nil)
             }
-            if values[.processNetwork] == nil {
-                values[.processNetwork] = Self.missingAdvancedReading(.processNetwork, unit: .bytesPerSecond,
-                                                                      timestamp: timestamp, snapshot: advanced,
-                                                                      hasProvider: advancedCollector != nil)
-            }
-            if values[.processNetworkReceive] == nil {
-                values[.processNetworkReceive] = Self.missingAdvancedReading(.processNetworkReceive,
-                    unit: .bytesPerSecond, timestamp: timestamp, snapshot: advanced,
-                    hasProvider: advancedCollector != nil)
-            }
-            if values[.processNetworkTransmit] == nil {
-                values[.processNetworkTransmit] = Self.missingAdvancedReading(.processNetworkTransmit,
-                    unit: .bytesPerSecond, timestamp: timestamp, snapshot: advanced,
-                    hasProvider: advancedCollector != nil)
+            if isHealthyNetworkStream, let zeroInterval = advanced.idleZeroInterval {
+                let zeroReading = MetricReading(value: 0, unit: .bytesPerSecond, timestamp: zeroInterval.end,
+                                                measurementInterval: zeroInterval)
+                if values[.processNetwork] == nil {
+                    values[.processNetwork] = zeroReading
+                }
+                if values[.processNetworkReceive] == nil {
+                    values[.processNetworkReceive] = zeroReading
+                }
+                if values[.processNetworkTransmit] == nil {
+                    values[.processNetworkTransmit] = zeroReading
+                }
+            } else {
+                if values[.processNetwork] == nil {
+                    values[.processNetwork] = Self.missingAdvancedReading(.processNetwork, unit: .bytesPerSecond,
+                                                                          timestamp: timestamp, snapshot: advanced,
+                                                                          hasProvider: advancedCollector != nil)
+                }
+                if values[.processNetworkReceive] == nil {
+                    values[.processNetworkReceive] = Self.missingAdvancedReading(.processNetworkReceive,
+                        unit: .bytesPerSecond, timestamp: timestamp, snapshot: advanced,
+                        hasProvider: advancedCollector != nil)
+                }
+                if values[.processNetworkTransmit] == nil {
+                    values[.processNetworkTransmit] = Self.missingAdvancedReading(.processNetworkTransmit,
+                        unit: .bytesPerSecond, timestamp: timestamp, snapshot: advanced,
+                        hasProvider: advancedCollector != nil)
+                }
             }
             return ProcessSnapshot(id: process.id, parentIdentity: process.parentIdentity,
                                    childIdentities: process.childIdentities, name: process.name,
@@ -185,13 +232,60 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                                    diskReadTotalBytes: process.diskReadTotalBytes,
                                    diskWriteTotalBytes: process.diskWriteTotalBytes,
                                    advancedMetrics: values, parentPID: process.parentPID,
-                                   parentExecutablePath: process.parentExecutablePath)
+                                   parentExecutablePath: process.parentExecutablePath,
+                                   threadCount: process.threadCount,
+                                   cpuTotalSeconds: process.cpuTotalSeconds,
+                                   architecture: process.architecture,
+                                   category: process.category)
         }
-        let groups = buildProcessGroups(processes, timestamp: timestamp)
+        let groups = buildProcessGroups(processes, timestamp: timestamp, regularAppPIDs: regularAppPIDs)
         let inventory = discoverLaunchEntries(processes: processes, at: timestamp)
         let sessions = discoverUsers(at: timestamp)
 
+        let ioReport = ioReportCollector?.sample(at: timestamp)
         var advancedReadings = advanced.system
+        var nativeCapabilityOverrides: [MetricKind: MetricAvailability] = [:]
+
+        if let gpuPercent = ioReport?.gpuUtilizationPercent {
+            advancedReadings[.gpu] = MetricReading(value: gpuPercent, unit: .percent,
+                                                   timestamp: timestamp,
+                                                   measurementInterval: ioReport?.interval)
+            nativeCapabilityOverrides[.gpu] = MetricAvailability(available: true)
+        }
+
+        let collectedPower: SystemPowerSnapshot?
+        if let powerCollector {
+            let basePower = powerCollector(ioReport?.components, timestamp)
+            if basePower.primaryPowerWatts?.value == nil,
+               let fallbackEnergy = advanced.system[.energy],
+               fallbackEnergy.value != nil {
+                collectedPower = SystemPowerSnapshot(
+                    systemPowerWatts: basePower.systemPowerWatts,
+                    componentPowerWatts: fallbackEnergy,
+                    adapterPowerWatts: basePower.adapterPowerWatts,
+                    batteryPowerWatts: basePower.batteryPowerWatts,
+                    cpuPowerWatts: basePower.cpuPowerWatts,
+                    gpuPowerWatts: basePower.gpuPowerWatts,
+                    anePowerWatts: basePower.anePowerWatts,
+                    dramPowerWatts: basePower.dramPowerWatts,
+                    powerSource: basePower.powerSource,
+                    batteryPercent: basePower.batteryPercent,
+                    batteryCharging: basePower.batteryCharging,
+                    batteryTimeRemainingMinutes: basePower.batteryTimeRemainingMinutes,
+                    adapterMaxWatts: basePower.adapterMaxWatts,
+                    thermalState: basePower.thermalState
+                )
+            } else {
+                collectedPower = basePower
+            }
+            if let primaryPower = collectedPower?.primaryPowerWatts, primaryPower.value != nil {
+                advancedReadings[.energy] = primaryPower
+                nativeCapabilityOverrides[.energy] = MetricAvailability(available: true)
+            }
+        } else {
+            collectedPower = nil
+        }
+
         if advancedReadings[.gpu] == nil {
             advancedReadings[.gpu] = MetricReading(unavailable: .percent, timestamp: timestamp,
                                                    reason: .unsupported)
@@ -200,6 +294,10 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             advancedReadings[.energy] = MetricReading(unavailable: .watts, timestamp: timestamp,
                                                      reason: .unsupported)
         }
+
+        let primaryNIC = network.interfaces.first(where: { $0.isUp && $0.includedInTotals })
+            ?? network.interfaces.first(where: \.isUp)
+        let hardware = hardwareSpecReader?.read(primaryNetworkInterface: primaryNIC)
 
         let system = SystemMetricsSnapshot(
             capacityCores: cpu.capacityCores,
@@ -220,7 +318,9 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             networkReceiveBytesPerSecond: network.receiveRate,
             networkTransmitBytesPerSecond: network.transmitRate,
             networkInterfaces: network.interfaces,
-            processorTopology: Self.hostProcessorTopology)
+            processorTopology: Self.hostProcessorTopology,
+            power: collectedPower,
+            hardware: hardware)
 
         let capabilities: [MetricKind: MetricAvailability] = [
             .totalCPU: Self.availability(for: cpu.total),
@@ -252,6 +352,7 @@ public actor SystemMonitorCollector: MonitoringCollecting {
 
         var allCapabilities = capabilities
         allCapabilities.merge(advanced.capabilities) { _, incoming in incoming }
+        allCapabilities.merge(nativeCapabilityOverrides) { _, native in native }
         let coverage: [String: DiscoveryCoverage] = [
             "processes": DiscoveryCoverage(complete: processResult.complete,
                                            reasons: processIncompleteDetail.map { [$0] } ?? []),
@@ -480,7 +581,10 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         }
     }
 
-    private func collectProcesses(at timestamp: Date, capacityCores: Int)
+    private func collectProcesses(at timestamp: Date,
+                                  capacityCores: Int,
+                                  supplementedMetrics: [ProcessIdentity: CollectedProcessSystemMetrics] = [:],
+                                  regularAppPIDs: Set<Int32>? = nil)
         -> (processes: [RawProcess], complete: Bool, incompleteDetail: String?) {
         let table: ProcessTable
         switch Self.readProcessTable() {
@@ -504,6 +608,17 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             let parentPID = entry.kp_eproc.e_ppid
             let ownerUID = UInt32(entry.kp_eproc.e_ucred.cr_uid)
             let kernelName = Self.fixedCString(entry.kp_proc.p_comm)
+            let supplement = supplementedMetrics[identity]
+            let pFlag = UInt32(bitPattern: entry.kp_proc.p_flag)
+            let architecture: ProcessArchitecture = (pFlag & UInt32(P_TRANSLATED)) != 0
+                ? .rosetta
+                : {
+                    #if arch(arm64)
+                    return .appleSilicon
+                    #else
+                    return .intel
+                    #endif
+                }()
 
             var task = proc_taskinfo()
             let taskSize = proc_pidinfo(rawPID, PROC_PIDTASKINFO, 0, &task,
@@ -511,10 +626,24 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             let taskAvailable = taskSize == MemoryLayout<proc_taskinfo>.size
             let taskErrno = errno
             let cpuReading: MetricReading
+            let threadCount: Int32?
+            let cpuTotalSeconds: MetricReading?
+            let resolvedCPUNanos: UInt64?
             if taskAvailable, let timebase = Self.machTimebase {
                 // proc_taskinfo CPU times are Mach absolute-time ticks, not nanoseconds.
                 let ticks = task.pti_total_user &+ task.pti_total_system
-                let cpuNanos = Self.nanoseconds(fromMachTicks: ticks, timebase: timebase)
+                resolvedCPUNanos = Self.nanoseconds(fromMachTicks: ticks, timebase: timebase)
+                threadCount = task.pti_threadnum
+            } else if let helperNanos = supplement?.cpuTotalNanoseconds {
+                resolvedCPUNanos = helperNanos
+                threadCount = supplement?.threadCount
+            } else {
+                resolvedCPUNanos = nil
+                threadCount = supplement?.threadCount
+            }
+            if let cpuNanos = resolvedCPUNanos {
+                cpuTotalSeconds = MetricReading(value: Double(cpuNanos) / 1_000_000_000,
+                                                unit: .seconds, timestamp: timestamp)
                 let delta = processCounters.update(cpuNanos, for: .cpu(identity), at: timestamp)
                 cpuReading = delta.reading(unit: .percent, timestamp: timestamp) { value, elapsed in
                     guard capacityCores > 0 else { return 0 }
@@ -525,6 +654,7 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                 let reason: MetricUnavailableReason = taskAvailable ? .collectionFailed
                     : (taskErrno == EPERM ? .permissionDenied : .collectionFailed)
                 cpuReading = MetricReading(unavailable: .percent, timestamp: timestamp, reason: reason)
+                cpuTotalSeconds = MetricReading(unavailable: .seconds, timestamp: timestamp, reason: reason)
             }
 
             var usage = rusage_info_v4()
@@ -534,28 +664,40 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             }
             let usageErrno = errno
             let usageAvailable = usageStatus == 0
+            let resolvedMemoryBytes: UInt64? = usageAvailable
+                ? usage.ri_phys_footprint
+                : (supplement?.memoryBytes ?? (taskAvailable ? task.pti_resident_size : nil))
+            let resolvedDiskRead: UInt64? = usageAvailable ? usage.ri_diskio_bytesread : supplement?.diskReadBytes
+            let resolvedDiskWrite: UInt64? = usageAvailable ? usage.ri_diskio_byteswritten : supplement?.diskWriteBytes
+
+            let fallbackReason: MetricUnavailableReason = usageErrno == EPERM ? .permissionDenied : .collectionFailed
             let memoryReading: MetricReading
+            if let resolvedMemoryBytes {
+                memoryReading = MetricReading(value: Double(resolvedMemoryBytes), unit: .bytes, timestamp: timestamp)
+            } else {
+                memoryReading = MetricReading(unavailable: .bytes, timestamp: timestamp, reason: fallbackReason)
+            }
             let diskReadTotal: MetricReading
-            let diskWriteTotal: MetricReading
             let diskReadRate: MetricReading
-            let diskWriteRate: MetricReading
-            if usageAvailable {
-                memoryReading = MetricReading(value: Double(usage.ri_phys_footprint), unit: .bytes, timestamp: timestamp)
-                diskReadTotal = MetricReading(value: Double(usage.ri_diskio_bytesread), unit: .bytes, timestamp: timestamp)
-                diskWriteTotal = MetricReading(value: Double(usage.ri_diskio_byteswritten), unit: .bytes, timestamp: timestamp)
-                diskReadRate = processCounters.update(usage.ri_diskio_bytesread, for: .diskRead(identity), at: timestamp)
-                    .reading(unit: .bytesPerSecond, timestamp: timestamp) { Double($0) / $1 }
-                diskWriteRate = processCounters.update(usage.ri_diskio_byteswritten, for: .diskWrite(identity), at: timestamp)
+            if let resolvedDiskRead {
+                diskReadTotal = MetricReading(value: Double(resolvedDiskRead), unit: .bytes, timestamp: timestamp)
+                diskReadRate = processCounters.update(resolvedDiskRead, for: .diskRead(identity), at: timestamp)
                     .reading(unit: .bytesPerSecond, timestamp: timestamp) { Double($0) / $1 }
             } else {
                 processCounters.remove(.diskRead(identity))
+                diskReadTotal = MetricReading(unavailable: .bytes, timestamp: timestamp, reason: fallbackReason)
+                diskReadRate = MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp, reason: fallbackReason)
+            }
+            let diskWriteTotal: MetricReading
+            let diskWriteRate: MetricReading
+            if let resolvedDiskWrite {
+                diskWriteTotal = MetricReading(value: Double(resolvedDiskWrite), unit: .bytes, timestamp: timestamp)
+                diskWriteRate = processCounters.update(resolvedDiskWrite, for: .diskWrite(identity), at: timestamp)
+                    .reading(unit: .bytesPerSecond, timestamp: timestamp) { Double($0) / $1 }
+            } else {
                 processCounters.remove(.diskWrite(identity))
-                let reason: MetricUnavailableReason = usageErrno == EPERM ? .permissionDenied : .collectionFailed
-                memoryReading = MetricReading(unavailable: .bytes, timestamp: timestamp, reason: reason)
-                diskReadTotal = MetricReading(unavailable: .bytes, timestamp: timestamp, reason: reason)
-                diskWriteTotal = MetricReading(unavailable: .bytes, timestamp: timestamp, reason: reason)
-                diskReadRate = MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp, reason: reason)
-                diskWriteRate = MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp, reason: reason)
+                diskWriteTotal = MetricReading(unavailable: .bytes, timestamp: timestamp, reason: fallbackReason)
+                diskWriteRate = MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp, reason: fallbackReason)
             }
 
             // Revalidation detects PID reuse during this sample. If the PID is gone or now belongs to another
@@ -566,13 +708,21 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                 processCounters.remove(.diskWrite(identity))
                 continue
             }
-            let text = processText(for: identity, pid: rawPID, kernelName: kernelName)
+            let text = processText(for: identity, pid: rawPID, kernelName: kernelName,
+                                   fallbackPath: supplement?.executablePath)
+            let category = Self.classifyProcessCategory(pid: rawPID, ownerUID: ownerUID,
+                                                        executablePath: text.path,
+                                                        regularAppPIDs: regularAppPIDs)
             records.append(RawProcess(identity: identity, parentPID: parentPID,
                                       name: text.name,
                                       path: text.path, ownerUID: ownerUID,
                                       cpu: cpuReading, memory: memoryReading,
                                       diskReadRate: diskReadRate, diskWriteRate: diskWriteRate,
-                                      diskReadTotal: diskReadTotal, diskWriteTotal: diskWriteTotal))
+                                      diskReadTotal: diskReadTotal, diskWriteTotal: diskWriteTotal,
+                                      threadCount: threadCount,
+                                      cpuTotalSeconds: cpuTotalSeconds,
+                                      architecture: architecture,
+                                      category: category))
             identities.insert(identity)
         }
         processCounters.retain(Set(identities.flatMap {
@@ -693,13 +843,48 @@ public actor SystemMonitorCollector: MonitoringCollecting {
     }
 
     /// Name and path are read at most once per ProcessIdentity; evicted with the identity in collectProcesses.
-    private func processText(for identity: ProcessIdentity, pid: pid_t, kernelName: String) -> CachedProcessText {
-        if let cached = processTextCache[identity] { return cached }
-        let path = processPath(pid)
+    private func processText(for identity: ProcessIdentity, pid: pid_t, kernelName: String,
+                             fallbackPath: String? = nil) -> CachedProcessText {
+        if let cached = processTextCache[identity], cached.path != nil || fallbackPath == nil {
+            return cached
+        }
+        let path = processPath(pid) ?? fallbackPath
         let text = CachedProcessText(name: Self.processName(executablePath: path, kernelName: kernelName),
                                      path: path)
         processTextCache[identity] = text
         return text
+    }
+
+    nonisolated static func classifyProcessCategory(pid: Int32,
+                                                    ownerUID: UInt32?,
+                                                    executablePath: String?,
+                                                    regularAppPIDs: Set<Int32>?) -> ProcessCategory {
+        if let regularAppPIDs, regularAppPIDs.contains(pid) {
+            return .application
+        }
+        if let ownerUID, ownerUID == 0 || ownerUID < 500 {
+            return .system
+        }
+        if let path = executablePath {
+            if path.hasPrefix("/System/") || path.hasPrefix("/usr/libexec/")
+                || path.hasPrefix("/usr/sbin/") || path.hasPrefix("/sbin/") {
+                return .system
+            }
+            if regularAppPIDs == nil, Self.isTopLevelApplicationExecutable(path) {
+                return .application
+            }
+        }
+        return .background
+    }
+
+    private nonisolated static func isTopLevelApplicationExecutable(_ path: String) -> Bool {
+        guard path.contains(".app/Contents/MacOS/") else { return false }
+        let lower = path.lowercased()
+        if lower.contains("/contents/frameworks/") || lower.contains("/contents/xpcservices/")
+            || lower.contains("/contents/plugins/") || lower.contains("/contents/library/") {
+            return false
+        }
+        return path.hasPrefix("/Applications/") || path.hasPrefix("/Users/")
     }
 
     /// The executable's last path component is the full name. The kernel's p_comm is truncated to MAXCOMLEN,
@@ -751,122 +936,249 @@ public actor SystemMonitorCollector: MonitoringCollecting {
                                    diskReadTotalBytes: process.diskReadTotal,
                                    diskWriteTotalBytes: process.diskWriteTotal,
                                    parentPID: process.parentPID > 0 ? process.parentPID : nil,
-                                   parentExecutablePath: parentPath)
+                                   parentExecutablePath: parentPath,
+                                   threadCount: process.threadCount,
+                                   cpuTotalSeconds: process.cpuTotalSeconds,
+                                   architecture: process.architecture,
+                                   category: process.category)
         }
     }
 
-    private func buildProcessGroups(_ processes: [ProcessSnapshot], timestamp: Date) -> [ProcessGroupSnapshot] {
+    private struct BundleGroupKey: Hashable {
+        let bundlePath: String
+        let ownerUID: UInt32?
+    }
+
+    private func buildProcessGroups(_ processes: [ProcessSnapshot],
+                                    timestamp: Date,
+                                    regularAppPIDs: Set<Int32>? = nil) -> [ProcessGroupSnapshot] {
+        buildGroupsCore(processes, timestamp: timestamp, regularAppPIDs: regularAppPIDs)
+    }
+
+    nonisolated static func groupProcessesForTesting(_ processes: [ProcessSnapshot],
+                                                     timestamp: Date,
+                                                     regularAppPIDs: Set<Int32>? = nil) -> [ProcessGroupSnapshot] {
+        var metadataCache: [String: (bundleID: String?, title: String, executablePath: String?)] = [:]
+        return buildGroupsStatic(processes, timestamp: timestamp, regularAppPIDs: regularAppPIDs,
+                                 bundlePathProvider: { applicationBundlePathStatic($0) }) { path in
+            if let cached = metadataCache[path] { return cached }
+            let defaultTitle = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+            let bundle = Bundle(url: URL(fileURLWithPath: path))
+            let title = bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+                ?? bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
+                ?? defaultTitle
+            let result = (bundle?.bundleIdentifier, title, bundle?.executableURL?.standardizedFileURL.path)
+            metadataCache[path] = result
+            return result
+        }
+    }
+
+    private func buildGroupsCore(_ processes: [ProcessSnapshot],
+                                 timestamp: Date,
+                                 regularAppPIDs: Set<Int32>?) -> [ProcessGroupSnapshot] {
+        Self.buildGroupsStatic(processes, timestamp: timestamp, regularAppPIDs: regularAppPIDs,
+                               bundlePathProvider: { applicationBundlePath($0) }) { path in
+            let meta = bundleMetadata(at: path)
+            return (meta.bundleID, meta.title, meta.executablePath)
+        }
+    }
+
+    private nonisolated static func buildGroupsStatic(
+        _ processes: [ProcessSnapshot],
+        timestamp: Date,
+        regularAppPIDs: Set<Int32>?,
+        bundlePathProvider: (String) -> String?,
+        metadataProvider: (String) -> (bundleID: String?, title: String, executablePath: String?)
+    ) -> [ProcessGroupSnapshot] {
         let byID = Dictionary(processes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        var appGroups: [ProcessIdentity: (root: ProcessSnapshot, identity: ApplicationHistoryIdentity,
-                                         members: [ProcessSnapshot])] = [:]
+        var appGroups: [BundleGroupKey: (identity: ApplicationHistoryIdentity, mainExecutablePath: String?,
+                                          members: [ProcessSnapshot])] = [:]
         var assigned = Set<ProcessIdentity>()
 
         for process in processes.sorted(by: { $0.id.pid < $1.id.pid }) {
-            guard let (root, bundlePath, bundleID, title) = appRoot(for: process, byID: byID) else { continue }
-            let appID: String
-            if let bundleID, !bundleID.isEmpty {
-                appID = "bundle:\(bundleID)"
-            } else {
-                appID = "bundle:\(bundlePath)"
+            guard let (bundlePath, bundleID, title, mainExecutablePath) = appRootInfo(for: process, byID: byID,
+                                                                                      bundlePathProvider: bundlePathProvider,
+                                                                                      metadataProvider: metadataProvider) else {
+                continue
             }
+            let appID = (bundleID.flatMap { $0.isEmpty ? nil : "bundle:\($0)" }) ?? "bundle:\(bundlePath)"
             let history = ApplicationHistoryIdentity(id: appID, name: title,
                                                      executablePath: bundlePath,
                                                      association: .applicationBundle)
-            if appGroups[root.id] == nil { appGroups[root.id] = (root, history, []) }
-            appGroups[root.id]?.members.append(process)
+            let key = BundleGroupKey(bundlePath: bundlePath, ownerUID: process.ownerUID)
+            if appGroups[key] == nil {
+                appGroups[key] = (history, mainExecutablePath, [])
+            }
+            appGroups[key]?.members.append(process)
             assigned.insert(process.id)
         }
 
         var output: [ProcessGroupSnapshot] = []
-        for group in appGroups.values {
-            let members = uniqueProcesses(group.members)
-            output.append(makeGroup(root: group.root, title: group.identity.name,
-                                    association: .applicationBundle, history: group.identity,
-                                    members: members, timestamp: timestamp))
+        for (key, group) in appGroups {
+            let members = uniqueStaticProcesses(group.members)
+            let leader = preferredBundleLeader(from: members, mainExecutablePath: group.mainExecutablePath)
+            let category = groupCategory(for: members, leader: leader, association: .applicationBundle,
+                                         bundlePath: key.bundlePath, regularAppPIDs: regularAppPIDs)
+            output.append(makeStaticGroup(root: leader, title: group.identity.name,
+                                          association: .applicationBundle, history: group.identity,
+                                          members: members, category: category, timestamp: timestamp))
         }
 
         for process in processes.sorted(by: { $0.id.pid < $1.id.pid }) where !assigned.contains(process.id) {
-            if let parentID = process.parentIdentity, let parent = byID[parentID],
-               parent.ownerUID == process.ownerUID, isLaunchd(parent) {
-                let descendants = sameOwnerDescendants(of: process, byID: byID, assigned: assigned)
-                let members = uniqueProcesses([process] + descendants)
+            if let parentID = process.parentIdentity, let parent = byID[parentID], isLaunchdStatic(parent) {
+                let descendants = sameOwnerStaticDescendants(of: process, byID: byID, assigned: assigned,
+                                                             bundlePathProvider: bundlePathProvider,
+                                                             metadataProvider: metadataProvider)
+                let members = uniqueStaticProcesses([process] + descendants)
                 assigned.formUnion(members.map(\.id))
-                let history = historyIdentity(for: process, association: .parentProcess)
-                output.append(makeGroup(root: process, title: process.name,
-                                        association: .parentProcess, history: history,
-                                        members: members, timestamp: timestamp))
+                let history = historyStaticIdentity(for: process, association: .parentProcess)
+                let category = groupCategory(for: members, leader: process, association: .parentProcess,
+                                             bundlePath: nil, regularAppPIDs: regularAppPIDs)
+                output.append(makeStaticGroup(root: process, title: process.name,
+                                              association: .parentProcess, history: history,
+                                              members: members, category: category, timestamp: timestamp))
             } else {
                 assigned.insert(process.id)
-                let history = historyIdentity(for: process, association: .standalone)
-                output.append(makeGroup(root: process, title: process.name,
-                                        association: .standalone, history: history,
-                                        members: [process], timestamp: timestamp))
+                let history = historyStaticIdentity(for: process, association: .standalone)
+                let category = groupCategory(for: [process], leader: process, association: .standalone,
+                                             bundlePath: nil, regularAppPIDs: regularAppPIDs)
+                output.append(makeStaticGroup(root: process, title: process.name,
+                                              association: .standalone, history: history,
+                                              members: [process], category: category, timestamp: timestamp))
             }
         }
         return output.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
 
-    private func sameOwnerDescendants(of root: ProcessSnapshot, byID: [ProcessIdentity: ProcessSnapshot],
-                                      assigned: Set<ProcessIdentity>) -> [ProcessSnapshot] {
+    private nonisolated static func preferredBundleLeader(from members: [ProcessSnapshot],
+                                                          mainExecutablePath: String?) -> ProcessSnapshot {
+        if let mainExecutablePath,
+           let exact = members.first(where: { $0.executablePath == mainExecutablePath }) {
+            return exact
+        }
+        if let topLevel = members.first(where: {
+            guard let path = $0.executablePath?.lowercased() else { return false }
+            return !path.contains("/contents/frameworks/")
+                && !path.contains("/contents/xpcservices/")
+                && !path.contains("/contents/plugins/")
+        }) {
+            return topLevel
+        }
+        return members[0]
+    }
+
+    private nonisolated static func groupCategory(for members: [ProcessSnapshot],
+                                                  leader: ProcessSnapshot,
+                                                  association: ProcessGroupAssociation,
+                                                  bundlePath: String?,
+                                                  regularAppPIDs: Set<Int32>?) -> ProcessCategory {
+        if let regularAppPIDs, members.contains(where: { regularAppPIDs.contains($0.id.pid) }) {
+            return .application
+        }
+        if members.contains(where: { $0.category == .application }) {
+            return .application
+        }
+        if association == .applicationBundle,
+           regularAppPIDs == nil,
+           let bundlePath,
+           !bundlePath.hasPrefix("/System/"),
+           (leader.ownerUID ?? 501) >= 500 {
+            return .application
+        }
+        if leader.category == .system {
+            return .system
+        }
+        return .background
+    }
+
+    private nonisolated static func sameOwnerStaticDescendants(
+        of root: ProcessSnapshot,
+        byID: [ProcessIdentity: ProcessSnapshot],
+        assigned: Set<ProcessIdentity>,
+        bundlePathProvider: (String) -> String?,
+        metadataProvider: (String) -> (bundleID: String?, title: String, executablePath: String?)
+    ) -> [ProcessSnapshot] {
         var descendants: [ProcessSnapshot] = []
         var queue = root.childIdentities
         var visited = Set<ProcessIdentity>()
         while let next = queue.popLast() {
             guard visited.insert(next).inserted, !assigned.contains(next), let child = byID[next],
                   child.ownerUID == root.ownerUID else { continue }
-            if appRoot(for: child, byID: byID) != nil { continue }
+            if appRootInfo(for: child, byID: byID, bundlePathProvider: bundlePathProvider,
+                           metadataProvider: metadataProvider) != nil { continue }
             descendants.append(child)
             queue.append(contentsOf: child.childIdentities)
         }
         return descendants
     }
 
-    private func uniqueProcesses(_ processes: [ProcessSnapshot]) -> [ProcessSnapshot] {
+    private nonisolated static func uniqueStaticProcesses(_ processes: [ProcessSnapshot]) -> [ProcessSnapshot] {
         var seen = Set<ProcessIdentity>()
         return processes.filter { seen.insert($0.id).inserted }
     }
 
-    private func makeGroup(root: ProcessSnapshot, title: String, association: ProcessGroupAssociation,
-                           history: ApplicationHistoryIdentity, members: [ProcessSnapshot],
-                           timestamp: Date) -> ProcessGroupSnapshot {
+    private nonisolated static func makeStaticGroup(root: ProcessSnapshot, title: String,
+                                                    association: ProcessGroupAssociation,
+                                                    history: ApplicationHistoryIdentity,
+                                                    members: [ProcessSnapshot],
+                                                    category: ProcessCategory,
+                                                    timestamp: Date) -> ProcessGroupSnapshot {
         ProcessGroupSnapshot(
             id: root.id, title: title, ownerUID: root.ownerUID, executablePath: history.executablePath,
             association: association, historyIdentity: history,
             members: members.map(\.id),
-            cpuPercent: Self.combineRates(members.map(\.cpuPercent), unit: .percent, timestamp: timestamp),
-            memoryBytes: Self.combineRates(members.map(\.memoryBytes), unit: .bytes, timestamp: timestamp),
-            diskReadBytesPerSecond: Self.combineRates(members.map(\.diskReadBytesPerSecond),
-                                                      unit: .bytesPerSecond, timestamp: timestamp),
-            diskWriteBytesPerSecond: Self.combineRates(members.map(\.diskWriteBytesPerSecond),
-                                                       unit: .bytesPerSecond, timestamp: timestamp),
-            networkReceiveBytesPerSecond: Self.combineRates(members.map { $0.advancedMetrics[.processNetworkReceive] ??
+            cpuPercent: combineRates(members.map(\.cpuPercent), unit: .percent, timestamp: timestamp),
+            memoryBytes: combineRates(members.map(\.memoryBytes), unit: .bytes, timestamp: timestamp),
+            diskReadBytesPerSecond: combineRates(members.map(\.diskReadBytesPerSecond),
+                                                 unit: .bytesPerSecond, timestamp: timestamp),
+            diskWriteBytesPerSecond: combineRates(members.map(\.diskWriteBytesPerSecond),
+                                                  unit: .bytesPerSecond, timestamp: timestamp),
+            networkReceiveBytesPerSecond: combineRates(members.map { $0.advancedMetrics[.processNetworkReceive] ??
                 MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp, reason: .unsupported) },
                 unit: .bytesPerSecond, timestamp: timestamp),
-            networkTransmitBytesPerSecond: Self.combineRates(members.map { $0.advancedMetrics[.processNetworkTransmit] ??
+            networkTransmitBytesPerSecond: combineRates(members.map { $0.advancedMetrics[.processNetworkTransmit] ??
                 MetricReading(unavailable: .bytesPerSecond, timestamp: timestamp, reason: .unsupported) },
-                unit: .bytesPerSecond, timestamp: timestamp))
+                unit: .bytesPerSecond, timestamp: timestamp),
+            category: category)
     }
 
-    private func appRoot(for process: ProcessSnapshot, byID: [ProcessIdentity: ProcessSnapshot])
-        -> (ProcessSnapshot, String, String?, String)? {
+    private nonisolated static func appRootInfo(
+        for process: ProcessSnapshot,
+        byID: [ProcessIdentity: ProcessSnapshot],
+        bundlePathProvider: (String) -> String?,
+        metadataProvider: (String) -> (bundleID: String?, title: String, executablePath: String?)
+    ) -> (bundlePath: String, bundleID: String?, title: String, executablePath: String?)? {
         var current: ProcessSnapshot? = process
         var visited = Set<ProcessIdentity>()
         while let candidate = current, visited.insert(candidate.id).inserted {
-            if let path = candidate.executablePath, let bundlePath = applicationBundlePath(path) {
-                var root = candidate
-                while let parentID = root.parentIdentity, let parent = byID[parentID],
-                      parent.ownerUID == candidate.ownerUID,
-                      parent.executablePath.flatMap(applicationBundlePath) == bundlePath {
-                    root = parent
-                }
-                let metadata = bundleMetadata(at: bundlePath)
-                return (root, bundlePath, metadata.bundleID, metadata.title)
+            if let path = candidate.executablePath, let bundlePath = bundlePathProvider(path) {
+                let metadata = metadataProvider(bundlePath)
+                return (bundlePath, metadata.bundleID, metadata.title, metadata.executablePath)
             }
             guard let parentID = candidate.parentIdentity, let parent = byID[parentID],
                   parent.ownerUID == candidate.ownerUID else { break }
             current = parent
         }
         return nil
+    }
+
+    private nonisolated static func applicationBundlePathStatic(_ executablePath: String) -> String? {
+        let components = (executablePath as NSString).pathComponents
+        guard let index = components.firstIndex(where: { $0.lowercased().hasSuffix(".app") }) else { return nil }
+        return NSString.path(withComponents: Array(components.prefix(index + 1)))
+    }
+
+    private nonisolated static func historyStaticIdentity(for process: ProcessSnapshot,
+                                                          association: ProcessGroupAssociation) -> ApplicationHistoryIdentity {
+        let path = process.executablePath
+        let stable = path.map { "executable:\($0)" }
+            ?? "process:\(process.id.pid):\(process.id.startTime.secondsSinceEpoch):\(process.id.startTime.microseconds)"
+        return ApplicationHistoryIdentity(id: stable, name: process.name,
+                                          executablePath: path, association: association)
+    }
+
+    private nonisolated static func isLaunchdStatic(_ process: ProcessSnapshot) -> Bool {
+        process.id.pid == 1 || process.executablePath == "/sbin/launchd" || process.name == "launchd"
     }
 
     private func bundleMetadata(at bundlePath: String) -> CachedBundleMetadata {
@@ -877,7 +1189,8 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         let title = bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
             ?? bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
             ?? defaultTitle
-        let metadata = CachedBundleMetadata(bundleID: bundleID, title: title)
+        let execPath = bundle?.executableURL?.standardizedFileURL.path
+        let metadata = CachedBundleMetadata(bundleID: bundleID, title: title, executablePath: execPath)
         if bundleMetadataOrder.count >= Self.bundleMetadataCacheLimit {
             let evicted = bundleMetadataOrder.removeFirst()
             bundleMetadataCache.removeValue(forKey: evicted)
@@ -891,29 +1204,12 @@ public actor SystemMonitorCollector: MonitoringCollecting {
     /// Results are memoized per path; the cache is cleared whole when it reaches its size cap.
     private func applicationBundlePath(_ executablePath: String) -> String? {
         if let cached = applicationBundlePathCache[executablePath] { return cached }
-        let components = (executablePath as NSString).pathComponents
-        var bundlePath: String?
-        if let index = components.firstIndex(where: { $0.lowercased().hasSuffix(".app") }) {
-            bundlePath = NSString.path(withComponents: Array(components.prefix(index + 1)))
-        }
+        let bundlePath = Self.applicationBundlePathStatic(executablePath)
         if applicationBundlePathCache.count >= Self.applicationBundlePathCacheLimit {
             applicationBundlePathCache.removeAll(keepingCapacity: true)
         }
         applicationBundlePathCache[executablePath] = .some(bundlePath)
         return bundlePath
-    }
-
-    private func historyIdentity(for process: ProcessSnapshot,
-                                 association: ProcessGroupAssociation) -> ApplicationHistoryIdentity {
-        let path = process.executablePath
-        let stable = path.map { "executable:\($0)" }
-            ?? "process:\(process.id.pid):\(process.id.startTime.secondsSinceEpoch):\(process.id.startTime.microseconds)"
-        return ApplicationHistoryIdentity(id: stable, name: process.name,
-                                          executablePath: path, association: association)
-    }
-
-    private func isLaunchd(_ process: ProcessSnapshot) -> Bool {
-        process.executablePath == "/sbin/launchd" || process.name == "launchd"
     }
 
     private static func missingAdvancedReading(_ kind: MetricKind, unit: MetricUnit, timestamp: Date,
@@ -934,17 +1230,32 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         }
     }
 
+    private nonisolated static func isRoutineLifecycleUnavailability(_ reason: MetricUnavailableReason?) -> Bool {
+        switch reason {
+        case .warmingUp, .processExited, .identityChanged:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private nonisolated static func intervalsMatchWithinJitter(_ lhs: DateInterval, _ rhs: DateInterval) -> Bool {
+        abs(lhs.start.timeIntervalSince(rhs.start)) <= 0.05 && abs(lhs.end.timeIntervalSince(rhs.end)) <= 0.05
+    }
+
     nonisolated static func combineRates(_ readings: [MetricReading], unit: MetricUnit,
                                          timestamp: Date) -> MetricReading {
         guard !readings.isEmpty else {
             return MetricReading(unavailable: unit, timestamp: timestamp, reason: .notCollected)
         }
         let availableValues = readings.compactMap(\.value)
-        let unavailableCount = readings.count - availableValues.count
+        let unavailableReadings = readings.filter { !$0.isAvailable }
+        let nonRoutineUnavailableCount = unavailableReadings.filter {
+            !isRoutineLifecycleUnavailability($0.unavailableReason)
+        }.count
         var isPartial = readings.contains(where: \.isPartial)
-            || (!availableValues.isEmpty && unavailableCount > 0)
+            || (!availableValues.isEmpty && nonRoutineUnavailableCount > 0)
         guard !availableValues.isEmpty else {
-            let unavailableReadings = readings.filter { !$0.isAvailable }
             let unavailable = unavailableReadings.first(where: {
                 $0.unavailableReason == .permissionDenied
                     || $0.unavailableReason == .collectionFailed
@@ -961,7 +1272,12 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         let availableReadings = readings.filter(\.isAvailable)
         let measurementInterval: DateInterval?
         if let firstInterval = availableReadings.first?.measurementInterval,
-           availableReadings.allSatisfy({ $0.measurementInterval == firstInterval }) {
+           availableReadings.allSatisfy({
+               if let other = $0.measurementInterval {
+                   return intervalsMatchWithinJitter(firstInterval, other)
+               }
+               return false
+           }) {
             measurementInterval = firstInterval
         } else {
             measurementInterval = nil
@@ -970,8 +1286,8 @@ public actor SystemMonitorCollector: MonitoringCollecting {
         let hasIncompatibleMeasurementIntervals = hasExplicitMeasurementInterval && measurementInterval == nil
         if hasIncompatibleMeasurementIntervals { isPartial = true }
         var details = readings.compactMap(\.detail)
-        if unavailableCount > 0 {
-            details.append("Partial: \(unavailableCount) of \(readings.count) members unavailable")
+        if nonRoutineUnavailableCount > 0 {
+            details.append("Partial: \(nonRoutineUnavailableCount) of \(readings.count) members unavailable")
         }
         if hasIncompatibleMeasurementIntervals {
             details.append("Some rate contributors have missing or incompatible measurement intervals")

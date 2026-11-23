@@ -1031,6 +1031,91 @@ final class PerformanceViewControllerTests: XCTestCase {
                                     window: .oneMinute, cpuMode: .logicalProcessors)
     }
 
+    func testMemoryCompositionUpdatesLegendTextInPlaceWhenOnlyBytesChange() {
+        let view = MemoryCompositionBarView()
+        view.update(compositionModel(appBytes: 2_000_000_000, wiredBytes: 1_000_000_000))
+        let rowsBefore = legendRows(in: view)
+        XCTAssertEqual(rowsBefore.map(legendText), ["App \(UIFormat.bytes(2_000_000_000))",
+                                                   "Wired \(UIFormat.bytes(1_000_000_000))"])
+
+        view.update(compositionModel(appBytes: 3_000_000_000, wiredBytes: 500_000_000))
+        let rowsAfter = legendRows(in: view)
+        XCTAssertEqual(rowsAfter.count, rowsBefore.count)
+        for (before, after) in zip(rowsBefore, rowsAfter) {
+            XCTAssertTrue(before === after, "same structure must keep the same legend item views")
+        }
+        XCTAssertEqual(rowsAfter.map(legendText), ["App \(UIFormat.bytes(3_000_000_000))",
+                                                  "Wired \(UIFormat.bytes(500_000_000))"])
+        XCTAssertEqual(view.accessibilityLabel(),
+                       "Memory composition: App \(UIFormat.bytes(3_000_000_000)), Wired \(UIFormat.bytes(500_000_000))")
+    }
+
+    func testMemoryCompositionRebuildsLegendWhenSegmentListOrColorChanges() {
+        let view = MemoryCompositionBarView()
+        view.update(compositionModel(appBytes: 2_000_000_000, wiredBytes: 1_000_000_000))
+        let rowsBefore = legendRows(in: view)
+
+        let renamed = MemoryCompositionModel(totalBytes: 16_000_000_000, segments: [
+            MemoryCompositionSegment(title: "App", bytes: 2_000_000_000, color: .systemBlue,
+                                     formattedBytes: UIFormat.bytes(2_000_000_000)),
+            MemoryCompositionSegment(title: "Compressed", bytes: 1_000_000_000, color: .systemOrange,
+                                     formattedBytes: UIFormat.bytes(1_000_000_000))
+        ])
+        view.update(renamed)
+        let rowsAfterRename = legendRows(in: view)
+        XCTAssertEqual(rowsAfterRename.map(legendText), ["App \(UIFormat.bytes(2_000_000_000))",
+                                                        "Compressed \(UIFormat.bytes(1_000_000_000))"])
+        XCTAssertFalse(rowsBefore.contains { before in rowsAfterRename.contains { $0 === before } })
+
+        let recolored = MemoryCompositionModel(totalBytes: 16_000_000_000, segments: [
+            MemoryCompositionSegment(title: "App", bytes: 2_000_000_000, color: .systemRed,
+                                     formattedBytes: UIFormat.bytes(2_000_000_000)),
+            MemoryCompositionSegment(title: "Compressed", bytes: 1_000_000_000, color: .systemOrange,
+                                     formattedBytes: UIFormat.bytes(1_000_000_000))
+        ])
+        view.update(recolored)
+        let rowsAfterRecolor = legendRows(in: view)
+        XCTAssertFalse(rowsAfterRename.contains { before in rowsAfterRecolor.contains { $0 === before } })
+    }
+
+    func testMemoryCompositionRendersEmptyAndSingleSegmentModelsWithoutCrashing() {
+        let view = MemoryCompositionBarView()
+        view.update(nil)
+        XCTAssertTrue(view.isHidden)
+        XCTAssertTrue(legendRows(in: view).isEmpty)
+
+        view.update(MemoryCompositionModel(totalBytes: 8_000_000_000, segments: []))
+        XCTAssertTrue(view.isHidden)
+
+        let single = MemoryCompositionModel(totalBytes: 8_000_000_000, segments: [
+            MemoryCompositionSegment(title: "App", bytes: 8_000_000_000, color: .systemBlue,
+                                     formattedBytes: UIFormat.bytes(8_000_000_000))
+        ])
+        view.update(single)
+        XCTAssertFalse(view.isHidden)
+        XCTAssertEqual(legendRows(in: view).map(legendText), ["App \(UIFormat.bytes(8_000_000_000))"])
+        view.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
+        view.layoutSubtreeIfNeeded()
+    }
+
+    private func compositionModel(appBytes: Double, wiredBytes: Double) -> MemoryCompositionModel {
+        MemoryCompositionModel(totalBytes: 16_000_000_000, segments: [
+            MemoryCompositionSegment(title: "App", bytes: appBytes, color: .systemBlue,
+                                     formattedBytes: UIFormat.bytes(appBytes)),
+            MemoryCompositionSegment(title: "Wired", bytes: wiredBytes, color: .systemOrange,
+                                     formattedBytes: UIFormat.bytes(wiredBytes))
+        ])
+    }
+
+    /// Legend items are the horizontal stacks; the composition view's own stack is vertical.
+    private func legendRows(in view: MemoryCompositionBarView) -> [NSStackView] {
+        allViews(in: view).compactMap { $0 as? NSStackView }.filter { $0.orientation == .horizontal }
+    }
+
+    private func legendText(_ row: NSStackView) -> String {
+        allViews(in: row).compactMap { ($0 as? NSTextField)?.stringValue }.first ?? ""
+    }
+
     /// Compares sRGB components, so colors match by value rather than by object identity.
     private func assertSameSRGB(_ actual: NSColor, _ expected: NSColor,
                                 file: StaticString = #filePath, line: UInt = #line) {

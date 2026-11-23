@@ -84,7 +84,15 @@ private final class MemoryLegendFlowView: NSView {
     private static let horizontalSpacing: CGFloat = 12
     private static let verticalSpacing: CGFloat = 4
 
-    private var items: [NSView] = []
+    private struct LegendItem {
+        let title: String
+        let color: NSColor
+        let row: NSStackView
+        let label: NSTextField
+        var width: CGFloat
+    }
+
+    private var items: [LegendItem] = []
     private var laidOutHeight: CGFloat = 0
 
     init() {
@@ -102,28 +110,68 @@ private final class MemoryLegendFlowView: NSView {
     }
 
     func update(segments: [MemoryCompositionSegment]) {
+        guard !hasSameStructure(segments) else {
+            updateInPlace(segments)
+            return
+        }
+        rebuild(segments)
+    }
+
+    /// Titles and colors define the legend structure. Byte text changes every sample, so it never rebuilds the views.
+    private func hasSameStructure(_ segments: [MemoryCompositionSegment]) -> Bool {
+        guard segments.count == items.count else { return false }
+        return zip(items, segments).allSatisfy { item, segment in
+            item.title == segment.title && item.color == segment.color
+        }
+    }
+
+    private func rebuild(_ segments: [MemoryCompositionSegment]) {
         for item in items {
-            item.removeFromSuperview()
+            item.row.removeFromSuperview()
         }
         items = segments.map { segment in
             let dot = LegendSwatchDotView(color: segment.color)
-            let label = NSTextField(labelWithString: "\(segment.title) \(segment.formattedBytes)")
+            let label = NSTextField(labelWithString: Self.legendText(for: segment))
             label.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
             label.textColor = .secondaryLabelColor
             label.lineBreakMode = .byTruncatingTail
 
-            let item = NSStackView(views: [dot, label])
-            item.orientation = .horizontal
-            item.alignment = .centerY
-            item.spacing = 4
-            item.translatesAutoresizingMaskIntoConstraints = true
-            let fit = item.fittingSize
-            item.frame = NSRect(x: 0, y: 0, width: ceil(fit.width), height: Self.itemHeight)
-            addSubview(item)
-            return item
+            let row = NSStackView(views: [dot, label])
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            row.spacing = 4
+            row.translatesAutoresizingMaskIntoConstraints = true
+            let width = ceil(row.fittingSize.width)
+            row.frame = NSRect(x: 0, y: 0, width: width, height: Self.itemHeight)
+            addSubview(row)
+            return LegendItem(title: segment.title, color: segment.color, row: row, label: label, width: width)
         }
         invalidateIntrinsicContentSize()
         needsLayout = true
+    }
+
+    /// Same structure: only the text changes, so existing views keep their identity and VoiceOver focus.
+    private func updateInPlace(_ segments: [MemoryCompositionSegment]) {
+        var widthChanged = false
+        for (index, segment) in segments.enumerated() {
+            let text = Self.legendText(for: segment)
+            if items[index].label.stringValue != text {
+                items[index].label.stringValue = text
+            }
+            let width = ceil(items[index].row.fittingSize.width)
+            if width != items[index].width {
+                items[index].width = width
+                widthChanged = true
+            }
+        }
+        if widthChanged {
+            invalidateIntrinsicContentSize()
+            needsLayout = true
+        }
+    }
+
+    private static func legendText(for segment: MemoryCompositionSegment) -> String {
+        "\(segment.title) \(segment.formattedBytes)"
     }
 
     override func layout() {
@@ -132,7 +180,8 @@ private final class MemoryLegendFlowView: NSView {
         let maxWidth = bounds.width
         var x: CGFloat = 0
         var y: CGFloat = 0
-        for item in items {
+        for legend in items {
+            let item = legend.row
             let itemWidth = min(max(ceil(item.fittingSize.width), 20), max(maxWidth, 20))
             if x > 0 && x + itemWidth > maxWidth {
                 x = 0
@@ -161,7 +210,8 @@ private final class MemoryLegendFlowView: NSView {
         guard !items.isEmpty else { return 0 }
         var x: CGFloat = 0
         var rows = 1
-        for item in items {
+        for legend in items {
+            let item = legend.row
             let itemWidth = min(max(ceil(item.fittingSize.width), 20), max(maxWidth, 20))
             if x > 0 && x + itemWidth > maxWidth {
                 x = 0

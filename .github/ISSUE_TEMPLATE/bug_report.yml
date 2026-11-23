@@ -23,7 +23,7 @@ body:
     attributes:
       label: Microgravity version
       description: Shown at the bottom of Settings.
-      placeholder: "Microgravity 0.2.1 (5)"
+      placeholder: "Microgravity 0.3.0 (6)"
     validations:
       required: true
 

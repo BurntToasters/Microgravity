@@ -1,6 +1,6 @@
 # Implementation status
 
-Latest status for Microgravity 0.3.0 on branch `next-0.3.0`, checked 2026-11-18.
+Latest status for Microgravity 0.3.0 on branch `next-0.3.0`, checked 2026-11-23.
 Core tests and the remaining checks for the latest telemetry changes are on a
 physical Apple M5 Pro (`Mac17,9`, macOS 27.2.1). The 0.3.0 gate results recorded
 earlier on a virtual machine (`VirtualMac2,1`) are superseded by the table below.
@@ -11,7 +11,7 @@ SMC/IOReport/AC-Battery power) before tagging.
 
 Intended behavior is in [UI acceptance](UI_ACCEPTANCE.md). Collector, history,
 and process-action regressions are in [core failure cases](FAILURE_CASES_CORE.md).
-The release procedure and the 0.1.0 UI gate are in [RELEASING.md](RELEASING.md).
+The release procedure and the manual UI checklist are in [RELEASING.md](RELEASING.md).
 
 ## 0.3.0
 
@@ -24,20 +24,21 @@ Microgravity 0.3.0 overhauls live telemetry, process grouping, and Task Manager 
 - **Performance, Details, Inventory, Settings & Window:** Adds hardware spec headers, `MemoryCompositionBarView` (with wrapping legend flow and proportional non-overflowing bar segments), AC + Battery `System Power` / thermal / adapter / component UI under Energy, sorted and collapsible virtual interfaces, frame-based `MetricStatsGridView`, `.detail`-scoped hover inspection, dynamic appearance redraws across custom Performance views, optional `Threads` / `Architecture` / `CPU Time` columns plus context-menu `Quit Process` / `Force Quit…` / `Inspect…` in Details, toolbar search & empty-search states on Startup/Services/Users, in-flight integration guards & wrapping Settings helper caption sizing, post-column `autosaveName` ordering, and `View > Always on Top` (`⌥⌘T`).
 
 The signed UI automation suite (`MicrogravityUITests`) has not been run for 0.3.0.
+Release gates for 0.3.0: core gate (`npm run test:all -- --skip-ui`) pass on 2026-11-23; full gate (`npm run test:all`) pass on 2026-11-23; release smoke (`npm run build:release-smoke`) pass on 2026-11-23.
 Physical-Mac checks have started on the Apple M5 Pro; the rest are listed below.
 
 ## Verification
 
-### Latest results (2026-11-18, branch `next-0.3.0`)
+### Latest results (2026-11-23, branch `next-0.3.0`)
 
 | Gate | Command | Result |
 | --- | --- | --- |
 | Project sync | `npm run project:sync -- --check` | pass (current) |
 | Workspace validation | `npm run validate` | pass |
-| Core XCTest, Apple M5 Pro (`Mac17,9`, macOS 27.2.1) | full `MicrogravityCoreTests` suite | pass after the first batch of the telemetry changes. Final run after all changes pending. |
-| Node tests, debug build, release smoke | `npm run test:node`, `npm run build:debug`, `npm run build:release-smoke` | pending for this change set |
-| Composite `npm run test:all -- --skip-ui` | `npm run test:all -- --skip-ui` | pending. Earlier attempt hung before the test runner connected from `~/Documents` (`Sparkle.framework` Documents TCC prompt); use `-derivedDataPath` or a checkout outside `~/Documents`. |
-| Signed UI XCTest | `MicrogravityUITests` | pending. Run outside `~/Documents`. |
+| Core XCTest, Apple M5 Pro (`Mac17,9`, macOS 27.2.1) | full `MicrogravityCoreTests` suite | pass on 2026-11-23 with all changes, 481 tests, 0 failures. |
+| Node tests, debug build, release smoke | `npm run test:node`, `npm run build:debug`, `npm run build:release-smoke` | Node 39/39 pass and release smoke pass on 2026-11-23. The Debug build is covered by `npm run test:all`; it was not run on its own. |
+| Composite `npm run test:all -- --skip-ui` | `npm run test:all -- --skip-ui` | pass on 2026-11-23. The run from `~/Documents` completed; if it hangs on a Documents TCC prompt, run from a checkout outside `~/Documents`. |
+| Signed UI XCTest | `MicrogravityUITests` | Unsigned full gate passed on 2026-11-23 (25 UI tests, 0 failures); a signed run is still pending. Run outside `~/Documents`. |
 | Physical Mac checks (M5 Pro) | see [ADVANCED_METRICS.md](ADVANCED_METRICS.md#verification-status) | pending: orphan check with `kill -9`, no root nettop, steady CPU power, DRAM shown, helper CPU % steady at 0.5 s, network without helper, UI parity. Intel and AC/Battery checks, and the signed Developer ID helper XPC checks, are also pending. |
 
 ### Earlier record: 0.1.2 (2026-11-08, branch `next-0.1.2`)

@@ -183,12 +183,15 @@ struct IOKitAppleSMCTransport: AppleSMCTransport {
     }
 }
 
-/// An IOKit call failed, or an SMC read failed for a key whose info was already known.
+/// An IOKit call itself failed. SMC-level rejections (non-zero result) are not connection failures.
 fileprivate struct SMCConnectionFailure: Error {}
 
 /// Owns one AppleSMC connection and the key caches that belong to it. Every access is guarded by a lock
 /// because the power collector can run on more than one queue.
 final class AppleSMCSession: @unchecked Sendable {
+    /// Readings at or above this magnitude are treated as corrupt. High-power Intel Mac Pros exceed 500 W.
+    static let maxPlausibleWatts: Double = 2_000
+
     private let transport: any AppleSMCTransport
     private let lock = NSLock()
     private var connection: io_connect_t?
@@ -251,7 +254,7 @@ final class AppleSMCSession: @unchecked Sendable {
 
     private func validatedValue(for key: String, connection: io_connect_t) throws -> Double? {
         guard let value = try numericValue(for: key, connection: connection),
-              value.isFinite, abs(value) < 500 else { return nil }
+              value.isFinite, abs(value) < AppleSMCSession.maxPlausibleWatts else { return nil }
         return value
     }
 
@@ -280,8 +283,12 @@ final class AppleSMCSession: @unchecked Sendable {
         readInput.keyInfo.dataSize = info.dataSize
         readInput.data8 = AppleSMCReader.kSMCReadKey
         let readOutput = try call(readInput, connection: connection)
-        // The key was known to exist, so a rejected read is a failed call.
-        guard readOutput.result == 0 else { throw SMCConnectionFailure() }
+        // The SMC rejected this read (for example, a key this Mac cannot read). Only this key is affected:
+        // forget its key info so it is queried again next time, and keep the connection open.
+        guard readOutput.result == 0 else {
+            keyInfoCache.removeValue(forKey: key)
+            return nil
+        }
 
         let dataType = AppleSMCReader.decodeFourCC(info.dataType)
         let size = Int(info.dataSize)

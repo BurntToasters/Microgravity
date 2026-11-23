@@ -67,6 +67,72 @@ final class AppleSMCReaderTests: XCTestCase {
         XCTAssertEqual(session.readPower()?.systemTotalWatts, 24.5)
         XCTAssertEqual(fake.opens, 2)
     }
+
+    func testRejectedReadDropsOnlyThatKeyAndKeepsConnection() {
+        let fake = FakeSMCTransport(keys: [
+            "PSTR": .init(dataType: "flt ", bytes: littleEndianFloat(24.5)),
+            "PDTR": .init(dataType: "flt ", bytes: littleEndianFloat(48.0)),
+            "PPBR": .init(dataType: "sp78", bytes: [0x12, 0x00])
+        ])
+        let session = AppleSMCSession(transport: fake)
+        XCTAssertNotNil(session.readPower())
+
+        fake.rejectedReads = ["PDTR"]
+        let reading = session.readPower()
+
+        XCTAssertEqual(reading, AppleSMCPowerReading(systemTotalWatts: 24.5, dcInWatts: nil, batteryWatts: 18.0),
+                       "one rejected key must not discard the other keys")
+        XCTAssertEqual(fake.opens, 1, "a rejected read must not reopen the connection")
+        XCTAssertEqual(fake.closes, 0, "a rejected read must not close the connection")
+    }
+
+    func testRejectedReadRefetchesKeyInfoOnNextRead() {
+        let fake = FakeSMCTransport(keys: [
+            "PSTR": .init(dataType: "flt ", bytes: littleEndianFloat(24.5)),
+            "PDTR": .init(dataType: "flt ", bytes: littleEndianFloat(48.0))
+        ])
+        let session = AppleSMCSession(transport: fake)
+        XCTAssertEqual(session.readPower()?.dcInWatts, 48.0)
+        XCTAssertEqual(fake.keyInfoQueries["PDTR"], 1)
+
+        fake.rejectedReads = ["PDTR"]
+        XCTAssertEqual(session.readPower()?.dcInWatts, nil)
+        XCTAssertEqual(fake.keyInfoQueries["PDTR"], 1, "during the rejected tick the key info is still cached")
+
+        fake.rejectedReads = []
+        XCTAssertEqual(session.readPower()?.dcInWatts, 48.0)
+        XCTAssertEqual(fake.keyInfoQueries["PDTR"], 2, "the rejected key's info was dropped, so it is queried once more")
+        XCTAssertEqual(fake.opens, 1)
+        XCTAssertEqual(fake.closes, 0)
+        XCTAssertEqual(fake.keyInfoQueries["PSTR"], 1, "unaffected keys keep their cached key info")
+    }
+
+    func testPlausibilityBoundAcceptsHighPowerAndRejectsAtOrAboveLimit() {
+        let fake = FakeSMCTransport(keys: [
+            "PSTR": .init(dataType: "flt ", bytes: littleEndianFloat(1_500)),
+            "PDTR": .init(dataType: "flt ", bytes: littleEndianFloat(2_000))
+        ])
+        let session = AppleSMCSession(transport: fake)
+
+        XCTAssertEqual(session.readPower(),
+                       AppleSMCPowerReading(systemTotalWatts: 1_500, dcInWatts: nil, batteryWatts: nil),
+                       "1,500 W is plausible and must be kept")
+        XCTAssertEqual(fake.closes, 0)
+    }
+
+    func testPlausibilityBoundRejectsNonFiniteAndNegativeLimitValues() {
+        let fake = FakeSMCTransport(keys: [
+            "PSTR": .init(dataType: "flt ", bytes: littleEndianFloat(-2_000)),
+            "PDTR": .init(dataType: "flt ", bytes: littleEndianFloat(.nan)),
+            "PPBR": .init(dataType: "flt ", bytes: littleEndianFloat(.infinity)),
+            "PB0R": .init(dataType: "flt ", bytes: littleEndianFloat(1_999))
+        ])
+        let session = AppleSMCSession(transport: fake)
+
+        XCTAssertEqual(session.readPower(),
+                       AppleSMCPowerReading(systemTotalWatts: nil, dcInWatts: nil, batteryWatts: 1_999),
+                       "-2,000 W, NaN and infinity are dropped; 1,999 W is kept")
+    }
 }
 
 /// In-memory stand-in for the AppleSMC user client. Records opens, closes and key-info queries.
@@ -84,6 +150,7 @@ private final class FakeSMCTransport: AppleSMCTransport, @unchecked Sendable {
     private var _keyInfoQueries: [String: Int] = [:]
     private var _failingCalls = 0
     private var _unavailable = false
+    private var _rejectedReads: Set<String> = []
 
     init(keys: [String: Key]) {
         self.keys = keys
@@ -102,6 +169,12 @@ private final class FakeSMCTransport: AppleSMCTransport, @unchecked Sendable {
     var unavailable: Bool {
         get { locked { _unavailable } }
         set { locked { _unavailable = newValue } }
+    }
+
+    /// Keys whose data reads return a non-zero SMC result (the call itself succeeds).
+    var rejectedReads: Set<String> {
+        get { locked { _rejectedReads } }
+        set { locked { _rejectedReads = newValue } }
     }
 
     func open() -> io_connect_t? {
@@ -139,6 +212,8 @@ private final class FakeSMCTransport: AppleSMCTransport, @unchecked Sendable {
                 _keyInfoQueries[name, default: 0] += 1
                 output.keyInfo.dataSize = UInt32(key.bytes.count)
                 output.keyInfo.dataType = AppleSMCReader.fourCC(key.dataType) ?? 0
+            case 5 where _rejectedReads.contains(name):
+                output.result = 0x84
             case 5:
                 withUnsafeMutableBytes(of: &output.bytes) { raw in
                     for (index, byte) in key.bytes.enumerated() {

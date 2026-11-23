@@ -1,11 +1,5 @@
 import Foundation
 
-struct HelperTerminationRequest: Codable, Sendable {
-    let version: Int
-    let target: HelperTarget
-    let force: Bool
-}
-
 enum HelperSampleKind: String, Codable, CaseIterable, Sendable {
     case powermetrics
     case processMetrics

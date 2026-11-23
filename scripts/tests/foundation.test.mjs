@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { discoverSources, renderProject } from "../generate-project.mjs";
-import { buildNumberFailures, validateRepositoryState, sparkleCredentialSources } from "../release-preflight.mjs";
+import { buildNumberFailures, releaseNotesPreflightFailures, validateRepositoryState, sparkleCredentialSources } from "../release-preflight.mjs";
 import { gpgSigningInvocation, sparkleSigningInvocation } from "../release.mjs";
 import { childEnvironment, root, versionInfo } from "../lib/core.mjs";
 import { checkProject, releaseSettingsFailures } from "../validate.mjs";
@@ -83,6 +83,14 @@ test("release repository validation rejects forks, wrong branch, dirty trees, an
   assert.ok(validateRepositoryState({ ...state, status: "", remoteHead: "def" }).some((failure) => failure.includes("HEAD")));
   assert.ok(validateRepositoryState({ ...state, status: "", remoteHead: "abc", tagHead: "def" }).some((failure) => failure.includes("tag")));
   assert.ok(validateRepositoryState({ ...state, status: "", remoteHead: "abc", draftTarget: "def" }).some((failure) => failure.includes("draft")));
+});
+
+test("release preflight blocks placeholder or thin release notes", () => {
+  const info = { version: "2.0.0", tag: "v2.0.0", channel: "stable" };
+  const placeholder = "# Microgravity changelog\n\n## 2.0.0\n\nRelease notes pending.\n";
+  assert.ok(releaseNotesPreflightFailures(info, placeholder).some((failure) => failure.includes("Release notes pending.")));
+  assert.ok(releaseNotesPreflightFailures(info, "# Microgravity changelog\n\n## 9.9.9\n\n- Change.\n").some((failure) => failure.includes("no 2.0.0 release section")));
+  assert.deepEqual(releaseNotesPreflightFailures(info, "# Microgravity changelog\n\n## 2.0.0\n\n- Shipped a real change.\n"), []);
 });
 
 test("release build numbers must advance and exactly one Sparkle signing source is accepted", () => {
@@ -274,6 +282,23 @@ test("Debug project builds app and hosted tests for the active architecture", ()
   const project = renderProject();
   const debug = project.match(/\/\* Project Debug \*\/ = \{isa = XCBuildConfiguration; buildSettings = \{([^}]*)\}/)?.[1] ?? "";
   assert.match(debug, /ONLY_ACTIVE_ARCH = YES/);
+});
+
+test("helper configurations pin LD_RUNPATH_SEARCH_PATHS and OTHER_LDFLAGS empty while app configurations do not", () => {
+  const configurations = renderProject().split("\n").filter((line) => line.includes("isa = XCBuildConfiguration"));
+  const helper = configurations.filter((line) => line.includes("PRODUCT_BUNDLE_IDENTIFIER = run.rosie.microgravity.helper;"));
+  const app = configurations.filter((line) => line.includes("PRODUCT_BUNDLE_IDENTIFIER = run.rosie.microgravity;"));
+  assert.equal(helper.length, 2);
+  assert.equal(app.length, 2);
+  for (const line of helper) {
+    assert.match(line, /baseConfigurationReference = A00000000000000000000023 \/\* base\.xcconfig \*\//);
+    assert.ok(line.includes('LD_RUNPATH_SEARCH_PATHS = "";'), line);
+    assert.ok(line.includes('OTHER_LDFLAGS = "";'), line);
+  }
+  for (const line of app) {
+    assert.ok(!line.includes('LD_RUNPATH_SEARCH_PATHS = "";'), line);
+    assert.ok(!line.includes('OTHER_LDFLAGS = "";'), line);
+  }
 });
 
 test("release prepare skips the UI automation suite unless MICROGRAVITY_RELEASE_UI_TESTS=1", async () => {

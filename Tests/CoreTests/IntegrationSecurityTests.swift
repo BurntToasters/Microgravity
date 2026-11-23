@@ -3,6 +3,13 @@ import Security
 import XCTest
 @testable import Microgravity
 
+// Previous full-target termination request encoding, kept as a test fixture.
+private struct HelperTerminationRequest: Codable {
+    let version: Int
+    let target: HelperTarget
+    let force: Bool
+}
+
 final class IntegrationSecurityTests: XCTestCase {
     func testSigningRequirementsRejectUnknownIdentifierAndInjectedTeam() {
         for strict in [false, true] {

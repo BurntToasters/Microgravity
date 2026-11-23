@@ -53,7 +53,18 @@ private final class HelperFastMetricsCoordinator: @unchecked Sendable {
 
 private let fastMetricsCoordinator = HelperFastMetricsCoordinator()
 
-final class Service: NSObject, HelperProtocol {
+/// Shared between the XPC callbacks and the delayed verification check. Only that check
+/// touches the connection, and it calls invalidate(), the same call the invalidation path
+/// already makes from XPC's own queue. NSXPCConnection is not Sendable, so the box carries it.
+private final class XPCConnectionBox: @unchecked Sendable {
+    let connection: NSXPCConnection
+
+    init(_ connection: NSXPCConnection) { self.connection = connection }
+}
+
+/// Mutable state (`verified`, `connected`) is only read or written under `lock`. The other
+/// stored properties are immutable references or values.
+final class Service: NSObject, HelperProtocol, @unchecked Sendable {
     let cancellation = SamplingCancellation()
     let clientPID: Int32
     let clientUID: uid_t
@@ -308,10 +319,11 @@ final class Listener: NSObject, NSXPCListenerDelegate {
         }
         HelperLog.connection.info("connection opened client pid=\(service.clientPID, privacy: .public) uid=\(service.clientUID, privacy: .public)")
         connection.resume()
+        let peer = XPCConnectionBox(connection)
         DispatchQueue.global().asyncAfter(deadline: .now() + verificationTimeout) {
             guard !service.isVerified, service.isConnected else { return }
             HelperLog.connection.info("connection closed: no verified message client pid=\(service.clientPID, privacy: .public)")
-            connection.invalidate()
+            peer.connection.invalidate()
         }
         return true
     }

@@ -78,3 +78,9 @@ __pycache__/
 vendor/*/.build/
 vendor/*/.swiftpm/
 vendor/*/Package.resolved
+
+# Signing and notarization key material
+*.p8
+*.pem
+*.p12
+*.key

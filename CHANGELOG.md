@@ -39,6 +39,7 @@
 - **Hardware Details:** GPU name and core count come from the system registry first, with Metal as a fallback. Network interface details are read at most every 30 seconds, and the SMC connection stays open between samples.
 - **Sleep and Sampling Gaps:** Gap markers keep power, hardware and process category details instead of dropping them.
 - **Performance & Processes:** Long performance graphs are simplified per pixel column, graph traces are computed once per update, and the Processes page builds child rows only for expanded groups and counts search matches without a second build.
+- **Updating From 0.2.0 or Earlier:** If Settings says the helper is out of date, remove the helper and set it up again, or restart the Mac. Until then Microgravity checks the old helper once a minute instead of every 5 seconds.
 
 ## 0.2.1
 

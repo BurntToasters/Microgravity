@@ -114,6 +114,69 @@ final class IntegrationAdvancedMetricsTests: XCTestCase {
         XCTAssertEqual(refreshCount, 2)
     }
 
+    func testOutOfDateHelperErrorsBackOffToSixtySecondsInsteadOfFiveSeconds() async throws {
+        for code in ["incompatibleVersion", "incompatibleResponse", "protocolUnavailable"] {
+            let start = Date(timeIntervalSince1970: 1_000)
+            let clock = TestClock(start)
+            let client = FixedAdvancedSamplingClient([
+                .processMetrics: response(.processMetrics, at: start, error: code),
+                .powermetrics: response(.powermetrics, at: start, error: code),
+            ])
+            let collector = NativeAdvancedMetricsCollector(client: client, now: { clock.now() }, processIdentities: { [:] })
+
+            _ = await collector.collectAdvancedMetrics(at: start)
+            try await waitUntil("the first refresh completes for \(code)") {
+                await collector.refreshCompletionCountForTesting() == 1
+            }
+            let snapshot = await collector.collectAdvancedMetrics(at: start)
+            XCTAssertEqual(snapshot.capabilities[.gpu]?.reason, .collectionFailed, code)
+            XCTAssertEqual(snapshot.capabilities[.gpu]?.detail,
+                           "The helper is out of date. Remove it and set it up again in Settings.", code)
+            XCTAssertEqual(snapshot.capabilities[.energy]?.detail,
+                           "The helper is out of date. Remove it and set it up again in Settings.", code)
+
+            for offset in [TimeInterval(5), 59] {
+                clock.set(start.addingTimeInterval(offset))
+                _ = await collector.collectAdvancedMetrics(at: clock.now())
+                let refreshCount = await collector.refreshRequestCountForTesting()
+                XCTAssertEqual(refreshCount, 1, "no refresh at \(offset) s after \(code)")
+            }
+
+            clock.set(start.addingTimeInterval(60))
+            _ = await collector.collectAdvancedMetrics(at: clock.now())
+            let refreshCount = await collector.refreshRequestCountForTesting()
+            XCTAssertEqual(refreshCount, 2, "the out-of-date helper is rechecked once a minute after \(code)")
+            try await waitUntil("the second refresh completes for \(code)") {
+                await collector.refreshCompletionCountForTesting() == 2
+            }
+        }
+    }
+
+    func testRetryHelperSoonShortensOutOfDateBackoff() async throws {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let clock = TestClock(start)
+        let client = FixedAdvancedSamplingClient([
+            .processMetrics: response(.processMetrics, at: start, error: "incompatibleVersion"),
+            .powermetrics: response(.powermetrics, at: start, error: "incompatibleVersion"),
+        ])
+        let collector = NativeAdvancedMetricsCollector(client: client, now: { clock.now() }, processIdentities: { [:] })
+
+        _ = await collector.collectAdvancedMetrics(at: start)
+        try await waitUntil("the first refresh completes") { await collector.refreshCompletionCountForTesting() == 1 }
+
+        clock.set(start.addingTimeInterval(5))
+        _ = await collector.collectAdvancedMetrics(at: clock.now())
+        var refreshCount = await collector.refreshRequestCountForTesting()
+        XCTAssertEqual(refreshCount, 1, "without a retry request, the out-of-date helper waits 60 s")
+
+        // The app becomes active after the helper was updated or re-installed.
+        await collector.retryHelperSoon()
+        _ = await collector.collectAdvancedMetrics(at: clock.now())
+        refreshCount = await collector.refreshRequestCountForTesting()
+        XCTAssertEqual(refreshCount, 2, "a retry request starts a refresh at once, inside the out-of-date backoff")
+        try await waitUntil("the retried refresh completes") { await collector.refreshCompletionCountForTesting() == 2 }
+    }
+
     func testRetryHelperSoonStartsRefreshInsideBackoffOnlyWhileHelperIsUnavailable() async throws {
         let start = Date(timeIntervalSince1970: 1_000)
         let clock = TestClock(start)

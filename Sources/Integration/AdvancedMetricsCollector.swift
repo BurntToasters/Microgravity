@@ -42,7 +42,7 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
     static let refreshInterval: TimeInterval = 5
     /// Minimum spacing between network refreshes, and between helper refreshes while the helper is healthy.
     static let fastRefreshInterval: TimeInterval = 0.9
-    /// Minimum spacing between helper availability rechecks when the helper is absent.
+    /// Minimum spacing between helper rechecks when the helper is absent or too old to answer (incompatible protocol).
     static let helperUnavailableRetryInterval: TimeInterval = 60
     private static let maximumClockSkew: TimeInterval = 1
     /// Maximum age of helper per-process counters, from the helper's capture time to read time.
@@ -82,10 +82,11 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
     private var lastHelperCompleted: Date?
     private var lastPowermetricsSampleAt: Date?
     private var lastLocalNettopSequence: UInt64?
-    private var lastResultWasHelperUnavailable = false
-    /// Consecutive helper refreshes whose process-metrics call failed for a reason other than "unavailable".
+    /// True after a helper refresh that found the helper absent or too old; those refreshes wait `helperUnavailableRetryInterval`.
+    private var lastResultNeedsSlowRetry = false
+    /// Consecutive helper refreshes whose process-metrics call failed for a reason other than the slow-retry class.
     private var helperFailureCount = 0
-    /// Set by retryHelperSoon(); honored only while the last result was helper-unavailable.
+    /// Set by retryHelperSoon(); honored only while the last result needed a slow retry.
     private var helperRetryRequested = false
     private var inFlight = false
     private var refreshRequestCount = 0
@@ -118,11 +119,11 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
         self.processIdentities = lookup
     }
 
-    /// Asks for a helper refresh on the next collect, skipping the helper-unavailable backoff. Used when the app
-    /// becomes active, since the user may have just approved the helper in System Settings.
+    /// Asks for a helper refresh on the next collect, skipping the slow helper-unavailable backoff. Used when the app
+    /// becomes active, since the user may have just approved the helper in System Settings or updated it.
     /// No effect on a healthy helper.
     func retryHelperSoon() {
-        guard lastResultWasHelperUnavailable else { return }
+        guard lastResultNeedsSlowRetry else { return }
         helperRetryRequested = true
     }
 
@@ -179,7 +180,7 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
     }
 
     private var helperRefreshInterval: TimeInterval {
-        if lastResultWasHelperUnavailable { return Self.helperUnavailableRetryInterval }
+        if lastResultNeedsSlowRetry { return Self.helperUnavailableRetryInterval }
         if helperFailureCount > 0 { return Self.refreshInterval }
         return Self.fastRefreshInterval
     }
@@ -188,7 +189,7 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
         defer { inFlight = false; refreshCompletionCount += 1 }
         guard await client.prepareRefresh() else {
             helper = HelperState(capabilities: helperUnavailableCapabilities())
-            finishHelperRefresh(unavailable: true, processFailed: false)
+            finishHelperRefresh(slowRetry: true, processFailed: false)
             return
         }
 
@@ -196,14 +197,14 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
         let identities = processIdentities().identities
         if processResponse.error == HelperSamplingClient.unavailableError {
             helper = HelperState(capabilities: helperUnavailableCapabilities())
-            finishHelperRefresh(unavailable: true, processFailed: false)
+            finishHelperRefresh(slowRetry: true, processFailed: false)
             return
         }
         // Committed before the powermetrics call so readers see fresh per-process counters while it runs.
         helper.perProcessSystemMetrics = Self.processSystemMetrics(processResponse, identities: identities,
                                                                    previous: helper.perProcessSystemMetrics)
 
-        var powermetricsUnavailable = false
+        var powermetricsSlowRetry = false
         let requestTime = now()
         if !shouldSamplePowermetrics() {
             // IOReport measures GPU and energy natively; the helper does not sample powermetrics.
@@ -222,10 +223,10 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
                                       system: &system, capabilities: &capabilities)
             helper.system = system
             helper.capabilities = capabilities
-            powermetricsUnavailable = power.error == HelperSamplingClient.unavailableError
+            powermetricsSlowRetry = Self.isSlowRetryError(power.error)
         }
 
-        finishHelperRefresh(unavailable: powermetricsUnavailable,
+        finishHelperRefresh(slowRetry: powermetricsSlowRetry || Self.isSlowRetryError(processResponse.error),
                             processFailed: Self.isFailure(processResponse.error))
     }
 
@@ -234,11 +235,11 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
         return currentTime.timeIntervalSince(last) >= Self.refreshInterval || currentTime < last
     }
 
-    private func finishHelperRefresh(unavailable: Bool, processFailed: Bool) {
-        lastResultWasHelperUnavailable = unavailable
-        helperFailureCount = (processFailed && !unavailable) ? helperFailureCount + 1 : 0
+    private func finishHelperRefresh(slowRetry: Bool, processFailed: Bool) {
+        lastResultNeedsSlowRetry = slowRetry
+        helperFailureCount = (processFailed && !slowRetry) ? helperFailureCount + 1 : 0
         lastHelperCompleted = now()
-        if !unavailable { helperRetryRequested = false }
+        if !slowRetry { helperRetryRequested = false }
     }
 
     /// GPU and energy capabilities when the helper cannot sample them. Native measurement says "warming up", not
@@ -453,9 +454,19 @@ actor NativeAdvancedMetricsCollector: AdvancedMetricsCollecting {
         code == "rateLimited" || code == "busy"
     }
 
-    /// A failure that should slow the next helper refresh: any error that is neither "unavailable" nor transient.
+    /// Errors that mean the helper is absent or too old to answer. These wait `helperUnavailableRetryInterval`.
+    private static func isSlowRetryError(_ code: String?) -> Bool {
+        code == HelperSamplingClient.unavailableError || isOutOfDateError(code)
+    }
+
+    /// A helper built for an older protocol, which never exits on its own after an app update.
+    private static func isOutOfDateError(_ code: String?) -> Bool {
+        code == "incompatibleVersion" || code == "incompatibleResponse" || code == "protocolUnavailable"
+    }
+
+    /// A failure that should slow the next helper refresh: any error that is neither slow-retry nor transient.
     private static func isFailure(_ code: String?) -> Bool {
-        code != nil && code != HelperSamplingClient.unavailableError && !isTransientRateError(code)
+        code != nil && !isSlowRetryError(code) && !isTransientRateError(code)
     }
 
     /// A missing helper is an optional feature that is not set up, not a failed collection.

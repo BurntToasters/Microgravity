@@ -810,6 +810,7 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             // Headroom absorbs processes started between the sizing call and the read.
             let estimated = requiredBytes / entrySize
             let capacity = min(maximumPIDCount, estimated + estimated / 8 + 64)
+            let atCap = capacity == maximumPIDCount
             var table = [kinfo_proc](repeating: kinfo_proc(), count: capacity)
             var bytes = capacity * entrySize
             let readStatus = table.withUnsafeMutableBytes { buffer in
@@ -819,14 +820,25 @@ public actor SystemMonitorCollector: MonitoringCollecting {
             }
             if readStatus != 0 {
                 let code = errno
-                if code == ENOMEM, attempt < processTableAttempts { continue }
-                return .failure(.sysctl(code))
+                switch HelperProcessMetricsReader.decideFailedTableRead(errno: code, bytesReturned: bytes,
+                                                                        bufferBytes: capacity * entrySize,
+                                                                        entrySize: entrySize, atCap: atCap) {
+                case let .truncated(entries):
+                    guard let kept = HelperProcessMetricsReader.truncatedTableEntries(Array(table.prefix(entries))) else {
+                        return .failure(.sysctl(code))
+                    }
+                    return .success(ProcessTable(entries: kept, truncatedAtCap: true))
+                case .retry where attempt < processTableAttempts:
+                    continue
+                case .retry, .failure:
+                    return .failure(.sysctl(code))
+                }
             }
             let filled = min(bytes / entrySize, capacity)
             if filled < capacity {
                 return .success(ProcessTable(entries: Array(table.prefix(filled)), truncatedAtCap: false))
             }
-            if capacity == maximumPIDCount {
+            if atCap {
                 return .success(ProcessTable(entries: table, truncatedAtCap: true))
             }
             // The table may have grown past the buffer, so the next attempt sizes it again.

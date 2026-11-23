@@ -74,6 +74,26 @@ final class SystemMonitorCollectorTests: XCTestCase {
         XCTAssertEqual(SystemMonitorCollector.processName(executablePath: "", kernelName: "launchd"), "launchd")
     }
 
+    func testFailedProcessTableReadAtCollectorCapKeepsWrittenEntries() {
+        let entrySize = MemoryLayout<kinfo_proc>.stride
+        let bufferBytes = SystemMonitorCollector.maximumPIDCount * entrySize
+        typealias Decision = HelperProcessMetricsReader.FailedTableRead
+
+        XCTAssertEqual(HelperProcessMetricsReader.decideFailedTableRead(
+            errno: ENOMEM, bytesReturned: 16_000 * entrySize + 3, bufferBytes: bufferBytes,
+            entrySize: entrySize, atCap: true), Decision.truncated(entries: 16_000))
+        XCTAssertEqual(HelperProcessMetricsReader.decideFailedTableRead(
+            errno: ENOMEM, bytesReturned: 0, bufferBytes: bufferBytes,
+            entrySize: entrySize, atCap: true), Decision.truncated(entries: SystemMonitorCollector.maximumPIDCount),
+            "length 0 at the cap keeps the whole buffer the kernel filled")
+        XCTAssertEqual(HelperProcessMetricsReader.decideFailedTableRead(
+            errno: ENOMEM, bytesReturned: 8_000 * entrySize, bufferBytes: 9_000 * entrySize,
+            entrySize: entrySize, atCap: false), Decision.retry)
+        XCTAssertEqual(HelperProcessMetricsReader.decideFailedTableRead(
+            errno: EPERM, bytesReturned: 16_000 * entrySize, bufferBytes: bufferBytes,
+            entrySize: entrySize, atCap: true), Decision.failure)
+    }
+
     /// Advanced network attribution keys on this table. proc_pidinfo, the previous source, fails with EPERM for
     /// other users' processes, so the live table must still name root-owned launchd and the current process.
     func testProcessIdentityLookupCoversOtherUsersProcesses() {

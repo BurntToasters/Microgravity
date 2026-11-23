@@ -6,9 +6,11 @@ enum HelperProcessMetricsReader {
     static let maximumPIDCount = 4096
 
     static func collect(excludingUID: uid_t?, maximumCount: Int = maximumPIDCount) -> HelperProcessMetricsPayload {
-        guard let entries = readProcessTable(maximumCount: maximumCount) else {
+        // The table's truncation flag is not forwarded: HelperProcessMetricsPayload has no field for it.
+        guard let table = readProcessTable(maximumCount: maximumCount) else {
             return HelperProcessMetricsPayload(entries: [])
         }
+        let entries = table.entries
         var timebaseInfo = mach_timebase_info_data_t()
         guard mach_timebase_info(&timebaseInfo) == KERN_SUCCESS, timebaseInfo.denom > 0 else {
             return HelperProcessMetricsPayload(entries: [])
@@ -69,9 +71,51 @@ enum HelperProcessMetricsReader {
         return HelperProcessMetricsPayload(entries: results)
     }
 
-    private static func readProcessTable(maximumCount: Int) -> [kinfo_proc]? {
+    /// Outcome of a KERN_PROC_ALL read whose sysctl call failed.
+    enum FailedTableRead: Equatable {
+        /// ENOMEM with the buffer at the cap: keep this many leading entries, which the kernel wrote, and mark the table truncated.
+        case truncated(entries: Int)
+        /// ENOMEM below the cap, or at the cap with no whole entry to keep: size the table again.
+        case retry
+        /// Any other errno.
+        case failure
+    }
+
+    /// Decides what a failed KERN_PROC_ALL read means. Observed on macOS 27: at the cap the kernel copies whole
+    /// entries until the buffer is full, then fails with ENOMEM and reports a length of 0 while the buffer holds
+    /// valid entries. So a reported length of 0 means the whole buffer was written, and a positive length is
+    /// clamped to the buffer and rounded down to whole entries. Below the cap, ENOMEM means the table grew and the
+    /// caller re-sizes.
+    static func decideFailedTableRead(errno code: Int32, bytesReturned: Int, bufferBytes: Int,
+                                      entrySize: Int, atCap: Bool) -> FailedTableRead {
+        guard code == ENOMEM else { return .failure }
+        guard atCap else { return .retry }
+        let writtenBytes = bytesReturned > 0 ? min(bytesReturned, bufferBytes) : bufferBytes
+        let wholeEntries = writtenBytes / entrySize
+        return wholeEntries > 0 ? .truncated(entries: wholeEntries) : .retry
+    }
+
+    /// Drops the zero-filled tail that a buffer the kernel did not fully write would leave behind. Keeps at most one
+    /// PID-0 entry after the last real process, because kernel_task is PID 0 and is a legitimate entry.
+    static func droppingUnwrittenTail(_ table: [kinfo_proc]) -> [kinfo_proc] {
+        var end = table.count
+        while end > 0 && table[end - 1].kp_proc.p_pid == 0 { end -= 1 }
+        if end < table.count { end += 1 }
+        return Array(table.prefix(end))
+    }
+
+    /// Entries to keep from a capped table, or nil when the kernel wrote no non-zero PID (a failed read, not a
+    /// truncated table). A single-slot table is kept as-is, because kernel_task is PID 0.
+    static func truncatedTableEntries(_ table: [kinfo_proc]) -> [kinfo_proc]? {
+        if table.count > 1 && !table.contains(where: { $0.kp_proc.p_pid != 0 }) { return nil }
+        return droppingUnwrittenTail(table)
+    }
+
+    /// Reads KERN_PROC_ALL. `truncated` is true when the table reached the cap, so processes beyond it were not read.
+    static func readProcessTable(maximumCount: Int = maximumPIDCount) -> (entries: [kinfo_proc], truncated: Bool)? {
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
         let entrySize = MemoryLayout<kinfo_proc>.stride
+        let cap = min(max(1, maximumCount), maximumPIDCount)
         for attempt in 1...4 {
             var estimatedBytes = 0
             let sizeStatus = mib.withUnsafeMutableBufferPointer { name in
@@ -79,7 +123,8 @@ enum HelperProcessMetricsReader {
             }
             guard sizeStatus == 0 else { return nil }
             let estimated = estimatedBytes / entrySize
-            let capacity = min(max(estimated + estimated / 8 + 64, 64), min(max(1, maximumCount), maximumPIDCount))
+            let capacity = min(max(estimated + estimated / 8 + 64, 64), cap)
+            let atCap = capacity == cap
             var table = Array(repeating: kinfo_proc(), count: capacity)
             var bytes = capacity * entrySize
             let readStatus = table.withUnsafeMutableBytes { buffer in
@@ -88,11 +133,20 @@ enum HelperProcessMetricsReader {
                 }
             }
             if readStatus != 0 {
-                if errno == ENOMEM, attempt < 4 { continue }
-                return nil
+                let code = errno
+                switch decideFailedTableRead(errno: code, bytesReturned: bytes, bufferBytes: capacity * entrySize,
+                                             entrySize: entrySize, atCap: atCap) {
+                case let .truncated(entries):
+                    guard let kept = truncatedTableEntries(Array(table.prefix(entries))) else { return nil }
+                    return (kept, true)
+                case .retry where attempt < 4:
+                    continue
+                case .retry, .failure:
+                    return nil
+                }
             }
             let filled = min(bytes / entrySize, capacity)
-            return Array(table.prefix(filled))
+            return (Array(table.prefix(filled)), atCap && filled == capacity)
         }
         return nil
     }

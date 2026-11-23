@@ -81,6 +81,23 @@ final class HardwareSpecReaderTests: XCTestCase {
         XCTAssertEqual(recorder.totalCount, 0)
     }
 
+    func testLowPowerGPUNamePicksIntegratedDevice() {
+        let devices: [(name: String, isLowPower: Bool)] = [
+            (name: "AMD Radeon Pro 560", isLowPower: false),
+            (name: "Intel Iris Plus Graphics 655", isLowPower: true),
+        ]
+
+        XCTAssertEqual(HardwareSpecReader.lowPowerGPUName(from: devices), "Intel Iris Plus Graphics 655")
+    }
+
+    func testLowPowerGPUNameIsNilWithoutLowPowerDevice() {
+        let discreteOnly: [(name: String, isLowPower: Bool)] = [(name: "AMD Radeon Pro 560", isLowPower: false)]
+        let none: [(name: String, isLowPower: Bool)] = []
+
+        XCTAssertNil(HardwareSpecReader.lowPowerGPUName(from: discreteOnly))
+        XCTAssertNil(HardwareSpecReader.lowPowerGPUName(from: none))
+    }
+
     private func makeInterface(name: String, at date: Date) -> NetworkInterfaceSnapshot {
         let rate = MetricReading(value: 100, unit: .bytesPerSecond, timestamp: date)
         let total = MetricReading(value: 1_000, unit: .bytes, timestamp: date)

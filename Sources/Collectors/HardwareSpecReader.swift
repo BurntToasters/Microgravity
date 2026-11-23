@@ -121,9 +121,25 @@ final class HardwareSpecReader: @unchecked Sendable {
         }
 
         if name == nil {
-            name = MTLCreateSystemDefaultDevice()?.name
+            name = metalFallbackGPUName()
         }
         return (name, coreCount)
+    }
+
+    /// Metal fallback. Prefers the integrated GPU so that reading the name never asks macOS to
+    /// switch to the discrete GPU on dual-GPU Macs. `MTLCreateSystemDefaultDevice()` is only used
+    /// when no low-power device is listed.
+    private static func metalFallbackGPUName() -> String? {
+        let candidates = MTLCopyAllDevices().map { (name: $0.name, isLowPower: $0.isLowPower) }
+        if let integrated = lowPowerGPUName(from: candidates) {
+            return integrated
+        }
+        return MTLCreateSystemDefaultDevice()?.name
+    }
+
+    /// Returns the name of the first low-power device in the list, or nil when there is none.
+    static func lowPowerGPUName(from devices: [(name: String, isLowPower: Bool)]) -> String? {
+        devices.first(where: { $0.isLowPower })?.name
     }
 
     private static func readBootDiskInfo() -> (model: String?, capacityBytes: UInt64?) {

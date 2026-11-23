@@ -55,8 +55,7 @@ final class ProcessSummaryStripView: NSView {
         let cpuText = UIFormat.value(system.cpuPercent) ?? "—"
 
         let memoryText: String
-        if let used = system.memoryUsedBytes.value, let total = system.memoryTotalBytes.value, total > 0 {
-            let pct = Int(((used / total) * 100).rounded())
+        if let used = system.memoryUsedBytes.value, let pct = Self.memoryPercent(used: used, total: system.memoryTotalBytes.value) {
             memoryText = "\(pct)% · \(UIFormat.bytes(used))"
         } else {
             memoryText = UIFormat.value(system.memoryUsedBytes) ?? "—"
@@ -65,7 +64,7 @@ final class ProcessSummaryStripView: NSView {
         let diskText: String
         if system.diskReadBytesPerSecond.value != nil || system.diskWriteBytesPerSecond.value != nil {
             let combined = (system.diskReadBytesPerSecond.value ?? 0) + (system.diskWriteBytesPerSecond.value ?? 0)
-            diskText = UIFormat.bytesPerSecond(combined)
+            diskText = combined.isFinite ? UIFormat.bytesPerSecond(combined) : "—"
         } else {
             diskText = "—"
         }
@@ -74,7 +73,7 @@ final class ProcessSummaryStripView: NSView {
         if system.networkReceiveBytesPerSecond.value != nil || system.networkTransmitBytesPerSecond.value != nil {
             let combined = (system.networkReceiveBytesPerSecond.value ?? 0)
                 + (system.networkTransmitBytesPerSecond.value ?? 0)
-            networkText = UIFormat.bytesPerSecond(combined)
+            networkText = combined.isFinite ? UIFormat.bytesPerSecond(combined) : "—"
         } else {
             networkText = "—"
         }
@@ -83,6 +82,14 @@ final class ProcessSummaryStripView: NSView {
         set(metric: .memory, value: memoryText)
         set(metric: .disk, value: diskText)
         set(metric: .network, value: networkText)
+    }
+
+    /// Whole-number percent of memory in use, clamped to 0...100. Nil when either reading is non-finite or the total is not positive.
+    static func memoryPercent(used: Double, total: Double?) -> Int? {
+        guard let total, used.isFinite, total.isFinite, total > 0 else { return nil }
+        let ratio = ((used / total) * 100).rounded()
+        guard ratio.isFinite else { return nil }
+        return Int(min(max(ratio, 0), 100))
     }
 
     private func set(metric: PerformanceMetric, value: String) {

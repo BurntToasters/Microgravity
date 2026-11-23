@@ -119,6 +119,8 @@ enum ColorPreferences {
     /// "#RRGGBB" when opaque, "#RRGGBBAA" otherwise. Components are rounded to the nearest byte.
     static func hexString(for color: NSColor) -> String? {
         guard let srgb = color.usingColorSpace(.sRGB) else { return nil }
+        guard srgb.redComponent.isFinite, srgb.greenComponent.isFinite,
+              srgb.blueComponent.isFinite, srgb.alphaComponent.isFinite else { return nil }
         let red = byte(srgb.redComponent)
         let green = byte(srgb.greenComponent)
         let blue = byte(srgb.blueComponent)

@@ -140,7 +140,9 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
-        (item as? Node)?.children[index] ?? roots[index]
+        let siblings = (item as? Node)?.children ?? roots
+        guard siblings.indices.contains(index) else { return NSNull() }
+        return siblings[index]
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
@@ -162,7 +164,7 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
             ?? AppHistoryCellView(frame: .zero)
         cell.identifier = reuseIdentifier
         cell.configure(
-            text: node.row.values[column.index],
+            text: node.row.values.indices.contains(column.index) ? node.row.values[column.index] : "",
             detail: node.row.detail(column),
             accessibilityID: "\(node.row.id).\(column.rawValue)",
             column: column,

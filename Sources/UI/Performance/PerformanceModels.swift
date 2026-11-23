@@ -285,7 +285,9 @@ enum PerformancePresenter {
 
     /// "60 s" / "60 seconds" below five minutes, then minutes or hours.
     static func spanText(_ seconds: TimeInterval) -> (short: String, long: String) {
-        let whole = Int(seconds.rounded())
+        guard seconds.isFinite else { return (String(localized: "Unavailable"), String(localized: "Unavailable")) }
+        // Bounded so a huge finite value cannot trap the Int conversion.
+        let whole = Int(min(max(seconds.rounded(), -1e12), 1e12))
         if whole < 300 {
             return (String(localized: "\(whole) s"), String(localized: "\(whole) \(whole == 1 ? String(localized: "second") : String(localized: "seconds"))"))
         }
@@ -762,8 +764,8 @@ enum PerformancePresenter {
                 let formatted = UIFormat.value(MetricReading(value: abs(rawWatts), unit: .watts, timestamp: batteryW.timestamp)) ?? shortValue(batteryW)
                 stats.append(MetricStat(label: String(localized: "Battery Power"), value: "\(formatted) · \(stateWord)"))
             }
-            if let pct = power.batteryPercent {
-                var detail = "\(Int(pct.rounded()))%"
+            if let pct = power.batteryPercent, pct.isFinite {
+                var detail = "\(Int(min(max(pct.rounded(), 0), 100)))%"
                 if let mins = power.batteryTimeRemainingMinutes, mins > 0 {
                     let hrs = mins / 60
                     let rem = mins % 60

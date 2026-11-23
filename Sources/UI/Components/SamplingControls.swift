@@ -12,9 +12,12 @@ enum SamplingControls {
     /// UserDefaults key read at launch by `AppComposition`.
     nonisolated static let refreshIntervalDefaultsKey = "monitoring.refreshInterval"
 
-    static func setInterval(_ interval: MonitoringInterval, store: any MonitoringStore) {
+    static func setInterval(_ interval: MonitoringInterval, store: any MonitoringStore, defaults: UserDefaults? = nil) {
         store.setInterval(interval)
-        UserDefaults.standard.set(interval.rawValue, forKey: refreshIntervalDefaultsKey)
+        let targetDefaults = defaults
+            ?? AppComposition.fixtureDefaultsSuiteForCleanup.flatMap(UserDefaults.init(suiteName:))
+            ?? .standard
+        targetDefaults.set(interval.rawValue, forKey: refreshIntervalDefaultsKey)
         NotificationCenter.default.post(name: .samplingStateDidChange, object: nil)
     }
 

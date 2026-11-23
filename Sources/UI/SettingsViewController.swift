@@ -34,7 +34,7 @@ private final class FlippedDocumentView: NSView {
 @MainActor
 final class SettingsViewController: NSViewController {
     /// Matches the Performance page's caption: quit is limited to other standard users.
-    private static let helperPolicyCaption = String(localized: "Lets you quit processes owned by other standard users. System and root processes stay protected.")
+    static let helperPolicyCaption = String(localized: "Enables CPU, memory, disk, and network readings for root and other users’ processes, and lets you quit processes owned by other standard users. System and root processes stay protected.")
 
     private let dependencies: PageDependencies
     private let appearancePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -250,7 +250,8 @@ final class SettingsViewController: NSViewController {
         grid.addRow(with: [formLabel(String(localized: "Sampling:")), samplingRow])
         let historyRow = grid.addRow(with: [formLabel(String(localized: "History:")), resetHistoryButton])
         historyRow.topPadding = 12
-        grid.addRow(with: [NSGridCell.emptyContentView, caption(String(localized: "History is kept for 30 days."))])
+        let historyCaptionRow = grid.addRow(with: [NSGridCell.emptyContentView, caption(String(localized: "History is kept for 30 days."))])
+        historyCaptionRow.cell(at: 1).xPlacement = .fill
         return UIComponents.card(title: String(localized: "Sampling and history"),
                                  subtitle: String(localized: "Refresh cadence, pausing, and stored app history."),
                                  content: grid)
@@ -290,7 +291,8 @@ final class SettingsViewController: NSViewController {
 
         let grid = makeFormGrid()
         grid.addRow(with: [formLabel(String(localized: "Privileged helper:")), statusRow(helperDot, helperState, extra: openHelperSettingsButton)])
-        grid.addRow(with: [NSGridCell.emptyContentView, caption(Self.helperPolicyCaption)])
+        let helperCaptionRow = grid.addRow(with: [NSGridCell.emptyContentView, caption(Self.helperPolicyCaption)])
+        helperCaptionRow.cell(at: 1).xPlacement = .fill
         grid.addRow(with: [NSGridCell.emptyContentView, buttonRow([helperButton, removeHelperButton])])
         let loginRow = grid.addRow(with: [formLabel(String(localized: "Open at login:")), loginSwitch])
         loginRow.topPadding = 12
@@ -370,9 +372,10 @@ final class SettingsViewController: NSViewController {
         field.lineBreakMode = .byWordWrapping
         field.usesSingleLineMode = false
         field.maximumNumberOfLines = 0
-        field.preferredMaxLayoutWidth = 480
-        // Wrapping must not widen the form: the grid may compress the caption to its column.
+        field.preferredMaxLayoutWidth = 0
+        // Wrapping must not widen the form: the grid may compress the caption horizontally and must give it full wrapped height.
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        field.setContentCompressionResistancePriority(.required, for: .vertical)
         return field
     }
 
@@ -553,6 +556,8 @@ final class SettingsViewController: NSViewController {
         }
     }
 
+    private var isIntegrationActionInFlight = false
+
     @objc private func checkForUpdates() {
         let integrations = dependencies.integrations
         runIntegrationAction { await integrations.checkForUpdates() }
@@ -564,8 +569,15 @@ final class SettingsViewController: NSViewController {
     }
 
     private func runIntegrationAction(_ action: @escaping @MainActor () async -> IntegrationActionResult) {
+        guard !isIntegrationActionInFlight else { return }
+        isIntegrationActionInFlight = true
+        updateIntegrationControls()
         Task { [weak self] in
             guard let self else { return }
+            defer {
+                self.isIntegrationActionInFlight = false
+                self.updateIntegrationControls()
+            }
             let result = await action()
             await dependencies.integrations.refreshStatus()
             updateIntegrationControls()
@@ -591,7 +603,8 @@ final class SettingsViewController: NSViewController {
             helperButton.isEnabled = true
         }
         openHelperSettingsButton.isHidden = status.helper != .requiresApproval
-        removeHelperButton.isEnabled = canRemoveHelper(status)
+        openHelperSettingsButton.isEnabled = !isIntegrationActionInFlight
+        removeHelperButton.isEnabled = !isIntegrationActionInFlight && canRemoveHelper(status)
 
         loginDot.tone = IntegrationStatusTone.loginItem(status.loginItem)
         setStatus(loginItemState, describe(status.loginItem))
@@ -607,6 +620,7 @@ final class SettingsViewController: NSViewController {
             loginSwitch.isEnabled = false
         }
         openLoginSettingsButton.isHidden = status.loginItem != .requiresApproval
+        openLoginSettingsButton.isEnabled = !isIntegrationActionInFlight
 
         updatesDot.tone = IntegrationStatusTone.updates(status.updates)
         setStatus(updatesState, describe(status.updates))
@@ -618,6 +632,12 @@ final class SettingsViewController: NSViewController {
             updateCheckButton.isEnabled = true
             updateInstallButton.isEnabled = true
         case .unavailable:
+            updateCheckButton.isEnabled = false
+            updateInstallButton.isEnabled = false
+        }
+        if isIntegrationActionInFlight {
+            helperButton.isEnabled = false
+            loginSwitch.isEnabled = false
             updateCheckButton.isEnabled = false
             updateInstallButton.isEnabled = false
         }

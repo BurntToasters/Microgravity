@@ -167,7 +167,8 @@ final class FixtureMonitoringStore: MonitoringStore {
                 diskReadBytesPerSecond: group.diskReadBytesPerSecond,
                 diskWriteBytesPerSecond: group.diskWriteBytesPerSecond,
                 networkReceiveBytesPerSecond: group.networkReceiveBytesPerSecond,
-                networkTransmitBytesPerSecond: group.networkTransmitBytesPerSecond
+                networkTransmitBytesPerSecond: group.networkTransmitBytesPerSecond,
+                category: group.category
             )
         }
         let updated = MonitoringSnapshot(
@@ -211,7 +212,11 @@ final class FixtureMonitoringStore: MonitoringStore {
             diskWriteBytesPerSecond: reading(53_000, .bytesPerSecond, timestamp),
             diskReadTotalBytes: reading(80_000_000, .bytes, timestamp),
             diskWriteTotalBytes: reading(20_000_000, .bytes, timestamp),
-            advancedMetrics: processAdvancedMetrics(configuration: configuration, timestamp: timestamp)
+            advancedMetrics: processAdvancedMetrics(configuration: configuration, timestamp: timestamp),
+            threadCount: 14,
+            cpuTotalSeconds: reading(108.5, .seconds, timestamp),
+            architecture: .appleSilicon,
+            category: .application
         )
         let renderer = ProcessSnapshot(
             id: rendererIdentity, parentIdentity: editorIdentity, childIdentities: [],
@@ -223,10 +228,16 @@ final class FixtureMonitoringStore: MonitoringStore {
             diskWriteBytesPerSecond: reading(12_000, .bytesPerSecond, timestamp),
             diskReadTotalBytes: reading(32_000_000, .bytes, timestamp),
             diskWriteTotalBytes: reading(7_000_000, .bytes, timestamp),
-            advancedMetrics: processAdvancedMetrics(configuration: configuration, timestamp: timestamp)
+            advancedMetrics: processAdvancedMetrics(configuration: configuration, timestamp: timestamp),
+            threadCount: 6,
+            cpuTotalSeconds: reading(24.2, .seconds, timestamp),
+            architecture: .appleSilicon,
+            category: .application
         )
+        let indexerWorkerIdentity = identity(pid: 621, offset: 4)
         let indexer = ProcessSnapshot(
-            id: indexerIdentity, parentIdentity: nil, childIdentities: [],
+            id: indexerIdentity, parentIdentity: nil,
+            childIdentities: configuration.duplicateGroups ? [indexerWorkerIdentity] : [],
             name: "Fixture Indexer", executablePath: "/Applications/Fixture Indexer.app/Contents/MacOS/Indexer",
             ownerUID: uid, isCurrentUser: true,
             cpuPercent: reading(3.2, .percent, timestamp),
@@ -235,7 +246,27 @@ final class FixtureMonitoringStore: MonitoringStore {
             diskWriteBytesPerSecond: reading(4_000, .bytesPerSecond, timestamp),
             diskReadTotalBytes: reading(10_000_000, .bytes, timestamp),
             diskWriteTotalBytes: reading(2_000_000, .bytes, timestamp),
-            advancedMetrics: processAdvancedMetrics(configuration: configuration, timestamp: timestamp)
+            advancedMetrics: processAdvancedMetrics(configuration: configuration, timestamp: timestamp),
+            threadCount: 4,
+            cpuTotalSeconds: reading(12.1, .seconds, timestamp),
+            architecture: .appleSilicon,
+            category: .application
+        )
+        let indexerWorker = ProcessSnapshot(
+            id: indexerWorkerIdentity, parentIdentity: indexerIdentity, childIdentities: [],
+            name: "Fixture Indexer Worker", executablePath: "/Applications/Fixture Indexer.app/Contents/Frameworks/Worker",
+            ownerUID: uid, isCurrentUser: true,
+            cpuPercent: reading(1.0, .percent, timestamp),
+            memoryBytes: reading(42_000_000, .bytes, timestamp),
+            diskReadBytesPerSecond: reading(2_000, .bytesPerSecond, timestamp),
+            diskWriteBytesPerSecond: reading(1_000, .bytesPerSecond, timestamp),
+            diskReadTotalBytes: reading(1_000_000, .bytes, timestamp),
+            diskWriteTotalBytes: reading(500_000, .bytes, timestamp),
+            advancedMetrics: processAdvancedMetrics(configuration: configuration, timestamp: timestamp),
+            threadCount: 2,
+            cpuTotalSeconds: reading(3.0, .seconds, timestamp),
+            architecture: .appleSilicon,
+            category: .application
         )
 
         let editorGroup = ProcessGroupSnapshot(
@@ -250,17 +281,53 @@ final class FixtureMonitoringStore: MonitoringStore {
                 : reading(14_500, .bytesPerSecond, timestamp),
             networkTransmitBytesPerSecond: configuration.networkUnavailable
                 ? unavailable(.bytesPerSecond, timestamp, .unsupported)
-                : reading(3_100, .bytesPerSecond, timestamp)
+                : reading(3_100, .bytesPerSecond, timestamp),
+            category: .application
         )
         let indexerGroup = ProcessGroupSnapshot(
             id: indexerIdentity, title: configuration.duplicateGroups ? "Fixture Editor" : "Fixture Indexer", ownerUID: uid,
             executablePath: indexer.executablePath, association: .standalone,
-            historyIdentity: indexerHistory, members: [indexerIdentity],
-            cpuPercent: reading(3.2, .percent, timestamp), memoryBytes: reading(90_000_000, .bytes, timestamp),
+            historyIdentity: indexerHistory,
+            members: configuration.duplicateGroups ? [indexerIdentity, indexerWorkerIdentity] : [indexerIdentity],
+            cpuPercent: reading(configuration.duplicateGroups ? 4.2 : 3.2, .percent, timestamp),
+            memoryBytes: reading(configuration.duplicateGroups ? 132_000_000 : 90_000_000, .bytes, timestamp),
             diskReadBytesPerSecond: reading(18_000, .bytesPerSecond, timestamp),
             diskWriteBytesPerSecond: reading(4_000, .bytesPerSecond, timestamp),
-            networkReceiveBytesPerSecond: reading(900, .bytesPerSecond, timestamp),
-            networkTransmitBytesPerSecond: reading(200, .bytesPerSecond, timestamp)
+            networkReceiveBytesPerSecond: configuration.networkUnavailable
+                ? unavailable(.bytesPerSecond, timestamp, .unsupported)
+                : reading(900, .bytesPerSecond, timestamp),
+            networkTransmitBytesPerSecond: configuration.networkUnavailable
+                ? unavailable(.bytesPerSecond, timestamp, .unsupported)
+                : reading(200, .bytesPerSecond, timestamp),
+            category: .application
+        )
+
+        let fixturePower: SystemPowerSnapshot? = configuration.energyUnavailable ? nil : SystemPowerSnapshot(
+            systemPowerWatts: MetricReading(value: 18.4, unit: .watts, timestamp: timestamp, detail: "System Total (SMC)"),
+            componentPowerWatts: reading(11.2, .watts, timestamp),
+            adapterPowerWatts: reading(45.0, .watts, timestamp),
+            batteryPowerWatts: reading(18.2, .watts, timestamp),
+            cpuPowerWatts: reading(5.4, .watts, timestamp),
+            gpuPowerWatts: reading(3.1, .watts, timestamp),
+            anePowerWatts: reading(0.9, .watts, timestamp),
+            dramPowerWatts: reading(1.8, .watts, timestamp),
+            powerSource: .ac,
+            batteryPercent: 84,
+            batteryCharging: true,
+            batteryTimeRemainingMinutes: 42,
+            adapterMaxWatts: 96,
+            thermalState: .nominal
+        )
+        let fixtureHardware = HardwareSpecSnapshot(
+            machineModel: "Mac15,6",
+            cpuName: "Apple M3 Pro",
+            gpuName: "Apple M3 Pro",
+            gpuCoreCount: 18,
+            memorySummary: "36 GB",
+            bootDiskModel: "APPLE SSD AP1024Z",
+            bootDiskCapacityBytes: 1_000_000_000_000,
+            primaryNetworkInterface: "fixture0",
+            primaryNetworkDetail: "Wi-Fi"
         )
 
         let pressure: MemoryPressureLevel = sampleIndex % 18 == 0 ? .warning : .normal
@@ -298,7 +365,9 @@ final class FixtureMonitoringStore: MonitoringStore {
             processorTopology: ProcessorTopology(kinds: [
                 ProcessorCoreKind(name: "Performance", rank: 0, logicalCPUs: [4, 5, 6, 7]),
                 ProcessorCoreKind(name: "Efficiency", rank: 1, logicalCPUs: [0, 1, 2, 3]),
-            ])
+            ]),
+            power: fixturePower,
+            hardware: fixtureHardware
         )
 
         // History days are local midnights, as the history store keys them.
@@ -372,8 +441,9 @@ final class FixtureMonitoringStore: MonitoringStore {
                                                                            timestamp: timestamp,
                                                                            sampleIndex: sampleIndex)
 
+        let processes = configuration.duplicateGroups ? [editor, renderer, indexer, indexerWorker] : [editor, renderer, indexer]
         return MonitoringSnapshot(
-            timestamp: timestamp, system: system, processes: [editor, renderer, indexer],
+            timestamp: timestamp, system: system, processes: processes,
             processGroups: [editorGroup, indexerGroup], startupItems: startupItems, services: services,
             users: users,
             discoveryCoverage: [
@@ -394,7 +464,11 @@ final class FixtureMonitoringStore: MonitoringStore {
     private static func processAdvancedMetrics(configuration: FixtureConfiguration,
                                                timestamp: Date) -> [MetricKind: MetricReading] {
         guard !configuration.networkUnavailable else { return [:] }
-        return [.processNetwork: reading(3_200, .bytesPerSecond, timestamp)]
+        return [
+            .processNetwork: reading(3_200, .bytesPerSecond, timestamp),
+            .processNetworkReceive: reading(2_400, .bytesPerSecond, timestamp),
+            .processNetworkTransmit: reading(800, .bytesPerSecond, timestamp)
+        ]
     }
 
     private static func advancedSystemMetrics(configuration: FixtureConfiguration,

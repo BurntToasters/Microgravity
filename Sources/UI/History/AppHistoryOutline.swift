@@ -44,8 +44,6 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
         outline.gridStyleMask = []
         outline.indentationPerLevel = 14
         outline.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
-        outline.autosaveName = autosaveName
-        outline.autosaveTableColumns = autosaveName != nil
         outline.headerView?.setAccessibilityIdentifier("history.table.header")
 
         for column in AppHistoryColumn.allCases {
@@ -62,6 +60,9 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
             outline.addTableColumn(tableColumn)
         }
         outline.outlineTableColumn = outline.tableColumns.first
+        // Enable autosave after the columns exist so saved widths and visibility restore onto them.
+        outline.autosaveName = autosaveName
+        outline.autosaveTableColumns = autosaveName != nil
 
         let scroll = NSScrollView()
         scroll.documentView = outline
@@ -139,7 +140,9 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
-        (item as? Node)?.children[index] ?? roots[index]
+        let siblings = (item as? Node)?.children ?? roots
+        guard siblings.indices.contains(index) else { return NSNull() }
+        return siblings[index]
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
@@ -161,7 +164,7 @@ final class AppHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
             ?? AppHistoryCellView(frame: .zero)
         cell.identifier = reuseIdentifier
         cell.configure(
-            text: node.row.values[column.index],
+            text: node.row.values.indices.contains(column.index) ? node.row.values[column.index] : "",
             detail: node.row.detail(column),
             accessibilityID: "\(node.row.id).\(column.rawValue)",
             column: column,

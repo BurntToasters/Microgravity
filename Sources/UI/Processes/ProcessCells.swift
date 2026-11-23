@@ -8,6 +8,14 @@ final class ProcessNameCellView: NSTableCellView {
 
     private let iconView = NSImageView()
     private let nameField = NSTextField(labelWithString: "")
+    private let countBadge = NSTextField(labelWithString: "")
+    private var iconLeading: NSLayoutConstraint?
+    private var iconWidth: NSLayoutConstraint?
+    private var nameLeading: NSLayoutConstraint?
+    private var badgeTrailing: NSLayoutConstraint?
+    private var nameTrailingToBadge: NSLayoutConstraint?
+    private var nameTrailingToCell: NSLayoutConstraint?
+    private var showingCountBadge = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -24,31 +32,112 @@ final class ProcessNameCellView: NSTableCellView {
         nameField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         nameField.translatesAutoresizingMaskIntoConstraints = false
 
+        countBadge.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
+        countBadge.textColor = .secondaryLabelColor
+        countBadge.alignment = .center
+        countBadge.wantsLayer = true
+        countBadge.layer?.cornerRadius = 5
+        countBadge.isBezeled = false
+        countBadge.drawsBackground = false
+        countBadge.setContentHuggingPriority(.required, for: .horizontal)
+        countBadge.setContentCompressionResistancePriority(.required, for: .horizontal)
+        countBadge.translatesAutoresizingMaskIntoConstraints = false
+        countBadge.setAccessibilityElement(false)
+
         addSubview(iconView)
         addSubview(nameField)
+        addSubview(countBadge)
         imageView = iconView
         textField = nameField
+
+        let iconLead = iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4)
+        let iconW = iconView.widthAnchor.constraint(equalToConstant: AppIconProvider.pointSize)
+        let nameLead = nameField.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 6)
+        let badgeTrail = countBadge.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6)
+        let nameToBadge = nameField.trailingAnchor.constraint(lessThanOrEqualTo: countBadge.leadingAnchor, constant: -6)
+        let nameToCell = nameField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6)
+
+        iconLeading = iconLead
+        iconWidth = iconW
+        nameLeading = nameLead
+        badgeTrailing = badgeTrail
+        nameTrailingToBadge = nameToBadge
+        nameTrailingToCell = nameToCell
+
         NSLayoutConstraint.activate([
-            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            iconLead,
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: AppIconProvider.pointSize),
+            iconW,
             iconView.heightAnchor.constraint(equalToConstant: AppIconProvider.pointSize),
-            nameField.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 6),
-            nameField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
-            nameField.centerYAnchor.constraint(equalTo: centerYAnchor)
+            nameLead,
+            nameField.centerYAnchor.constraint(equalTo: centerYAnchor),
+            countBadge.centerYAnchor.constraint(equalTo: centerYAnchor),
+            countBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 20),
+            nameToCell
         ])
     }
 
     required init?(coder: NSCoder) { nil }
 
     func configure(_ content: ProcessNameContent) {
-        nameField.stringValue = content.title
-        nameField.font = .systemFont(ofSize: 12, weight: content.isGroup ? .semibold : .regular)
+        if content.isSectionHeader {
+            nameField.stringValue = content.memberCount > 0
+                ? "\(content.title) (\(content.memberCount))"
+                : content.title
+            nameField.font = .systemFont(ofSize: 11.5, weight: .semibold)
+            nameField.textColor = .secondaryLabelColor
+            iconView.isHidden = true
+            iconWidth?.constant = 0
+            nameLeading?.constant = 0
+            countBadge.isHidden = true
+            badgeTrailing?.isActive = false
+            nameTrailingToBadge?.isActive = false
+            nameTrailingToCell?.isActive = true
+        } else {
+            nameField.stringValue = content.title
+            nameField.font = .systemFont(ofSize: 12, weight: content.isGroup ? .semibold : .regular)
+            nameField.textColor = .labelColor
+            iconView.isHidden = false
+            iconWidth?.constant = AppIconProvider.pointSize
+            nameLeading?.constant = 6
+            iconView.image = AppIconProvider.icon(forBundlePath: content.bundlePath)
+
+            let showBadge = content.memberCount > 1
+            showingCountBadge = showBadge
+            countBadge.isHidden = !showBadge
+            if showBadge {
+                countBadge.stringValue = " \(content.memberCount) "
+                applyBadgeAppearance()
+                nameTrailingToCell?.isActive = false
+                badgeTrailing?.isActive = true
+                nameTrailingToBadge?.isActive = true
+            } else {
+                nameTrailingToBadge?.isActive = false
+                badgeTrailing?.isActive = false
+                nameTrailingToCell?.isActive = true
+            }
+        }
+        if content.isSectionHeader {
+            showingCountBadge = false
+        }
         nameField.setAccessibilityIdentifier(content.accessibilityID + ".name")
         nameField.setAccessibilityLabel(content.title)
-        toolTip = content.title
+        toolTip = content.memberCount > 1 && !content.isSectionHeader
+            ? String(localized: "\(content.title) (\(content.memberCount) processes)")
+            : content.title
         setAccessibilityIdentifier(content.accessibilityID + ".cell.name")
-        iconView.image = AppIconProvider.icon(forBundlePath: content.bundlePath)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyBadgeAppearance()
+    }
+
+    private func applyBadgeAppearance() {
+        guard showingCountBadge else { return }
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            countBadge.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.28).cgColor
+        }
     }
 }
 

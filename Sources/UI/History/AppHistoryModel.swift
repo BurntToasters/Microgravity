@@ -336,6 +336,7 @@ enum AppHistorySort {
             if let dayStart = row.dayStart { return .number(dayStart.timeIntervalSince1970) }
             return .text(row.title)
         }
+        guard row.numbers.indices.contains(column.index) else { return .numeric(nil) }
         return .numeric(row.numbers[column.index])
     }
 }

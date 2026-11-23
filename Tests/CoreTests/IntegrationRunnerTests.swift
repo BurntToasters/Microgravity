@@ -4,16 +4,25 @@ import XCTest
 final class IntegrationRunnerTests: XCTestCase {
     private func run(_ runner: SamplingRunner, _ token: SamplingCancellation = SamplingCancellation()) async -> HelperSampleResponse {
         await withCheckedContinuation { continuation in
-            runner.sample(HelperSampleRequest(version: helperProtocolVersion, kind: .nettop), cancellation: token) { continuation.resume(returning: $0) }
+            runner.sample(HelperSampleRequest(version: helperProtocolVersion, kind: .powermetrics), cancellation: token) { continuation.resume(returning: $0) }
         }
     }
     func testFixedCommandsHaveNoShellOrCallerArguments() {
-        let net = SamplingRunner.fixedCommand(.nettop)
         let power = SamplingRunner.fixedCommand(.powermetrics)
-        XCTAssertEqual(net.executable, "/usr/bin/nettop")
         XCTAssertEqual(power.executable, "/usr/bin/powermetrics")
-        XCTAssertFalse(net.arguments.contains("-c"))
         XCTAssertFalse(power.arguments.contains("-c"))
+    }
+    func testRunnerAnswersUnsupportedKindWithoutLaunchingOrTakingASlot() async {
+        // The marker command would fail with commandFailed if it ran, so "unsupportedKind" proves nothing launched.
+        let runner = SamplingRunner(command: { _ in .init(executable: "/usr/bin/false", arguments: []) }, intervalNanoseconds: 60_000_000_000)
+        let rejected: HelperSampleResponse = await withCheckedContinuation { continuation in
+            runner.sample(HelperSampleRequest(version: helperProtocolVersion, kind: .processMetrics), cancellation: SamplingCancellation()) { continuation.resume(returning: $0) }
+        }
+        XCTAssertEqual(rejected.error, "unsupportedKind")
+        XCTAssertNil(rejected.output)
+        // Rejection happened before admission and before the rate-limit stamp, so powermetrics still runs.
+        let accepted = await run(runner)
+        XCTAssertEqual(accepted.error, "commandFailed")
     }
     func testPowermetricsArgumentsSampleOnlyPowerAndNoProcessTasks() {
         XCTAssertEqual(SamplingRunner.fixedCommand(.powermetrics).arguments,
@@ -30,7 +39,7 @@ final class IntegrationRunnerTests: XCTestCase {
     func testInvalidVersionAndPreCancelledRequestDoNotLaunch() async {
         let runner = SamplingRunner(command: { _ in .init(executable: "/bin/sleep", arguments: ["10"]) })
         let invalid: HelperSampleResponse = await withCheckedContinuation { continuation in
-            runner.sample(HelperSampleRequest(version: 99, kind: .nettop), cancellation: SamplingCancellation()) { continuation.resume(returning: $0) }
+            runner.sample(HelperSampleRequest(version: 99, kind: .powermetrics), cancellation: SamplingCancellation()) { continuation.resume(returning: $0) }
         }
         XCTAssertEqual(invalid.error, "incompatibleVersion")
         let token = SamplingCancellation()

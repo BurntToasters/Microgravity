@@ -43,15 +43,36 @@ enum AppComposition {
         }
         #endif
 
-        let advancedCollector = NativeAdvancedMetricsCollector()
+        let localNettopStream = NettopStreamService()
+        let ioReportCollector = IOReportCollector()
+        let hardwareSpecReader = HardwareSpecReader()
+        let workspaceApps = WorkspaceRegularAppCache()
+        let advancedCollector = NativeAdvancedMetricsCollector(
+            localNettopStream: localNettopStream,
+            shouldSamplePowermetrics: {
+                #if arch(arm64)
+                return !ioReportCollector.hasHardwareChannels
+                #else
+                return true
+                #endif
+            }
+        )
         let store = DefaultMonitoringStore(
-            collector: SystemMonitorCollector(advancedCollector: advancedCollector),
+            collector: SystemMonitorCollector(
+                advancedCollector: advancedCollector,
+                ioReportCollector: ioReportCollector,
+                hardwareSpecReader: hardwareSpecReader,
+                powerCollector: { components, timestamp in
+                    PowerTelemetryCollector.collect(components: components, at: timestamp)
+                },
+                regularAppPIDsProvider: { workspaceApps.currentPIDs }
+            ),
             historyStore: SQLiteMonitoringHistoryStore()
         )
         let storedInterval = UserDefaults.standard.double(forKey: SamplingControls.refreshIntervalDefaultsKey)
         let interval = MonitoringInterval(rawValue: storedInterval) ?? .oneSecond
         store.start(interval: interval)
-        observeAppActivation(advancedCollector)
+        observeAppActivation(advancedCollector, localNettopStream: localNettopStream)
         return AppDependencies(
             monitoringStore: store,
             processActions: PrivilegedProcessActionController(),
@@ -61,12 +82,17 @@ enum AppComposition {
     }
 
     /// The helper is approved in System Settings, outside the app, so activation is when a retry is most likely to succeed.
-    /// The observer lives for the whole process, so its token is intentionally not kept.
-    private static func observeAppActivation(_ collector: NativeAdvancedMetricsCollector) {
+    /// Also cleanly tears down the unprivileged fallback stream if the app terminates.
+    private static func observeAppActivation(_ collector: NativeAdvancedMetricsCollector,
+                                             localNettopStream: NettopStreamService) {
         _ = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
                                                    object: nil, queue: .main) { [weak collector] _ in
             guard let collector else { return }
             Task { await collector.retryHelperSoon() }
+        }
+        _ = NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification,
+                                                   object: nil, queue: .main) { _ in
+            localNettopStream.stop()
         }
     }
 
@@ -106,6 +132,54 @@ enum AppComposition {
         isXCTestHost && ProcessInfo.processInfo.arguments.contains("--ui-test-fixtures")
     }
     #endif
+}
+
+/// Thread-safe cache of GUI `.regular` application PIDs updated from `NSWorkspace` notifications on main actor.
+private final class WorkspaceRegularAppCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pids: Set<Int32>
+
+    @MainActor
+    init() {
+        self.pids = Self.readRegularPIDs()
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [
+            NSWorkspace.didLaunchApplicationNotification,
+            NSWorkspace.didTerminateApplicationNotification,
+            NSWorkspace.didActivateApplicationNotification,
+            NSWorkspace.didHideApplicationNotification,
+            NSWorkspace.didUnhideApplicationNotification
+        ] {
+            _ = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.refreshOnMainActor()
+                }
+            }
+        }
+    }
+
+    var currentPIDs: Set<Int32> {
+        lock.lock()
+        defer { lock.unlock() }
+        return pids
+    }
+
+    @MainActor
+    private func refreshOnMainActor() {
+        let updated = Self.readRegularPIDs()
+        lock.lock()
+        pids = updated
+        lock.unlock()
+    }
+
+    @MainActor
+    private static func readRegularPIDs() -> Set<Int32> {
+        Set(
+            NSWorkspace.shared.runningApplications
+                .filter { $0.activationPolicy == .regular && $0.processIdentifier > 0 }
+                .map(\.processIdentifier)
+        )
+    }
 }
 
 @MainActor

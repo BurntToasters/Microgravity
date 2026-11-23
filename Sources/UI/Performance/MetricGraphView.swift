@@ -66,6 +66,18 @@ final class MetricGraphView: NSView {
         var segments: [[NSPoint]] = []
     }
 
+    private typealias TraceResult = (traces: [Trace], gaps: [CGFloat])
+
+    /// Last `traces(in:maximum:)` result. Shared by `draw`, the gap tooltips and hover redraws; cleared whenever the
+    /// series, mapping, labels or size change.
+    private struct TraceCache {
+        let plot: NSRect
+        let maximum: Double
+        let result: TraceResult
+    }
+
+    private var traceCache: TraceCache?
+
     init(style: Style) {
         self.style = style
         super.init(frame: .zero)
@@ -84,13 +96,20 @@ final class MetricGraphView: NSView {
         self.mapping = mapping
         self.topLabel = topLabel
         self.spanLabel = spanLabel
+        traceCache = nil
         refreshGapToolTips()
         needsDisplay = true
     }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
+        traceCache = nil
         refreshGapToolTips()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -152,7 +171,17 @@ final class MetricGraphView: NSView {
         return max(values.max() ?? 1, 0.0001)
     }
 
-    private func traces(in plot: NSRect, maximum: Double) -> (traces: [Trace], gaps: [CGFloat]) {
+    /// Cached per plot rect and maximum. Callers that change series, mapping, labels or size must clear `traceCache`.
+    private func traces(in plot: NSRect, maximum: Double) -> TraceResult {
+        if let traceCache, traceCache.plot == plot, traceCache.maximum == maximum {
+            return traceCache.result
+        }
+        let result = computeTraces(in: plot, maximum: maximum)
+        traceCache = TraceCache(plot: plot, maximum: maximum, result: result)
+        return result
+    }
+
+    private func computeTraces(in plot: NSRect, maximum: Double) -> TraceResult {
         guard let end = series.compactMap({ $0.readings.last?.timestamp }).max() else { return ([], []) }
         var traces: [Trace] = []
         var gaps: [CGFloat] = []
@@ -174,9 +203,33 @@ final class MetricGraphView: NSView {
                 current.append(NSPoint(x: x, y: plot.minY + plot.height * CGFloat(fraction)))
             }
             if !current.isEmpty { trace.segments.append(current) }
+            // Per segment, so a gap still splits the line after decimation.
+            trace.segments = trace.segments.map { MetricGraphView.decimate($0) }
             traces.append(trace)
         }
         return (traces, gaps)
+    }
+
+    /// Keeps at most four points per horizontal pixel column (`floor(x)`): the first, lowest, highest and last point in
+    /// that column, emitted in x order without duplicates. Only segments with more than two points per column on
+    /// average are reduced; shorter ones come back unchanged. The visible envelope and both ends of the segment survive.
+    nonisolated static func decimate(_ points: [NSPoint]) -> [NSPoint] {
+        guard points.count > 2 else { return points }
+        var picks: [CGFloat: (first: Int, lowest: Int, highest: Int, last: Int)] = [:]
+        for (index, point) in points.enumerated() {
+            let column = point.x.rounded(.down)
+            guard var pick = picks[column] else {
+                picks[column] = (index, index, index, index)
+                continue
+            }
+            pick.last = index
+            if point.y < points[pick.lowest].y { pick.lowest = index }
+            if point.y > points[pick.highest].y { pick.highest = index }
+            picks[column] = pick
+        }
+        guard points.count > 2 * picks.count else { return points }
+        let indices = Set(picks.values.flatMap { [$0.first, $0.lowest, $0.highest, $0.last] }).sorted()
+        return indices.map { points[$0] }
     }
 
     private func uniqueGapPositions(_ gaps: [CGFloat]) -> [CGFloat] {
@@ -319,7 +372,7 @@ final class MetricGraphView: NSView {
         super.updateTrackingAreas()
         if let hoverArea { removeTrackingArea(hoverArea) }
         hoverArea = nil
-        guard style != .sparkline else { return }
+        guard style == .detail else { return }
         let area = NSTrackingArea(rect: .zero,
                                   options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
                                   owner: self, userInfo: nil)
@@ -345,7 +398,7 @@ final class MetricGraphView: NSView {
 
     /// Sets the cursor x for the readout. Values outside the plot's horizontal span clear it. Redraws only on change.
     func setHover(x: CGFloat?) {
-        guard style != .sparkline else { return }
+        guard style == .detail else { return }
         let plot = plotRect()
         let next = x.flatMap { $0 >= plot.minX && $0 <= plot.maxX ? $0 : nil }
         guard next != hoverX else { return }
@@ -409,7 +462,8 @@ final class MetricGraphView: NSView {
         // Sit right of the cursor; flip to the left when that would run past the right edge. Keep it inside bounds.
         var originX = x + 10
         if originX + boxSize.width > bounds.maxX { originX = x - 10 - boxSize.width }
-        originX = min(max(originX, bounds.minX + 2), bounds.maxX - boxSize.width - 2)
+        let maxOriginX = max(bounds.minX + 2, bounds.maxX - boxSize.width - 2)
+        originX = min(max(originX, bounds.minX + 2), maxOriginX)
         let originY = max(plot.maxY - boxSize.height, bounds.minY + 2)
         let rect = NSRect(origin: NSPoint(x: originX, y: originY), size: boxSize)
 
@@ -546,13 +600,18 @@ final class MemoryPressureStripView: NSView {
         case .critical: return .systemRed
         }
     }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
 }
 
 /// Used/total capacity bar. A nil fraction draws only the empty track.
 @MainActor
 final class CapacityBarView: NSView {
     private var fraction: Double?
-    private let tint: NSColor
+    private var tint: NSColor
 
     init(tint: NSColor) {
         self.tint = tint
@@ -567,6 +626,16 @@ final class CapacityBarView: NSView {
 
     func setFraction(_ value: Double?) {
         fraction = value.map { min(max($0, 0), 1) }
+        needsDisplay = true
+    }
+
+    func setTint(_ value: NSColor) {
+        tint = value
+        needsDisplay = true
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
         needsDisplay = true
     }
 

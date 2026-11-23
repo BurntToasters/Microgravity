@@ -28,6 +28,8 @@
 	<string>Copyright © 2026 BurntToasters and Microgravity contributors. GPL-3.0-only; no warranty.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
 	<key>SUPublicEDKey</key>
 	<string>$(SPARKLE_PUBLIC_KEY)</string>
 	<key>SUEnableAutomaticChecks</key>

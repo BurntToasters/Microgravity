@@ -3,7 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { expectedBranch, output, repository, repositoryUrl, root, run, versionInfo } from "./lib/core.mjs";
 import { githubRun } from "./lib/github.mjs";
-import { releaseNotes } from "./lib/changelog.mjs";
+import { releaseNotes, releaseNotesFailures } from "./lib/changelog.mjs";
 import { validateWorkspace } from "./validate.mjs";
 
 const escapedRepository = repository.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -99,6 +99,14 @@ function checkReleaseCredentials(failures) {
   if (ghStatus.status !== 0) failures.push("GitHub CLI authentication for github.com is required");
 }
 
+// Release notes must be a real, non-placeholder section that also renders. Pure so it can be tested without git or GitHub.
+export function releaseNotesPreflightFailures(info, contents) {
+  const failures = releaseNotesFailures(info.version, contents);
+  if (failures.length) return failures;
+  try { releaseNotes(info, contents); } catch (error) { return [error.message]; }
+  return [];
+}
+
 export function betaReleaseAllowed(version, stableTags) {
   return !version.includes("-beta.") || stableTags.some((tag) => !tag.includes("-beta."));
 }
@@ -133,7 +141,7 @@ export function runPreflight({ release = false } = {}) {
   if (!betaReleaseAllowed(info.version, stableTags)) failures.push("beta publishing is blocked until a stable release is public");
   if (release) {
     checkReleaseCredentials(failures);
-    try { releaseNotes(info, fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8")); } catch (error) { failures.push(error.message); }
+    try { failures.push(...releaseNotesPreflightFailures(info, fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8"))); } catch (error) { failures.push(error.message); }
   }
   if (failures.length) throw new Error(`release preflight failed:\n- ${failures.join("\n- ")}`);
   console.log(`release preflight: ok (${info.tag}, ${info.channel})`);

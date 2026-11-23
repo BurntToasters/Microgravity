@@ -1,24 +1,47 @@
 # Implementation status
 
-Latest status for Microgravity 0.1.2 on branch `next-0.1.2`, checked 2026-11-08
-(see Latest results below). The 0.1.0 gate record from 2026-11-07 is kept under
-Earlier record. It ran on macOS 27.2 build 26B123 (arm64 virtual machine), Xcode
-27.2 (27B52), Node.js 26.13.0, against commit `ec836a6` plus the uncommitted
-`gate/0.1.0` changes. It was run from an isolated worktree outside `~/Documents`
-whose changed-file bytes matched the canonical tree. Re-run the full release
-gates from a clean canonical checkout before tagging.
+Latest status for Microgravity 0.3.0 on branch `next-0.3.0`, checked 2026-11-23.
+Core tests and the remaining checks for the latest telemetry changes are on a
+physical Apple M5 Pro (`Mac17,9`, macOS 27.2.1). The 0.3.0 gate results recorded
+earlier on a virtual machine (`VirtualMac2,1`) are superseded by the table below.
+Historical 0.1.2 and 0.1.0 gate records are kept under Earlier records below.
+Re-run signed release and UI gates from a clean checkout outside `~/Documents`
+(plus physical Apple Silicon and Intel hardware checks for live
+SMC/IOReport/AC-Battery power) before tagging.
 
 Intended behavior is in [UI acceptance](UI_ACCEPTANCE.md). Collector, history,
 and process-action regressions are in [core failure cases](FAILURE_CASES_CORE.md).
-The release procedure and the 0.1.0 UI gate are in [RELEASING.md](RELEASING.md).
+The release procedure and the manual UI checklist are in [RELEASING.md](RELEASING.md).
 
-## 0.2.0 (in progress)
+## 0.3.0
 
-Microgravity 0.2.0 adds these surfaces: Performance graph hover readouts, a legend for two-series graphs, 1 h graph history with 1 min, 5 min, 15 min and 1 h windows, and memory breakdown stats; the Processes Inspect popover, per-column heat colors, remembered grouping, and selection bar counts; View menu Pause Sampling and Refresh Interval; Details and Startup/Services context menus; App History search; and a Settings version line. The signed UI test suite has not yet been re-run for these surfaces, so the results below cover 0.1.2 and do not establish that they pass.
+Microgravity 0.3.0 overhauls live telemetry, process grouping, and Task Manager UI ergonomics:
+
+- **1-second hybrid telemetry (`helperProtocolVersion = 2`):** Adds native IOKit `AppleSMC` (`PSTR`/`PDTR`/`PB0R`) and `AppleSmartBattery`/`IOPowerSources` collectors (normalizing discharge sign across battery sources and prioritizing internal battery records), dynamic `libIOReport` GPU % (lazy channel initialization so Tick 1 avoids unnecessary fallback) and Apple Silicon component power rails (`CPU`, `GPU`, `ANE`, `DRAM`), cached static hardware specs (`HardwareSpecReader`), and a rootless `nettop` external-socket delta stream (`NettopStreamService`, run by the app under `script` so it stops when the app dies, with monotonic sequence continuity across restarts and stalled-before-first-frame recovery). The helper serves `.processMetrics` (`proc_pidinfo`, `rusage_info_v4`, `proc_pidpath`) and `.powermetrics` over XPC with connection reuse; it no longer runs `nettop`. `HelperTerminationPolicy` single-process termination rules remain unchanged.
+- **Telemetry pacing:** Network refreshes synchronously at most every 0.9 s and never waits for the helper. The helper is refreshed in the background (0.9 s when healthy, 5 s after a failure, 60 s while unavailable). IOReport subscribes only to channels that feed a reading, and slow energy counters are rated over their measured refresh period, so CPU power no longer alternates between 0 W and twice its value. Helper per-process counters are rated over their capture time.
+- **Honest zeros & routine lifecycle handling:** Live processes absent from an active streaming `nettop` frame show `0 B/s` (`idleZeroInterval`) only when process identity lookup succeeded (instead of `!` unavailable badges or fake `0` when enumeration fails), while `.warmingUp`, `.processExited`, `.identityChanged`, and sub-50 ms interval jitter no longer trigger false `!` warnings in Processes or false `≥` gaps in App History.
+- **Grouping & Processes UI:** Deduplicates `.app` bundle groups by `(bundlePath, ownerUID)` selecting the main `Contents/MacOS` binary as leader, keeps `launchd` UID 0 from claiming standard-user trees, classifies processes into `Apps`, `Background processes`, and `System processes`, removes disclosure triangles from 1-process groups (trailing member-count pill with dynamic Light/Dark contrast), adds combined compact `Disk` (`0 B/s`) plus optional `Disk Read`/`Disk Write` columns, fixes `.inset` `fitNameColumn` width calculation, shows contextual `EmptyStateView` search/scope/unavailable overlays, uses group directional network rates in `ProcessInspector`, and updates the live summary strip on color changes.
+- **Performance, Details, Inventory, Settings & Window:** Adds hardware spec headers, `MemoryCompositionBarView` (with wrapping legend flow and proportional non-overflowing bar segments), AC + Battery `System Power` / thermal / adapter / component UI under Energy, sorted and collapsible virtual interfaces, frame-based `MetricStatsGridView`, `.detail`-scoped hover inspection, dynamic appearance redraws across custom Performance views, optional `Threads` / `Architecture` / `CPU Time` columns plus context-menu `Quit Process` / `Force Quit…` / `Inspect…` in Details, toolbar search & empty-search states on Startup/Services/Users, in-flight integration guards & wrapping Settings helper caption sizing, post-column `autosaveName` ordering, and `View > Always on Top` (`⌥⌘T`).
+
+The signed UI automation suite (`MicrogravityUITests`) has not been run for 0.3.0.
+Release gates for 0.3.0: core gate (`npm run test:all -- --skip-ui`) pass on 2026-11-23; full gate (`npm run test:all`) pass on 2026-11-23; release smoke (`npm run build:release-smoke`) pass on 2026-11-23.
+Physical-Mac checks have started on the Apple M5 Pro; the rest are listed below.
 
 ## Verification
 
-### Latest results (2026-11-08, branch `next-0.1.2`)
+### Latest results (2026-11-23, branch `next-0.3.0`)
+
+| Gate | Command | Result |
+| --- | --- | --- |
+| Project sync | `npm run project:sync -- --check` | pass (current) |
+| Workspace validation | `npm run validate` | pass |
+| Core XCTest, Apple M5 Pro (`Mac17,9`, macOS 27.2.1) | full `MicrogravityCoreTests` suite | pass on 2026-11-23 with all changes, 481 tests, 0 failures. |
+| Node tests, debug build, release smoke | `npm run test:node`, `npm run build:debug`, `npm run build:release-smoke` | Node 39/39 pass and release smoke pass on 2026-11-23. The Debug build is covered by `npm run test:all`; it was not run on its own. |
+| Composite `npm run test:all -- --skip-ui` | `npm run test:all -- --skip-ui` | pass on 2026-11-23. The run from `~/Documents` completed; if it hangs on a Documents TCC prompt, run from a checkout outside `~/Documents`. |
+| Signed UI XCTest | `MicrogravityUITests` | Unsigned full gate passed on 2026-11-23 (25 UI tests, 0 failures); a signed run is still pending. Run outside `~/Documents`. |
+| Physical Mac checks (M5 Pro) | see [ADVANCED_METRICS.md](ADVANCED_METRICS.md#verification-status) | pending: orphan check with `kill -9`, no root nettop, steady CPU power, DRAM shown, helper CPU % steady at 0.5 s, network without helper, UI parity. Intel and AC/Battery checks, and the signed Developer ID helper XPC checks, are also pending. |
+
+### Earlier record: 0.1.2 (2026-11-08, branch `next-0.1.2`)
 
 | Gate | Command | Result |
 | --- | --- | --- |
@@ -115,7 +138,7 @@ Integration:
 - The privileged helper checks the client code signature, accepts fixed
   commands only, bounds its output, and uses single-use authorization.
 - The three XPC single-reply wrappers share `XPCSingleReply`.
-- Advanced metrics run through the helper (see [ADVANCED_METRICS.md](ADVANCED_METRICS.md)). Process identities for helper network samples come from the `KERN_PROC_ALL` table, which includes other users' processes. Refreshes retry immediately when the app becomes active.
+- Advanced metrics merge two sources (see [ADVANCED_METRICS.md](ADVANCED_METRICS.md)): per-process network from the app's own nettop stream, and GPU, energy and per-process system counters from the helper. Process identities for network samples come from the `KERN_PROC_ALL` table, which includes other users' processes. A helper that was unavailable is checked again when the app becomes active.
 - Sparkle automatic checks stay off unless a public key is configured.
 
 UI (AppKit):

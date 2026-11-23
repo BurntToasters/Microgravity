@@ -73,6 +73,9 @@ enum MainMenu {
         let toggle = NSMenuItem(title: String(localized: "Toggle Sidebar"), action: #selector(MainWindowController.toggleSidebar(_:)), keyEquivalent: "s")
         toggle.keyEquivalentModifierMask = [.command, .option]
         items.append(toggle)
+        let alwaysOnTop = NSMenuItem(title: String(localized: "Always on Top"), action: #selector(MainWindowController.toggleAlwaysOnTop(_:)), keyEquivalent: "t")
+        alwaysOnTop.keyEquivalentModifierMask = [.command, .option]
+        items.append(alwaysOnTop)
         items.append(.separator())
         // Title flips to "Resume Sampling" during validation (MainWindowController).
         let pause = NSMenuItem(title: String(localized: "Pause Sampling"), action: #selector(MainWindowController.toggleSampling(_:)), keyEquivalent: "p")

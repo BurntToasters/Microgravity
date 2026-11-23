@@ -20,6 +20,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
 
     private static let columnVisibilityKey = "process.columns.visibility"
     private static let groupingDefaultsKey = "process.grouping"
+    private static let scopeDefaultsKey = "process.scope"
     private static let autosaveName = "process.outline"
     private static let systemProtectedMessage = String(localized: "System processes are protected and can't be quit from Microgravity.")
     /// Longest diff applied row by row; longer changes at one level reload that level instead.
@@ -34,8 +35,10 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     private let dependencies: PageDependencies
     private let defaults: UserDefaults
     private let outlineAutosaveName: String?
+    private let summaryStrip = ProcessSummaryStripView()
     private let outlineView = NSOutlineView()
     private let outlineScroll = NSScrollView()
+    private var emptyState: EmptyStateView?
     private let selectionBar = ProcessSelectionBar()
 
     private let searchItem = NSSearchToolbarItem(itemIdentifier: ToolbarItemID.search)
@@ -54,16 +57,19 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     private var items: [ProcessRowID: ProcessRowItem] = [:]
     /// Top-level rows as the outline view currently shows them.
     private var topLevelIDs: [ProcessRowID] = []
-    /// Member rows of each group the outline view currently shows expanded.
+    /// Member rows of each group or section the outline view currently shows expanded.
     private var shownChildren: [ProcessRowID: [ProcessRowID]] = [:]
     private var rowsByID: [ProcessRowID: ProcessRow] = [:]
     /// Expanded groups, keyed by the full group identity and restored from preferences.
     private var expandedGroups: Set<ProcessIdentity>
+    private var collapsedCategories = Set<ProcessCategory>()
     private var collapsedDuringSearch = Set<ProcessIdentity>()
     private var selectedID: ProcessRowID?
+    private var cachedMatchingProcessCount: Int?
     private var sort = ProcessSortState(column: .cpu, ascending: false)
     /// Restored from and saved to `process.grouping`.
     private(set) var grouping: ProcessGrouping = .byApp
+    private(set) var scopeFilter: ProcessScopeFilter = .all
     /// Explicit column visibility choices from the header menu. Columns without a choice follow capability.
     private var columnOverrides: [String: Bool]
     /// True while the controller changes the outline itself, so delegate callbacks are not user actions.
@@ -92,6 +98,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         columnOverrides = self.defaults.dictionary(forKey: ProcessesViewController.columnVisibilityKey)
             as? [String: Bool] ?? [:]
         grouping = Self.restoredGrouping(from: self.defaults)
+        scopeFilter = Self.restoredScopeFilter(from: self.defaults)
         super.init(nibName: nil, bundle: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(colorPreferencesChanged),
                                                name: .colorPreferencesDidChange, object: nil)
@@ -103,9 +110,17 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
 
     required init?(coder: NSCoder) { nil }
 
-    /// `"flat"` lists every process; anything else, including no saved choice, groups by app.
+    /// Restores process grouping mode; defaults to `.byApp`.
     static func restoredGrouping(from defaults: UserDefaults) -> ProcessGrouping {
-        defaults.string(forKey: groupingDefaultsKey) == "flat" ? .flat : .byApp
+        switch defaults.string(forKey: groupingDefaultsKey) {
+        case "flat": return .flat
+        case "byCategory": return .byCategory
+        default: return .byApp
+        }
+    }
+
+    static func restoredScopeFilter(from defaults: UserDefaults) -> ProcessScopeFilter {
+        defaults.string(forKey: scopeDefaultsKey).flatMap(ProcessScopeFilter.init(rawValue:)) ?? .all
     }
 
     override func loadView() {
@@ -124,6 +139,10 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         configureOutline()
         configureToolbarItems()
         selectionBar.onInspect = { [weak self] in self?.inspectSelectedProcess(nil) }
+        summaryStrip.onSelectMetric = { [weak self] metric in
+            (self?.view.window?.contentViewController as? RootViewController)?.showPerformance(metric: metric)
+        }
+        summaryStrip.update(snapshot: nil)
 
         outlineScroll.documentView = outlineView
         outlineScroll.hasVerticalScroller = true
@@ -133,17 +152,24 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         outlineScroll.borderType = .noBorder
         outlineScroll.setContentHuggingPriority(.defaultLow, for: .vertical)
         outlineScroll.translatesAutoresizingMaskIntoConstraints = false
+        emptyState = EmptyStateView.install(in: outlineScroll, symbolName: "list.bullet.rectangle",
+                                            title: String(localized: "No processes"))
+        outlineScroll.contentView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(outlineClipViewFrameChanged),
+                                               name: NSView.frameDidChangeNotification,
+                                               object: outlineScroll.contentView)
         selectionBar.translatesAutoresizingMaskIntoConstraints = false
 
-        let content = NSStackView(views: [headerRow, outlineScroll, selectionBar])
+        let content = NSStackView(views: [headerRow, summaryStrip, outlineScroll, selectionBar])
         content.orientation = .vertical
         content.alignment = .leading
-        content.spacing = 12
+        content.spacing = 10
         content.translatesAutoresizingMaskIntoConstraints = false
-        content.setCustomSpacing(16, after: headerRow)
+        content.setCustomSpacing(12, after: headerRow)
         view.addSubview(content)
         NSLayoutConstraint.activate(PageLayout.pin(content, in: view) + [
             headerRow.widthAnchor.constraint(equalTo: content.widthAnchor),
+            summaryStrip.widthAnchor.constraint(equalTo: content.widthAnchor),
             outlineScroll.widthAnchor.constraint(equalTo: content.widthAnchor),
             outlineScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 250),
             selectionBar.widthAnchor.constraint(equalTo: content.widthAnchor)
@@ -173,11 +199,24 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         fitNameColumn(force: false)
     }
 
+    @objc private func outlineClipViewFrameChanged() {
+        fitNameColumn(force: false)
+    }
+
     /// Name width that fills the visible table exactly, never below its minimum. Restored or hand-tuned
     /// widths from a wider window would otherwise leave Name wide enough to push the metric columns
     /// out of view.
     static func fittedNameWidth(visibleWidth: CGFloat, otherColumnWidths: CGFloat, minimum: CGFloat) -> CGFloat {
         max(minimum, (visibleWidth - otherColumnWidths).rounded(.down))
+    }
+
+    static func fittedNameWidth(visibleWidth: CGFloat,
+                                otherColumnWidths: CGFloat,
+                                minimum: CGFloat,
+                                horizontalInset: CGFloat) -> CGFloat {
+        fittedNameWidth(visibleWidth: visibleWidth - horizontalInset,
+                        otherColumnWidths: otherColumnWidths,
+                        minimum: minimum)
     }
 
     /// Refits Name when the visible width changes (window resize, first layout after restoring saved
@@ -189,7 +228,9 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         guard force || abs(clipWidth - lastFittedWidth) > 0.5 else { return }
         lastFittedWidth = clipWidth
         let others = outlineView.tableColumns.filter { !$0.isHidden && $0 !== name }.reduce(CGFloat(0)) { $0 + $1.width }
-        let target = Self.fittedNameWidth(visibleWidth: clipWidth, otherColumnWidths: others, minimum: name.minWidth)
+        let horizontalInset: CGFloat = outlineView.style == .inset ? 36 : 4
+        let target = Self.fittedNameWidth(visibleWidth: clipWidth, otherColumnWidths: others,
+                                          minimum: name.minWidth, horizontalInset: horizontalInset)
         if abs(name.width - target) > 0.5 { name.width = target }
     }
 
@@ -212,6 +253,8 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         outlineView.gridStyleMask = []
         outlineView.selectionHighlightStyle = .regular
         outlineView.indentationPerLevel = 16
+        outlineView.target = self
+        outlineView.doubleAction = #selector(handleDoubleClick(_:))
 
         for column in ProcessColumn.allCases {
             let tableColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(column.rawValue))
@@ -226,6 +269,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             }
             tableColumn.sortDescriptorPrototype = NSSortDescriptor(key: column.rawValue, ascending: true)
             tableColumn.headerCell.setAccessibilityIdentifier(column.rawValue)
+            tableColumn.isHidden = column.isHideable ? columnHidden(column) : false
             outlineView.addTableColumn(tableColumn)
             if column == .name { outlineView.outlineTableColumn = tableColumn }
         }
@@ -256,30 +300,32 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
 
     private static func defaultWidth(for column: ProcessColumn) -> CGFloat {
         switch column {
-        // Without GPU, the defaults sum to 700 pt: name plus the six metric columns fit the 960 pt minimum window
-        // once the inset outline's padding and disclosure indent are counted. Disk fits "R 326 KB/s · W 65 KB/s"
-        // at 12 pt (about 133 pt of text plus insets).
+        // Default visible columns excluding GPU sum to 462 pt + Name, leaving generous room at 960 pt with .inset padding.
         case .name: return 160
-        case .pid: return 52
+        case .pid: return 54
         case .user: return 76
-        case .cpu: return 72
+        case .cpu: return 68
         case .memory: return 84
-        case .disk: return 160
-        case .network: return 96
-        case .gpu: return 100
+        case .disk: return 88
+        case .diskRead: return 88
+        case .diskWrite: return 88
+        case .network: return 92
+        case .gpu: return 92
         }
     }
 
     private static func minimumWidth(for column: ProcessColumn) -> CGFloat {
         switch column {
-        case .name: return 160
-        case .pid: return 52
-        case .user: return 72
+        case .name: return 150
+        case .pid: return 50
+        case .user: return 68
         case .cpu: return 64
-        case .memory: return 84
-        case .disk: return 140
-        case .network: return 96
-        case .gpu: return 84
+        case .memory: return 80
+        case .disk: return 76
+        case .diskRead: return 76
+        case .diskWrite: return 76
+        case .network: return 84
+        case .gpu: return 80
         }
     }
 
@@ -317,15 +363,33 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         let byApp = NSMenuItem(title: String(localized: "Group by App"), action: #selector(setProcessGrouping(_:)), keyEquivalent: "")
         byApp.tag = 0
         byApp.target = self
+        let byCategory = NSMenuItem(title: String(localized: "By Category"), action: #selector(setProcessGrouping(_:)), keyEquivalent: "")
+        byCategory.tag = 2
+        byCategory.target = self
         let flat = NSMenuItem(title: String(localized: "Flat List"), action: #selector(setProcessGrouping(_:)), keyEquivalent: "")
         flat.tag = 1
         flat.target = self
+        let scopeAll = NSMenuItem(title: String(localized: "All Processes"), action: #selector(setProcessScope(_:)), keyEquivalent: "")
+        scopeAll.tag = 100
+        scopeAll.target = self
+        let scopeApps = NSMenuItem(title: String(localized: "Apps Only"), action: #selector(setProcessScope(_:)), keyEquivalent: "")
+        scopeApps.tag = 101
+        scopeApps.target = self
+        let scopeMine = NSMenuItem(title: String(localized: "My Processes"), action: #selector(setProcessScope(_:)), keyEquivalent: "")
+        scopeMine.tag = 102
+        scopeMine.target = self
+
         groupingMenu.addItem(byApp)
+        groupingMenu.addItem(byCategory)
         groupingMenu.addItem(flat)
+        groupingMenu.addItem(.separator())
+        groupingMenu.addItem(scopeAll)
+        groupingMenu.addItem(scopeApps)
+        groupingMenu.addItem(scopeMine)
         groupingMenu.autoenablesItems = false
         groupingItem.label = String(localized: "Grouping")
         groupingItem.paletteLabel = String(localized: "Grouping")
-        groupingItem.toolTip = String(localized: "Group processes by app, or list them flat")
+        groupingItem.toolTip = String(localized: "Group or filter processes")
         groupingItem.image = NSImage(systemSymbolName: "rectangle.3.group", accessibilityDescription: String(localized: "Grouping"))
         groupingItem.menu = groupingMenu
         groupingItem.showsIndicator = true
@@ -359,6 +423,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             expandedGroups = retainedExpansions
             persistExpandedGroups()
         }
+        summaryStrip.update(snapshot: snapshot)
         applyColumnVisibility()
         applyModel()
         refreshInspector()
@@ -376,7 +441,10 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             sort: sort,
             expandedGroups: expandedGroups,
             collapsedDuringSearch: collapsedDuringSearch,
-            ownerName: { UIFormat.ownerName($0) }
+            ownerName: { UIFormat.ownerName($0) },
+            scopeFilter: scopeFilter,
+            currentUID: UInt32(getuid()),
+            collapsedCategories: collapsedCategories
         )
     }
 
@@ -384,7 +452,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         searchItem.searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Rebuilds the desired layout and applies the difference to the outline view.
+    /// Rebuilds the desired layout and applies the difference to the outline view across all hierarchy levels.
     private func applyModel() {
         let previousRows = rowsByID
         let output = ProcessRowModel.build(makeInput())
@@ -393,61 +461,161 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         isApplyingModel = true
         defer { isApplyingModel = false }
 
-        // Collapse groups the new layout no longer expands, so their member rows leave first.
-        for id in Array(shownChildren.keys) where output.children[id] == nil {
+        // Collapse deepest nodes first when their expansion leaves the model: member rows before the sections
+        // that hold them. The order is total, so equal rows never compare as less than each other.
+        let removedParents = Array(shownChildren.keys)
+            .filter { output.children[$0] == nil }
+            .sorted(by: Self.collapseOrderPrecedes)
+        for id in removedParents {
             if let item = items[id], outlineView.row(forItem: item) >= 0 {
                 withoutAnimation { outlineView.collapseItem(item) }
             }
             shownChildren[id] = nil
         }
 
-        // A level whose diff is longer than the limit is reloaded instead. Sampling reorders most rows on every
-        // refresh, and one move per row costs more than a reload of that level.
-        if let topOperations = ProcessRowModel.boundedOperations(from: topLevelIDs, to: output.topLevel,
-                                                                 limit: Self.incrementalOperationLimit) {
-            var childOperations: [(parent: ProcessRowID, operations: [ProcessRowDiffOperation<ProcessRowID>])] = []
-            var reloadedChildLevels: [ProcessRowID] = []
-            for id in output.topLevel {
-                guard let shown = shownChildren[id], let wanted = output.children[id] else { continue }
-                guard let operations = ProcessRowModel.boundedOperations(from: shown, to: wanted,
-                                                                         limit: Self.incrementalOperationLimit) else {
-                    reloadedChildLevels.append(id)
-                    continue
-                }
-                if !operations.isEmpty { childOperations.append((id, operations)) }
-            }
-            // Rows change place instantly so the table never slides under the user.
-            withoutAnimation {
-                outlineView.beginUpdates()
-                for operation in topOperations {
-                    perform(operation, parent: nil)
-                }
-                for (parent, operations) in childOperations {
-                    for operation in operations {
-                        perform(operation, parent: parent)
-                    }
-                }
-                outlineView.endUpdates()
-            }
-            for id in reloadedChildLevels {
-                reloadChildLevel(id, wanted: output.children[id] ?? [])
-            }
-        } else {
+        // A row under a new parent cannot be moved step by step: its old copy would still be in the outline.
+        if hasReparentedRows(output) {
             reloadTopLevel(output)
+        } else {
+            reconcileTopLevel(output)
         }
+        reconcileChildLevels(output)
 
-        // Groups that are newly expanded: their members are inserted after the group row exists.
-        for id in output.topLevel where shownChildren[id] == nil {
-            guard let wanted = output.children[id], let item = items[id] else { continue }
-            shownChildren[id] = wanted
-            withoutAnimation { outlineView.expandItem(item) }
+        // Safety net: if the outline still disagrees with the mirror, reload the top level once and redo the pass.
+        if outlineView.numberOfRows != visibleRowIDs.count {
+            reloadTopLevel(output)
+            reconcileChildLevels(output)
         }
 
         reloadChangedCells(previous: previousRows, next: output)
         rowsByID = output.rows
         items = items.filter { output.rows[$0.key] != nil }
+        updateCachedMatchingProcessCount()
+        updateEmptyState(output: output)
         syncSelection(visible: visibleRowIDs)
         updateSelectionDetails()
+    }
+
+    /// Member rows collapse before the sections that hold them; rows of one kind are ordered by their description.
+    private static func collapseOrderPrecedes(_ lhs: ProcessRowID, _ rhs: ProcessRowID) -> Bool {
+        let lhsIsSection: Bool
+        if case .section = lhs { lhsIsSection = true } else { lhsIsSection = false }
+        let rhsIsSection: Bool
+        if case .section = rhs { rhsIsSection = true } else { rhsIsSection = false }
+        if lhsIsSection != rhsIsSection { return !lhsIsSection }
+        return String(describing: lhs) < String(describing: rhs)
+    }
+
+    /// Each nested row mapped to its parent, for the rows reachable from `topLevel` through `children`.
+    private static func nestedParents(topLevel: [ProcessRowID],
+                                      children: [ProcessRowID: [ProcessRowID]]) -> [ProcessRowID: ProcessRowID] {
+        var parents: [ProcessRowID: ProcessRowID] = [:]
+        var queue = topLevel
+        var cursor = 0
+        while cursor < queue.count {
+            let parent = queue[cursor]
+            cursor += 1
+            for child in children[parent] ?? [] {
+                parents[child] = parent
+                queue.append(child)
+            }
+        }
+        return parents
+    }
+
+    /// True when a row present both in the mirror and in `output` has a different parent (nil for top level).
+    private func hasReparentedRows(_ output: ProcessOutline) -> Bool {
+        let mirrorParents = Self.nestedParents(topLevel: topLevelIDs, children: shownChildren)
+        let layoutParents = Self.nestedParents(topLevel: output.topLevel, children: output.children)
+        let mirrorRows = Set(topLevelIDs).union(mirrorParents.keys)
+        let layoutRows = Set(output.topLevel).union(layoutParents.keys)
+        return mirrorRows.intersection(layoutRows).contains { mirrorParents[$0] != layoutParents[$0] }
+    }
+
+    private func reconcileTopLevel(_ output: ProcessOutline) {
+        guard let topOperations = ProcessRowModel.boundedOperations(from: topLevelIDs, to: output.topLevel,
+                                                                    limit: Self.incrementalOperationLimit) else {
+            reloadTopLevel(output)
+            return
+        }
+        guard !topOperations.isEmpty else { return }
+        withoutAnimation {
+            outlineView.beginUpdates()
+            for operation in topOperations {
+                perform(operation, parent: nil)
+            }
+            outlineView.endUpdates()
+        }
+    }
+
+    /// Reconciles expanded sections and groups breadth-first so parent rows exist before their child groups expand.
+    private func reconcileChildLevels(_ output: ProcessOutline) {
+        var queue = topLevelIDs
+        var cursor = 0
+        while cursor < queue.count {
+            let parentID = queue[cursor]
+            cursor += 1
+            guard let wanted = output.children[parentID] else { continue }
+            if let shown = shownChildren[parentID] {
+                if let operations = ProcessRowModel.boundedOperations(from: shown, to: wanted,
+                                                                      limit: Self.incrementalOperationLimit) {
+                    if !operations.isEmpty {
+                        withoutAnimation {
+                            outlineView.beginUpdates()
+                            for operation in operations {
+                                perform(operation, parent: parentID)
+                            }
+                            outlineView.endUpdates()
+                        }
+                    }
+                } else {
+                    reloadChildLevel(parentID, wanted: wanted)
+                }
+            } else if let item = items[parentID] {
+                shownChildren[parentID] = wanted
+                withoutAnimation { outlineView.expandItem(item) }
+            }
+            queue.append(contentsOf: wanted)
+        }
+    }
+
+    private func updateCachedMatchingProcessCount() {
+        let query = searchQuery
+        if query.isEmpty && scopeFilter == .all {
+            cachedMatchingProcessCount = nil
+            return
+        }
+        cachedMatchingProcessCount = ProcessRowModel.matchingProcessCount(makeInput())
+    }
+
+    private func updateEmptyState(output: ProcessOutline) {
+        guard let emptyState else { return }
+        guard currentSnapshot != nil else {
+            emptyState.isHidden = true
+            return
+        }
+        let isEmpty = output.topLevel.isEmpty
+        emptyState.isHidden = !isEmpty
+        guard isEmpty else { return }
+
+        let processAvailability = currentSnapshot?.capabilities[.processes]
+        if let processAvailability, !processAvailability.available {
+            emptyState.update(symbolName: "exclamationmark.triangle",
+                              title: String(localized: "Processes unavailable"),
+                              caption: UIFormat.availability(processAvailability))
+        } else if !searchQuery.isEmpty {
+            emptyState.update(symbolName: "magnifyingglass",
+                              title: String(localized: "No processes match “\(searchQuery)”"),
+                              caption: String(localized: "Try a different name, path, owner, or PID."))
+        } else if scopeFilter != .all {
+            emptyState.update(symbolName: "line.3.horizontal.decrease.circle",
+                              title: String(localized: "No matching processes"),
+                              caption: String(localized: "No live processes match the selected filter."))
+        } else {
+            emptyState.update(symbolName: "list.bullet.rectangle",
+                              title: String(localized: "No processes"),
+                              caption: String(localized: "Process discovery returned no rows."))
+        }
     }
 
     /// Reloads the top level when its diff is too long to apply step by step. The reload collapses every group,
@@ -468,8 +636,11 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     /// Reloads one expanded group's member rows in place when its diff is too long to apply step by step.
     private func reloadChildLevel(_ parent: ProcessRowID, wanted: [ProcessRowID]) {
         guard let item = items[parent] else { return }
-        shownChildren[parent] = wanted
         withoutAnimation {
+            // The reload drops the child rows, so their expansion and mirror entries go too. The breadth-first
+            // pass re-expands the nested groups that `wanted` still expands.
+            collapseDescendants(of: parent)
+            shownChildren[parent] = wanted
             let wasExpanded = outlineView.isItemExpanded(item)
             outlineView.reloadItem(item, reloadChildren: true)
             if wasExpanded, !outlineView.isItemExpanded(item) {
@@ -478,8 +649,32 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         }
     }
 
+    /// Collapses every row below `parent` that the mirror shows, deepest first, and clears their mirror entries.
+    private func collapseDescendants(of parent: ProcessRowID) {
+        for child in shownChildren[parent] ?? [] {
+            collapseDescendants(of: child)
+            if let item = items[child], outlineView.row(forItem: item) >= 0 {
+                outlineView.collapseItem(item)
+            }
+            shownChildren[child] = nil
+        }
+    }
+
+    /// Test hook: the rows the mirror says the outline shows, top to bottom.
+    var mirroredRowIDs: [ProcessRowID] { visibleRowIDs }
+
     private var visibleRowIDs: [ProcessRowID] {
-        topLevelIDs.flatMap { [$0] + (shownChildren[$0] ?? []) }
+        var result: [ProcessRowID] = []
+        func append(_ id: ProcessRowID) {
+            result.append(id)
+            for child in shownChildren[id] ?? [] {
+                append(child)
+            }
+        }
+        for id in topLevelIDs {
+            append(id)
+        }
+        return result
     }
 
     /// Applies one diff step to the outline and to the mirror, which must change together.
@@ -557,7 +752,10 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             guard !changed.isEmpty else { continue }
             rowIndexes.insert(row)
             for column in changed {
-                columnIndexes.insert(outlineView.column(withIdentifier: NSUserInterfaceItemIdentifier(column.rawValue)))
+                let columnIndex = outlineView.column(withIdentifier: NSUserInterfaceItemIdentifier(column.rawValue))
+                if columnIndex >= 0 {
+                    columnIndexes.insert(columnIndex)
+                }
             }
         }
         if !rowIndexes.isEmpty {
@@ -569,7 +767,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     /// are reloaded in place. Row identity does not change, so the selection stays put and nothing animates.
     @objc private func colorPreferencesChanged() {
         let rows = IndexSet(integersIn: 0..<outlineView.numberOfRows)
-        let columns = IndexSet([ProcessColumn.cpu, .memory, .disk, .network].compactMap { column -> Int? in
+        let columns = IndexSet([ProcessColumn.cpu, .memory, .disk, .diskRead, .diskWrite, .network].compactMap { column -> Int? in
             let index = outlineView.column(withIdentifier: NSUserInterfaceItemIdentifier(column.rawValue))
             return index >= 0 ? index : nil
         })
@@ -583,25 +781,36 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             self.selectedID = nil
         }
         selectedID = ProcessRowModel.selection(after: selectedID, visible: visible)
-        if let selectedID, let index = visible.firstIndex(of: selectedID) {
-            if outlineView.selectedRow != index {
-                outlineView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        if let selectedID, let item = items[selectedID] {
+            let row = outlineView.row(forItem: item)
+            if row >= 0 {
+                if outlineView.selectedRow != row {
+                    outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                }
+                return
             }
-        } else if outlineView.selectedRow != -1 {
+        }
+        if outlineView.selectedRow != -1 {
             outlineView.deselectAll(nil)
         }
     }
 
     // MARK: - Columns
 
-    /// A column is hidden when the user hid it; otherwise GPU and Network hide when their capability is unavailable.
+    /// A column is hidden when the user hid it; Disk Read/Write default hidden; GPU/Network follow capability.
     private func columnHidden(_ column: ProcessColumn) -> Bool {
         if let override = columnOverrides[column.suffix] { return !override }
-        guard let snapshot = currentSnapshot else { return false }
         switch column {
-        case .network: return snapshot.capabilities[.processNetwork]?.available != true
-        case .gpu: return snapshot.capabilities[.processGPUTime]?.available != true
-        default: return false
+        case .diskRead, .diskWrite:
+            return true
+        case .network:
+            guard let snapshot = currentSnapshot else { return false }
+            return snapshot.capabilities[.processNetwork]?.available != true
+        case .gpu:
+            guard let snapshot = currentSnapshot else { return true }
+            return snapshot.capabilities[.processGPUTime]?.available != true
+        default:
+            return false
         }
     }
 
@@ -609,6 +818,16 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     /// so a Name width the user dragged survives every sample.
     @discardableResult
     private func applyColumnVisibility(forceFit: Bool = false) -> Bool {
+        let wasOffscreen = outlineView.enclosingScrollView == nil
+        if wasOffscreen {
+            // Avoid dumping newly hidden columns' widths into Name before the outline has a scroll view.
+            outlineView.columnAutoresizingStyle = .noColumnAutoresizing
+        }
+        defer {
+            if wasOffscreen {
+                outlineView.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
+            }
+        }
         var changed = false
         for column in ProcessColumn.allCases where column.isHideable {
             guard let tableColumn = outlineView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(column.rawValue)) else { continue }
@@ -643,7 +862,7 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     // MARK: - Selection details
 
     private var selectedProcess: ProcessSnapshot? {
-        selectedID.flatMap { processByIdentity[$0.identity] }
+        selectedID?.processIdentity.flatMap { processByIdentity[$0] }
     }
 
     private var selectedPath: String? {
@@ -668,7 +887,9 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     }
 
     private func updateSelectionDetails() {
-        guard let selectedID, let process = processByIdentity[selectedID.identity] else {
+        guard let selectedID,
+              let identity = selectedID.processIdentity,
+              let process = processByIdentity[identity] else {
             selectionBar.showEmpty(summary: selectionSummary())
             setActionsEnabled(false)
             return
@@ -678,9 +899,8 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         let path = row?.executablePath ?? process.executablePath
         let owner = UIFormat.ownerName(process.ownerUID)
         let started = Self.startTimeFormatter.string(from: Self.startDate(process.id.startTime))
-        let icon = row?.isGroup == true
-            ? AppIconProvider.icon(forBundlePath: row?.iconBundlePath)
-            : AppIconProvider.genericExecutableIcon()
+        let icon = AppIconProvider.icon(forBundlePath: row?.iconBundlePath
+            ?? DetailsPresentation.appBundlePath(forExecutable: process.executablePath))
         selectionBar.show(
             title: title,
             summary: String(localized: "PID \(process.id.pid) · \(owner) · \(path ?? String(localized: "Path unavailable"))"),
@@ -716,20 +936,26 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     /// Selection-bar text while nothing is selected. Nil before the first snapshot, which keeps `ProcessSelectionBar.emptyMessage`.
     private func selectionSummary() -> String? {
         guard let snapshot = currentSnapshot else { return nil }
-        let searching = !searchQuery.isEmpty
-        return Self.emptySummary(processCount: snapshot.processes.count, groupCount: snapshot.processGroups.count,
+        let searching = !searchQuery.isEmpty || scopeFilter != .all
+        let appCount = snapshot.processGroups.filter { $0.category == .application }.count
+        let backgroundCount = snapshot.processGroups.filter { $0.category == .background }.count
+        return Self.emptySummary(processCount: snapshot.processes.count,
+                                 appCount: appCount,
+                                 backgroundCount: backgroundCount,
                                  matchCount: searching ? matchingProcessCount() : snapshot.processes.count,
                                  searching: searching)
     }
 
-    /// Processes passing the search, from a flat build so collapsed groups still count their members.
+    /// Processes passing the search and scope filter, counted from the processes so collapsed groups still count their members.
     private func matchingProcessCount() -> Int {
-        var input = makeInput()
-        input.grouping = .flat
-        return ProcessRowModel.build(input).rows.values.filter { !$0.isGroup }.count
+        if let cachedMatchingProcessCount {
+            return cachedMatchingProcessCount
+        }
+        let count = ProcessRowModel.matchingProcessCount(makeInput())
+        cachedMatchingProcessCount = count
+        return count
     }
 
-    /// Selection-bar summary with no selection: "3 processes · 2 apps", or "1 of 3 processes match" while searching.
     static func emptySummary(processCount: Int, groupCount: Int, matchCount: Int, searching: Bool) -> String {
         if searching {
             if processCount == 1 {
@@ -739,6 +965,23 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         }
         let processes = processCount == 1 ? String(localized: "1 process") : String(localized: "\(processCount) processes")
         let apps = groupCount == 1 ? String(localized: "1 app") : String(localized: "\(groupCount) apps")
+        return String(localized: "\(processes) · \(apps)")
+    }
+
+    static func emptySummary(processCount: Int, appCount: Int, backgroundCount: Int,
+                             matchCount: Int, searching: Bool) -> String {
+        if searching {
+            if processCount == 1 {
+                return String(localized: "\(matchCount) of 1 process matches")
+            }
+            return String(localized: "\(matchCount) of \(processCount) processes match")
+        }
+        let processes = processCount == 1 ? String(localized: "1 process") : String(localized: "\(processCount) processes")
+        let apps = appCount == 1 ? String(localized: "1 app") : String(localized: "\(appCount) apps")
+        if backgroundCount > 0 {
+            let background = String(localized: "\(backgroundCount) background")
+            return String(localized: "\(processes) · \(apps) · \(background)")
+        }
         return String(localized: "\(processes) · \(apps)")
     }
 
@@ -832,10 +1075,15 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         return rowView
     }
 
+    func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
+        guard let rowItem = item as? ProcessRowItem else { return false }
+        return rowItem.id.processIdentity != nil
+    }
+
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !isApplyingModel else { return }
         let row = outlineView.selectedRow
-        if row >= 0, let item = outlineView.item(atRow: row) as? ProcessRowItem {
+        if row >= 0, let item = outlineView.item(atRow: row) as? ProcessRowItem, item.id.processIdentity != nil {
             selectedID = item.id
         } else {
             selectedID = nil
@@ -844,11 +1092,17 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     }
 
     func outlineViewItemWillExpand(_ notification: Notification) {
-        guard !isApplyingModel, let item = notificationItem(notification),
-              case .group(let identity) = item.id else { return }
-        expandedGroups.insert(identity)
-        persistExpandedGroups()
-        collapsedDuringSearch.remove(identity)
+        guard !isApplyingModel, let item = notificationItem(notification) else { return }
+        switch item.id {
+        case .group(let identity):
+            expandedGroups.insert(identity)
+            persistExpandedGroups()
+            collapsedDuringSearch.remove(identity)
+        case .section(let category):
+            collapsedCategories.remove(category)
+        case .process:
+            return
+        }
         // The outline asks for the child count right after this callback, so the mirror must be ready now.
         let output = ProcessRowModel.build(makeInput())
         register(output)
@@ -862,11 +1116,23 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     }
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
-        guard !isApplyingModel, let item = notificationItem(notification),
-              case .group(let identity) = item.id else { return }
-        expandedGroups.remove(identity)
-        persistExpandedGroups()
-        if !searchQuery.isEmpty { collapsedDuringSearch.insert(identity) }
+        guard !isApplyingModel, let item = notificationItem(notification) else { return }
+        switch item.id {
+        case .group(let identity):
+            expandedGroups.remove(identity)
+            persistExpandedGroups()
+            if !searchQuery.isEmpty { collapsedDuringSearch.insert(identity) }
+        case .section(let category):
+            collapsedCategories.insert(category)
+        case .process:
+            return
+        }
+        // Clear any descendant mirrors inside a collapsed container so re-expanding restores them cleanly.
+        if case .section = item.id {
+            for childID in shownChildren[item.id] ?? [] {
+                shownChildren[childID] = nil
+            }
+        }
         shownChildren[item.id] = nil
         setDisclosureState(for: item, expanded: false)
         refreshAfterUserToggle()
@@ -914,6 +1180,26 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         }
     }
 
+    @objc private func handleDoubleClick(_ sender: Any?) {
+        let clickedRow = outlineView.clickedRow
+        guard clickedRow >= 0, let item = outlineView.item(atRow: clickedRow) as? ProcessRowItem else { return }
+        if item.row?.isExpandable == true {
+            animated {
+                if outlineView.isItemExpanded(item) {
+                    outlineView.collapseItem(item)
+                } else {
+                    outlineView.expandItem(item)
+                }
+            }
+            return
+        }
+        guard item.id.processIdentity != nil else { return }
+        if outlineView.selectedRow != clickedRow {
+            outlineView.selectRowIndexes(IndexSet(integer: clickedRow), byExtendingSelection: false)
+        }
+        inspectSelectedProcess(nil)
+    }
+
     // MARK: - Search
 
     func controlTextDidChange(_ notification: Notification) {
@@ -924,8 +1210,30 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     // MARK: - Grouping
 
     @objc func setProcessGrouping(_ sender: NSMenuItem) {
-        grouping = sender.tag == 1 ? .flat : .byApp
-        defaults.set(grouping == .flat ? "flat" : "byApp", forKey: Self.groupingDefaultsKey)
+        let serialized: String
+        switch sender.tag {
+        case 1:
+            grouping = .flat
+            serialized = "flat"
+        case 2:
+            grouping = .byCategory
+            serialized = "byCategory"
+        default:
+            grouping = .byApp
+            serialized = "byApp"
+        }
+        defaults.set(serialized, forKey: Self.groupingDefaultsKey)
+        updateGroupingMenu()
+        applyModel()
+    }
+
+    @objc func setProcessScope(_ sender: NSMenuItem) {
+        switch sender.tag {
+        case 101: scopeFilter = .apps
+        case 102: scopeFilter = .myProcesses
+        default: scopeFilter = .all
+        }
+        defaults.set(scopeFilter.rawValue, forKey: Self.scopeDefaultsKey)
         updateGroupingMenu()
         applyModel()
     }
@@ -933,10 +1241,12 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     /// Expands the groups that contain `identity`, clears the search, and selects its row, scrolled into view.
     /// A process row is preferred; a group row is selected when the identity appears only as a group.
     func selectProcess(identity: ProcessIdentity) {
-        guard currentSnapshot != nil else { return }
+        guard let snapshot = currentSnapshot else { return }
         searchItem.searchField.stringValue = ""
+        scopeFilter = .all
+        collapsedCategories.removeAll()
         collapsedDuringSearch.removeAll()
-        if grouping == .byApp, let snapshot = currentSnapshot {
+        if grouping != .flat {
             let containing = snapshot.processGroups.filter { $0.members.contains(identity) }.map(\.id)
             let updated = expandedGroups.union(containing)
             if updated != expandedGroups {
@@ -944,10 +1254,13 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
                 persistExpandedGroups()
             }
         }
+        updateGroupingMenu()
         applyModel()
         let visible = visibleRowIDs
         guard let target = [ProcessRowID.process(identity), .group(identity)].first(where: { visible.contains($0) }),
-              let row = visible.firstIndex(of: target) else { return }
+              let item = items[target] else { return }
+        let row = outlineView.row(forItem: item)
+        guard row >= 0 else { return }
         selectedID = target
         outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         outlineView.scrollRowToVisible(row)
@@ -955,9 +1268,24 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     }
 
     private func updateGroupingMenu() {
-        let selectedTag = grouping == .flat ? 1 : 0
+        let groupingTag: Int
+        switch grouping {
+        case .byApp: groupingTag = 0
+        case .flat: groupingTag = 1
+        case .byCategory: groupingTag = 2
+        }
+        let scopeTag: Int
+        switch scopeFilter {
+        case .all: scopeTag = 100
+        case .apps: scopeTag = 101
+        case .myProcesses: scopeTag = 102
+        }
         for item in groupingMenu.items {
-            item.state = item.tag == selectedTag ? .on : .off
+            if item.tag < 100 {
+                item.state = item.tag == groupingTag ? .on : .off
+            } else {
+                item.state = item.tag == scopeTag ? .on : .off
+            }
         }
     }
 
@@ -984,14 +1312,16 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
 
     /// Switches to Details and selects the exact live identity represented by the current row.
     @objc func showSelectedProcessInDetails(_ sender: Any?) {
-        guard let selectedID, processByIdentity[selectedID.identity] != nil,
+        guard let selectedIdentity = selectedID?.processIdentity,
+              processByIdentity[selectedIdentity] != nil,
               let root = view.window?.contentViewController as? RootViewController else { return }
-        root.showProcessInDetails(selectedID.identity)
+        root.showProcessInDetails(selectedIdentity)
     }
 
     /// Opens the Inspect popover for the selected row, anchored to that row. It stays live until the row goes away.
     @objc func inspectSelectedProcess(_ sender: Any?) {
-        guard let selectedID, processByIdentity[selectedID.identity] != nil else { return }
+        guard let selectedIdentity = selectedID?.processIdentity,
+              processByIdentity[selectedIdentity] != nil else { return }
         let row = outlineView.selectedRow
         guard row >= 0 else { return }
         closeInspector()
@@ -1013,22 +1343,22 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     /// Re-renders the open Inspect popover from the latest snapshot. It closes when its process or row is gone.
     private func refreshInspector() {
         guard let inspected = inspectedRowID, inspectorPopover != nil, let controller = inspectorController,
-              let snapshot = currentSnapshot else { return }
-        guard let process = processByIdentity[inspected.identity], let item = items[inspected],
+              let snapshot = currentSnapshot,
+              let inspectedIdentity = inspected.processIdentity else { return }
+        guard let process = processByIdentity[inspectedIdentity], let item = items[inspected],
               outlineView.row(forItem: item) >= 0 else {
             closeInspector()
             return
         }
         var group: ProcessGroupSnapshot?
         if case .group = inspected {
-            group = groupByIdentity[inspected.identity]
+            group = groupByIdentity[inspectedIdentity]
         }
         let rows = ProcessInspectorModel.rows(process: process, group: group, snapshot: snapshot,
                                               ownerName: { UIFormat.ownerName($0) })
         let row = rowsByID[inspected]
-        let icon = row?.isGroup == true
-            ? AppIconProvider.icon(forBundlePath: row?.iconBundlePath)
-            : AppIconProvider.genericExecutableIcon()
+        let icon = AppIconProvider.icon(forBundlePath: row?.iconBundlePath
+            ?? DetailsPresentation.appBundlePath(forExecutable: process.executablePath))
         controller.update(title: row?.title ?? process.name, icon: icon,
                           executablePath: process.executablePath, rows: rows)
     }
@@ -1079,92 +1409,113 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
 
     /// Confirms, then quits and reopens Finder, like Relaunch in the system Force Quit window.
     private func requestFinderRelaunch(_ identity: ProcessIdentity) {
+        let dependencies = self.dependencies
+        let window = view.window
         Task { [weak self] in
-            guard let self else { return }
-            let response = await SheetAlert.present(
-                on: view.window,
-                style: .warning,
-                messageText: String(localized: "Relaunch Finder?"),
-                informativeText: String(localized: "Finder quits and opens again. Its open windows close and may reopen."),
-                buttons: [String(localized: "Relaunch"), String(localized: "Cancel")],
-                defaultButtonIdentifier: "process.relaunch-finder.confirm"
-            )
-            guard response == .alertFirstButtonReturn else { return }
-            let result = await dependencies.processActions.relaunchFinder(identity: identity)
-            if case .rejected(let reason, let detail) = result.outcome {
-                let isStale = reason == .processExited || reason == .identityChanged
-                if isStale { clearSelection() }
-                await dependencies.monitoringStore.refreshNow()
-                await SheetAlert.present(
-                    on: view.window,
-                    style: .informational,
-                    messageText: String(localized: "Finder was not relaunched"),
-                    informativeText: Self.rejectionMessage(reason, detail: detail, targetIsSystemOwned: false),
-                    buttons: [String(localized: "OK")]
-                )
-                return
+            await Self.presentFinderRelaunchFlow(identity: identity, on: window, dependencies: dependencies) { [weak self] in
+                self?.clearSelection()
             }
-            clearSelection()
-            await dependencies.monitoringStore.refreshNow()
         }
     }
 
     private func requestTermination(force: Bool) {
-        guard let selectedID, let process = processByIdentity[selectedID.identity] else {
+        guard let identity = selectedID?.processIdentity, let process = processByIdentity[identity] else {
             presentNotice(title: String(localized: "Process No Longer Available"),
                           message: String(localized: "The selected process is no longer available."))
             clearSelection()
             return
         }
-        let identity = selectedID.identity
-        if !force, Self.isRelaunchableFinder(process) {
-            requestFinderRelaunch(identity)
+        let dependencies = self.dependencies
+        let window = view.window
+        Task { [weak self] in
+            await Self.presentTerminationFlow(process: process, force: force, on: window, dependencies: dependencies) { [weak self] in
+                self?.clearSelection()
+            }
+        }
+    }
+
+    static func presentFinderRelaunchFlow(identity: ProcessIdentity,
+                                        on window: NSWindow?,
+                                        dependencies: PageDependencies,
+                                        onClearSelection: @escaping @MainActor () -> Void = {}) async {
+        let response = await SheetAlert.present(
+            on: window,
+            style: .warning,
+            messageText: String(localized: "Relaunch Finder?"),
+            informativeText: String(localized: "Finder quits and opens again. Its open windows close and may reopen."),
+            buttons: [String(localized: "Relaunch"), String(localized: "Cancel")],
+            defaultButtonIdentifier: "process.relaunch-finder.confirm"
+        )
+        guard response == .alertFirstButtonReturn else { return }
+        let result = await dependencies.processActions.relaunchFinder(identity: identity)
+        if case .rejected(let reason, let detail) = result.outcome {
+            let isStale = reason == .processExited || reason == .identityChanged
+            if isStale { onClearSelection() }
+            await dependencies.monitoringStore.refreshNow()
+            await SheetAlert.present(
+                on: window,
+                style: .informational,
+                messageText: String(localized: "Finder was not relaunched"),
+                informativeText: rejectionMessage(reason, detail: detail, targetIsSystemOwned: false),
+                buttons: [String(localized: "OK")]
+            )
+            return
+        }
+        onClearSelection()
+        await dependencies.monitoringStore.refreshNow()
+    }
+
+    static func presentTerminationFlow(process: ProcessSnapshot,
+                                       force: Bool,
+                                       on window: NSWindow?,
+                                       dependencies: PageDependencies,
+                                       onClearSelection: @escaping @MainActor () -> Void = {}) async {
+        let identity = process.id
+        if !force, isRelaunchableFinder(process) {
+            await presentFinderRelaunchFlow(identity: identity, on: window, dependencies: dependencies,
+                                          onClearSelection: onClearSelection)
             return
         }
         let name = process.name
         let targetIsSystemOwned = process.ownerUID == 0
-        Task { [weak self] in
-            guard let self else { return }
-            // Both actions confirm first, like Activity Monitor. The confirm button is the destructive first button.
-            let response: NSApplication.ModalResponse
-            if force {
-                response = await SheetAlert.present(
-                    on: view.window,
-                    style: .warning,
-                    messageText: String(localized: "Confirm Force Quit"),
-                    informativeText: String(localized: "Force quit \(name) (process \(identity.pid)) only. Its child processes are not targeted."),
-                    buttons: [String(localized: "Force Quit"), String(localized: "Cancel")],
-                    defaultButtonIdentifier: "process.force-quit.confirm",
-                    destructiveButtonIndex: 0
-                )
-            } else {
-                response = await SheetAlert.present(
-                    on: view.window,
-                    style: .warning,
-                    messageText: String(localized: "Quit “\(name)”?"),
-                    buttons: [String(localized: "Quit"), String(localized: "Cancel")],
-                    defaultButtonIdentifier: "process.quit.confirm",
-                    destructiveButtonIndex: 0
-                )
-            }
-            guard response == .alertFirstButtonReturn else { return }
-            let result = await dependencies.processActions.terminate(identity: identity, force: force)
-            switch result.outcome {
-            case .signalSent:
-                await dependencies.monitoringStore.refreshNow()
-            case .rejected(let reason, let detail):
-                let isStale = reason == .processExited || reason == .identityChanged || reason == .invalidIdentity
-                if isStale { clearSelection() }
-                await dependencies.monitoringStore.refreshNow()
-                let message = Self.rejectionMessage(reason, detail: detail, targetIsSystemOwned: targetIsSystemOwned)
-                await SheetAlert.present(
-                    on: view.window,
-                    style: .informational,
-                    messageText: isStale ? String(localized: "Process No Longer Available") : String(localized: "Process action not completed"),
-                    informativeText: message,
-                    buttons: [String(localized: "OK")]
-                )
-            }
+        let response: NSApplication.ModalResponse
+        if force {
+            response = await SheetAlert.present(
+                on: window,
+                style: .warning,
+                messageText: String(localized: "Confirm Force Quit"),
+                informativeText: String(localized: "Force quit \(name) (process \(identity.pid)) only. Its child processes are not targeted."),
+                buttons: [String(localized: "Force Quit"), String(localized: "Cancel")],
+                defaultButtonIdentifier: "process.force-quit.confirm",
+                destructiveButtonIndex: 0
+            )
+        } else {
+            response = await SheetAlert.present(
+                on: window,
+                style: .warning,
+                messageText: String(localized: "Quit “\(name)”?"),
+                buttons: [String(localized: "Quit"), String(localized: "Cancel")],
+                defaultButtonIdentifier: "process.quit.confirm",
+                destructiveButtonIndex: 0
+            )
+        }
+        guard response == .alertFirstButtonReturn else { return }
+        let result = await dependencies.processActions.terminate(identity: identity, force: force)
+        switch result.outcome {
+        case .signalSent:
+            await dependencies.monitoringStore.refreshNow()
+        case .rejected(let reason, let detail):
+            let isStale = reason == .processExited || reason == .identityChanged || reason == .invalidIdentity
+            if isStale { onClearSelection() }
+            await dependencies.monitoringStore.refreshNow()
+            let message = rejectionMessage(reason, detail: detail, targetIsSystemOwned: targetIsSystemOwned)
+            await SheetAlert.present(
+                on: window,
+                style: .informational,
+                messageText: isStale ? String(localized: "Process No Longer Available") : String(localized: "Process action not completed"),
+                informativeText: message,
+                buttons: [String(localized: "OK")]
+            )
         }
     }
 
@@ -1207,7 +1558,8 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         guard menu === rowMenu else { return }
         menu.removeAllItems()
         let row = outlineView.clickedRow
-        guard row >= 0, outlineView.item(atRow: row) is ProcessRowItem else { return }
+        guard row >= 0, let rowItem = outlineView.item(atRow: row) as? ProcessRowItem,
+              rowItem.id.processIdentity != nil else { return }
         if outlineView.selectedRow != row {
             outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         }

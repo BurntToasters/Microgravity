@@ -71,8 +71,12 @@ final class Release011FixesTests: XCTestCase {
         let nameColumn = try XCTUnwrap(outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("process.column.name")))
 
         // A layout saved from a wider window: Name alone pushes the metric columns out of view.
+        let clipBefore = try XCTUnwrap(outline.enclosingScrollView).contentView.bounds.width
+        outline.columnAutoresizingStyle = .noColumnAutoresizing
         nameColumn.width = 900
-        XCTAssertGreaterThan(outline.frame.width, try XCTUnwrap(outline.enclosingScrollView).contentView.bounds.width)
+        outline.tile()
+        outline.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
+        XCTAssertGreaterThan(outline.frame.width, clipBefore)
 
         var frame = window.frame
         frame.size.width -= 40
@@ -169,12 +173,13 @@ final class Release011FixesTests: XCTestCase {
         let withoutGPU = outline.tableColumns.filter { !$0.isHidden && $0.identifier.rawValue != ProcessColumn.gpu.rawValue }
         XCTAssertLessThanOrEqual(withoutGPU.reduce(0) { $0 + $1.width }, 700)
 
-        // The worst-case pair must fit the Disk column at 12 pt, with the cell's 8 pt insets and the label's own padding.
+        // Compact combined Disk throughput values must fit the Disk column at 12 pt, with insets and padding.
         let disk = try XCTUnwrap(outline.tableColumns.first { $0.identifier.rawValue == ProcessColumn.disk.rawValue })
-        let sample = "R 326 KB/s · W 65 KB/s"
-        let textWidth = (sample as NSString).size(withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)]).width
-        XCTAssertLessThanOrEqual(textWidth + 2 * PaddedTableHeaderCell.horizontalInset + 4, disk.width,
-                                 "\(sample) needs \(textWidth) pt")
+        for sample in ["391 KB/s", "999.9 MB/s"] {
+            let textWidth = (sample as NSString).size(withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)]).width
+            XCTAssertLessThanOrEqual(textWidth + 2 * PaddedTableHeaderCell.horizontalInset + 4, disk.width,
+                                     "\(sample) needs \(textWidth) pt")
+        }
     }
 
     func testEveryTableHeaderIsPaddedLikeItsCells() throws {

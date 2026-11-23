@@ -2,92 +2,6 @@ import XCTest
 @testable import Microgravity
 
 final class IntegrationAdvancedMetricsTests: XCTestCase {
-    func testFiveSecondCadenceAndTransientNetworkFailurePreserveCounterBaseline() async throws {
-        let start = Date(timeIntervalSince1970: 1_700_000_000)
-        let clock = TestClock(start)
-        let identity = ProcessIdentity(pid: 42, startTime: .init(secondsSinceEpoch: 100, microseconds: 0))
-        let client = SerializedAdvancedSamplingClient(clock: clock, responses: [
-            .nettop: [
-                response(.nettop, at: start, output: Data("time,interface,bytes_in,bytes_out\n0,en0.42,100,200\n".utf8)),
-                response(.nettop, at: start.addingTimeInterval(5), error: "temporary failure"),
-                response(.nettop, at: start.addingTimeInterval(10), output: Data("time,interface,bytes_in,bytes_out\n0,en0.42,400,700\n".utf8)),
-            ],
-            .powermetrics: [
-                response(.powermetrics, at: start, error: "unsupported"),
-                response(.powermetrics, at: start.addingTimeInterval(5), error: "unsupported"),
-                response(.powermetrics, at: start.addingTimeInterval(10), error: "unsupported"),
-            ],
-        ])
-        let collector = NativeAdvancedMetricsCollector(
-            client: client,
-            now: { clock.now() },
-            processIdentities: { [identity.pid: identity] })
-
-        _ = await collector.collectAdvancedMetrics(at: start)
-        _ = try await waitForNetworkCapability(true, collector: collector, at: start)
-        var callCount = await client.callCount()
-        var refreshCount = await collector.refreshRequestCountForTesting()
-        XCTAssertEqual(callCount, 2)
-        XCTAssertEqual(refreshCount, 1)
-        XCTAssertEqual(clock.now(), start.addingTimeInterval(1), "both serialized helper samples complete before the tick completes")
-
-        let beforeNextCompletionInterval = start.addingTimeInterval(5)
-        clock.set(beforeNextCompletionInterval)
-        _ = await collector.collectAdvancedMetrics(at: clock.now())
-        callCount = await client.callCount()
-        refreshCount = await collector.refreshRequestCountForTesting()
-        XCTAssertEqual(callCount, 2, "the next tick waits five seconds after completion at t=1")
-        XCTAssertEqual(refreshCount, 1, "a start-based cadence would incorrectly schedule at t=5")
-
-        let transientTime = start.addingTimeInterval(6)
-        clock.set(transientTime)
-        _ = await collector.collectAdvancedMetrics(at: transientTime)
-        refreshCount = await collector.refreshRequestCountForTesting()
-        XCTAssertEqual(refreshCount, 2, "the completion-based interval expires at t=6")
-        _ = try await waitForNetworkCapability(false, reason: .collectionFailed,
-                                               collector: collector, at: transientTime)
-        callCount = await client.callCount()
-        XCTAssertEqual(callCount, 4)
-        let sampleStarts = await client.sampleStartTimes()
-        guard sampleStarts.count >= 4 else {
-            XCTFail("expected two helper samples for each completed refresh")
-            return
-        }
-        XCTAssertEqual(sampleStarts[2], transientTime, "the next refresh starts at t=6")
-
-        let recoveredTime = start.addingTimeInterval(12)
-        clock.set(recoveredTime)
-        _ = await collector.collectAdvancedMetrics(at: recoveredTime)
-        refreshCount = await collector.refreshRequestCountForTesting()
-        XCTAssertEqual(refreshCount, 3)
-        let recovered = try await waitForNetworkCapability(true, collector: collector, at: recoveredTime)
-        callCount = await client.callCount()
-        XCTAssertEqual(callCount, 6)
-        let networkCaptures = await client.networkCaptureTimes()
-        guard networkCaptures.count == 3 else {
-            XCTFail("expected baseline, transient, and recovered nettop captures")
-            return
-        }
-        let elapsed = networkCaptures[2].timeIntervalSince(networkCaptures[0])
-        XCTAssertGreaterThan(elapsed, 0)
-        XCTAssertEqual(recovered.perProcess[identity]?[.processNetwork]?.value ?? .nan, 800.0 / elapsed,
-                       accuracy: 0.0001,
-                       "the rate spans the transient miss instead of requiring a new baseline")
-        let spacingViolations = await client.spacingViolationCount()
-        XCTAssertEqual(spacingViolations, 0, "each helper sample kind must stay at least five seconds apart")
-    }
-
-    func testNetworkRejectsDuplicateAndMalformedRowsAndParsesQuotedNames() {
-        let csv = "time,interface,bytes_in,bytes_out\n0,\"comma, name.42\",0,12\n0,a.43,20,30\n0,b.43,1,2\n0,broken.44,-1,2\n0,\"open.45,1,2\n"
-        let parsed = AdvancedMetricsParser.nettop(csv)
-        XCTAssertEqual(parsed[42]?.received, 0)
-        XCTAssertEqual(parsed[42]?.sent, 12)
-        XCTAssertNil(parsed[43])
-        XCTAssertNil(parsed[44])
-        XCTAssertNil(parsed[45])
-        XCTAssertTrue(AdvancedMetricsParser.nettop("time,interface,bytes_in\n0,x.42,1").isEmpty)
-    }
-
     func testPowerParsesOnlyKnownGPUIdleRatioAcrossNULTerminatedRecords() throws {
         func plist(_ object: [String: Any]) throws -> Data {
             try PropertyListSerialization.data(fromPropertyList: object, format: .xml, options: 0)
@@ -103,6 +17,7 @@ final class IntegrationAdvancedMetricsTests: XCTestCase {
         XCTAssertNil(AdvancedMetricsParser.power(Data(repeating: 65, count: 4 * 1024 * 1024 + 1)).gpuPercent)
         XCTAssertNil(AdvancedMetricsParser.power(Data("not plist".utf8)).gpuPercent)
     }
+
     func testPerProcessGPUTimeIsUnsupportedAndNeverEmitted() async throws {
         let clock = TestClock(Date(timeIntervalSince1970: 1_000))
         let identity = ProcessIdentity(pid: 42, startTime: .init(secondsSinceEpoch: 100, microseconds: 0))
@@ -181,7 +96,7 @@ final class IntegrationAdvancedMetricsTests: XCTestCase {
         let start = Date(timeIntervalSince1970: 1_000)
         let clock = TestClock(start)
         let client = FixedAdvancedSamplingClient([
-            .nettop: response(.nettop, at: start, error: "helperUnavailable"),
+            .processMetrics: response(.processMetrics, at: start, error: "helperUnavailable"),
             .powermetrics: response(.powermetrics, at: start, error: "helperUnavailable"),
         ])
         let collector = NativeAdvancedMetricsCollector(client: client, now: { clock.now() }, processIdentities: { [:] })
@@ -197,6 +112,69 @@ final class IntegrationAdvancedMetricsTests: XCTestCase {
         _ = await collector.collectAdvancedMetrics(at: clock.now())
         refreshCount = await collector.refreshRequestCountForTesting()
         XCTAssertEqual(refreshCount, 2)
+    }
+
+    func testOutOfDateHelperErrorsBackOffToSixtySecondsInsteadOfFiveSeconds() async throws {
+        for code in ["incompatibleVersion", "incompatibleResponse", "protocolUnavailable"] {
+            let start = Date(timeIntervalSince1970: 1_000)
+            let clock = TestClock(start)
+            let client = FixedAdvancedSamplingClient([
+                .processMetrics: response(.processMetrics, at: start, error: code),
+                .powermetrics: response(.powermetrics, at: start, error: code),
+            ])
+            let collector = NativeAdvancedMetricsCollector(client: client, now: { clock.now() }, processIdentities: { [:] })
+
+            _ = await collector.collectAdvancedMetrics(at: start)
+            try await waitUntil("the first refresh completes for \(code)") {
+                await collector.refreshCompletionCountForTesting() == 1
+            }
+            let snapshot = await collector.collectAdvancedMetrics(at: start)
+            XCTAssertEqual(snapshot.capabilities[.gpu]?.reason, .collectionFailed, code)
+            XCTAssertEqual(snapshot.capabilities[.gpu]?.detail,
+                           "The helper is out of date. Remove it and set it up again in Settings.", code)
+            XCTAssertEqual(snapshot.capabilities[.energy]?.detail,
+                           "The helper is out of date. Remove it and set it up again in Settings.", code)
+
+            for offset in [TimeInterval(5), 59] {
+                clock.set(start.addingTimeInterval(offset))
+                _ = await collector.collectAdvancedMetrics(at: clock.now())
+                let refreshCount = await collector.refreshRequestCountForTesting()
+                XCTAssertEqual(refreshCount, 1, "no refresh at \(offset) s after \(code)")
+            }
+
+            clock.set(start.addingTimeInterval(60))
+            _ = await collector.collectAdvancedMetrics(at: clock.now())
+            let refreshCount = await collector.refreshRequestCountForTesting()
+            XCTAssertEqual(refreshCount, 2, "the out-of-date helper is rechecked once a minute after \(code)")
+            try await waitUntil("the second refresh completes for \(code)") {
+                await collector.refreshCompletionCountForTesting() == 2
+            }
+        }
+    }
+
+    func testRetryHelperSoonShortensOutOfDateBackoff() async throws {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let clock = TestClock(start)
+        let client = FixedAdvancedSamplingClient([
+            .processMetrics: response(.processMetrics, at: start, error: "incompatibleVersion"),
+            .powermetrics: response(.powermetrics, at: start, error: "incompatibleVersion"),
+        ])
+        let collector = NativeAdvancedMetricsCollector(client: client, now: { clock.now() }, processIdentities: { [:] })
+
+        _ = await collector.collectAdvancedMetrics(at: start)
+        try await waitUntil("the first refresh completes") { await collector.refreshCompletionCountForTesting() == 1 }
+
+        clock.set(start.addingTimeInterval(5))
+        _ = await collector.collectAdvancedMetrics(at: clock.now())
+        var refreshCount = await collector.refreshRequestCountForTesting()
+        XCTAssertEqual(refreshCount, 1, "without a retry request, the out-of-date helper waits 60 s")
+
+        // The app becomes active after the helper was updated or re-installed.
+        await collector.retryHelperSoon()
+        _ = await collector.collectAdvancedMetrics(at: clock.now())
+        refreshCount = await collector.refreshRequestCountForTesting()
+        XCTAssertEqual(refreshCount, 2, "a retry request starts a refresh at once, inside the out-of-date backoff")
+        try await waitUntil("the retried refresh completes") { await collector.refreshCompletionCountForTesting() == 2 }
     }
 
     func testRetryHelperSoonStartsRefreshInsideBackoffOnlyWhileHelperIsUnavailable() async throws {
@@ -222,29 +200,12 @@ final class IntegrationAdvancedMetricsTests: XCTestCase {
         XCTAssertEqual(refreshCount, 2, "a retry request starts a refresh at once, inside the backoff window")
         _ = try await waitForGPUAvailability(true, collector: collector, clock: clock)
 
-        // A healthy helper is not affected by retry requests: the normal 5 s cadence still applies.
+        // A healthy helper is not affected by retry requests: the normal cadence still applies.
         clock.set(start.addingTimeInterval(6))
         await collector.retryHelperSoon()
         _ = await collector.collectAdvancedMetrics(at: clock.now())
         refreshCount = await collector.refreshRequestCountForTesting()
         XCTAssertEqual(refreshCount, 2, "retry requests are ignored once the last result was not helper-unavailable")
-    }
-
-    func testNetworkRatesRequireStableIdentityAndRejectReset() {
-        let old = ProcessIdentity(pid: 42, startTime: .init(secondsSinceEpoch: 100, microseconds: 0))
-        let replacement = ProcessIdentity(pid: 42, startTime: .init(secondsSinceEpoch: 200, microseconds: 0))
-        let t = Date(timeIntervalSince1970: 1_000)
-        var accumulator = AdvancedNetworkAccumulator()
-        let first = accumulator.update([42: .init(received: 100, sent: 200)], before: [42: old], after: [42: old], at: t)
-        XCTAssertEqual(first[old]?[.processNetwork]?.unavailableReason, .warmingUp)
-        let second = accumulator.update([42: .init(received: 150, sent: 300)], before: [42: old], after: [42: old], at: t.addingTimeInterval(5))
-        XCTAssertEqual(second[old]?[.processNetwork]?.value, 30)
-        let reused = accumulator.update([42: .init(received: 200, sent: 400)], before: [42: old], after: [42: replacement], at: t.addingTimeInterval(10))
-        XCTAssertTrue(reused.isEmpty)
-        let new = accumulator.update([42: .init(received: 2, sent: 3)], before: [42: replacement], after: [42: replacement], at: t.addingTimeInterval(15))
-        XCTAssertEqual(new[replacement]?[.processNetwork]?.unavailableReason, .warmingUp)
-        let reset = accumulator.update([42: .init(received: 1, sent: 1)], before: [42: replacement], after: [42: replacement], at: t.addingTimeInterval(20))
-        XCTAssertEqual(reset[replacement]?[.processNetwork]?.unavailableReason, .counterReset)
     }
 
     func testCachedSystemReadingOlderThanThirtySecondsIsDroppedAtReadTime() async throws {
@@ -281,27 +242,125 @@ final class IntegrationAdvancedMetricsTests: XCTestCase {
     func testIdentityEnumerationCapIsNamedInNetworkCapabilityDetail() async throws {
         let clock = TestClock(Date(timeIntervalSince1970: 1_000))
         let cap = SystemMonitorCollector.processEnumerationCapDetail
-        let client = FixedAdvancedSamplingClient([
-            .nettop: response(.nettop, at: clock.now(),
-                              output: Data("time,interface,bytes_in,bytes_out\n0,en0.42,100,200\n".utf8)),
-            .powermetrics: response(.powermetrics, at: clock.now(), error: "unsupported"),
-        ])
+        let stream = StubNettopStream(snapshot: healthyNettopSnapshot(pid: 42, bytesIn: 100, bytesOut: 200, at: clock.now()))
         let collector = NativeAdvancedMetricsCollector(
-            client: client, now: { clock.now() },
+            client: FixedAdvancedSamplingClient([:]),
+            localNettopStream: stream,
+            now: { clock.now() },
             processIdentityLookup: { ProcessIdentityLookup(identities: [:], failureDetail: cap) })
 
-        _ = await collector.collectAdvancedMetrics(at: clock.now())
         let snapshot = try await waitForNetworkCapability(false, reason: .notCollected,
                                                           collector: collector, at: clock.now())
         XCTAssertEqual(snapshot.capabilities[.processNetwork]?.detail, cap)
         XCTAssertEqual(snapshot.capabilities[.processNetworkReceive]?.detail, cap)
     }
 
+    func testV2FailureDoesNotEmitFakeIdleZerosWhenIdentityLookupIsEmpty() async throws {
+        let start = Date(timeIntervalSince1970: 1_800_001_000)
+        let stream = StubNettopStream(snapshot: healthyNettopSnapshot(pid: 42, bytesIn: 500, bytesOut: 100, at: start))
+        let client = FixedAdvancedSamplingClient([
+            .processMetrics: response(.processMetrics, at: start, error: "commandFailed"),
+        ])
+        let collector = NativeAdvancedMetricsCollector(
+            client: client,
+            localNettopStream: stream,
+            shouldSamplePowermetrics: { false },
+            now: { start },
+            processIdentityLookup: {
+                ProcessIdentityLookup(identities: [:], failureDetail: SystemMonitorCollector.processEnumerationCapDetail)
+            }
+        )
+
+        _ = await collector.collectAdvancedMetrics(at: start)
+        let snapshot = try await waitForNetworkCapability(false, reason: .notCollected,
+                                                          collector: collector, at: start)
+        XCTAssertNil(snapshot.idleZeroInterval)
+        XCTAssertEqual(snapshot.capabilities[.processNetwork]?.detail,
+                       SystemMonitorCollector.processEnumerationCapDetail)
+    }
+
+    func testNetworkCapabilityBecomesAvailableWhileHelperSampleIsSuspended() async throws {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let clock = TestClock(start)
+        let identity = ProcessIdentity(pid: 42, startTime: .init(secondsSinceEpoch: 100, microseconds: 0))
+        let client = HungProcessMetricsClient()
+        let stream = StubNettopStream(snapshot: healthyNettopSnapshot(pid: 42, bytesIn: 500, bytesOut: 100, at: start))
+        let collector = NativeAdvancedMetricsCollector(client: client, localNettopStream: stream,
+                                                       now: { clock.now() },
+                                                       processIdentities: { [identity.pid: identity] })
+
+        _ = await collector.collectAdvancedMetrics(at: start)
+        try await waitUntil("the helper sample is suspended") { await client.hasStarted() }
+        let snapshot = try await waitForNetworkCapability(true, collector: collector, at: start)
+        XCTAssertEqual(snapshot.perProcess[identity]?[.processNetwork]?.value, 600)
+        let completed = await collector.refreshCompletionCountForTesting()
+        XCTAssertEqual(completed, 0, "the helper refresh is still in flight")
+
+        await client.release()
+        try await waitUntil("the released refresh completes") { await collector.refreshCompletionCountForTesting() == 1 }
+    }
+
+    func testConnectionFailedDelaysNextHelperRefreshToFiveSeconds() async throws {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let clock = TestClock(start)
+        let client = FixedAdvancedSamplingClient([
+            .processMetrics: response(.processMetrics, at: start, error: "connectionFailed"),
+            .powermetrics: response(.powermetrics, at: start, error: "unsupported"),
+        ])
+        let collector = NativeAdvancedMetricsCollector(client: client, now: { clock.now() }, processIdentities: { [:] })
+
+        _ = await collector.collectAdvancedMetrics(at: start)
+        try await waitUntil("the first refresh completes") { await collector.refreshCompletionCountForTesting() == 1 }
+
+        clock.set(start.addingTimeInterval(4))
+        _ = await collector.collectAdvancedMetrics(at: clock.now())
+        var refreshCount = await collector.refreshRequestCountForTesting()
+        XCTAssertEqual(refreshCount, 1, "a failed helper call waits five seconds before the next refresh")
+
+        clock.set(start.addingTimeInterval(5))
+        _ = await collector.collectAdvancedMetrics(at: clock.now())
+        refreshCount = await collector.refreshRequestCountForTesting()
+        XCTAssertEqual(refreshCount, 2)
+    }
+
+    func testGPUAndEnergyWarmUpWhenIOReportMeasuresNatively() async throws {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let clock = TestClock(start)
+        let client = ToggleHelperClient(clock: clock, gpuOutput: Data())
+        let collector = NativeAdvancedMetricsCollector(client: client, shouldSamplePowermetrics: { false },
+                                                       now: { clock.now() }, processIdentities: { [:] })
+
+        _ = await collector.collectAdvancedMetrics(at: start)
+        try await waitUntil("the first refresh completes") { await collector.refreshCompletionCountForTesting() == 1 }
+        var snapshot = await collector.collectAdvancedMetrics(at: start)
+        XCTAssertEqual(snapshot.capabilities[.gpu]?.reason, .warmingUp)
+        XCTAssertEqual(snapshot.capabilities[.energy]?.reason, .warmingUp)
+        XCTAssertEqual(snapshot.capabilities[.gpu]?.available, false)
+
+        // With the helper present, processMetrics still runs but powermetrics does not, so the reason is unchanged.
+        await client.setInstalled(true)
+        clock.set(start.addingTimeInterval(60))
+        _ = await collector.collectAdvancedMetrics(at: clock.now())
+        try await waitUntil("the second refresh completes") { await collector.refreshCompletionCountForTesting() == 2 }
+        snapshot = await collector.collectAdvancedMetrics(at: clock.now())
+        XCTAssertEqual(snapshot.capabilities[.gpu]?.reason, .warmingUp)
+        XCTAssertEqual(snapshot.capabilities[.energy]?.reason, .warmingUp)
+        let sampleCount = await client.sampleCount()
+        XCTAssertEqual(sampleCount, 1, "only processMetrics is sampled while IOReport measures natively")
+    }
 }
 
 private func gpuSample(at timestamp: Date) throws -> HelperSampleResponse {
     let data = try PropertyListSerialization.data(fromPropertyList: ["gpu": ["idle_ratio": 0.5]], format: .xml, options: 0)
     return response(.powermetrics, at: timestamp, output: data)
+}
+
+private func healthyNettopSnapshot(pid: Int32, bytesIn: UInt64, bytesOut: UInt64, at end: Date) -> NettopStreamSnapshot {
+    NettopStreamSnapshot(health: .healthy, capturedAt: end,
+                         interval: DateInterval(start: end.addingTimeInterval(-1), end: end),
+                         latestSequence: 1,
+                         totalsByPID: [pid: NettopDeltaEntry(pid: pid, name: nil, bytesIn: bytesIn, bytesOut: bytesOut)],
+                         error: nil)
 }
 
 private func waitUntil(_ description: String, _ condition: () async -> Bool) async throws {
@@ -364,6 +423,42 @@ private actor FixedAdvancedSamplingClient: AdvancedSamplingClient {
     }
 }
 
+/// processMetrics stays suspended until the test releases it, like a helper that has stopped answering.
+private actor HungProcessMetricsClient: AdvancedSamplingClient {
+    private var started = false
+    private var released = false
+    private var resume: CheckedContinuation<Void, Never>?
+
+    func sample(_ kind: HelperSampleKind) async -> HelperSampleResponse {
+        guard kind == .processMetrics else {
+            return response(kind, at: Date(timeIntervalSince1970: 0), error: "unsupported")
+        }
+        started = true
+        if !released {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                resume = continuation
+            }
+        }
+        return response(kind, at: Date(timeIntervalSince1970: 0), error: "timedOut")
+    }
+
+    func hasStarted() -> Bool { started }
+
+    func release() {
+        released = true
+        resume?.resume()
+        resume = nil
+    }
+}
+
+private struct StubNettopStream: NettopStreamProviding {
+    let snapshot: NettopStreamSnapshot
+
+    func latestSnapshot(since sequence: UInt64?, now: Date) -> NettopStreamSnapshot {
+        snapshot
+    }
+}
+
 private func response(_ kind: HelperSampleKind, at timestamp: Date,
                       output: Data? = nil, error: String? = nil) -> HelperSampleResponse {
     HelperSampleResponse(version: helperProtocolVersion, kind: kind, capturedAt: timestamp,
@@ -403,51 +498,4 @@ private final class TestClock: @unchecked Sendable {
         defer { lock.unlock() }
         self.value = value
     }
-
-    func advance(by interval: TimeInterval) {
-        lock.lock()
-        defer { lock.unlock() }
-        value = value.addingTimeInterval(interval)
-    }
-}
-
-private actor SerializedAdvancedSamplingClient: AdvancedSamplingClient {
-    private let clock: TestClock
-    private var responses: [HelperSampleKind: [HelperSampleResponse]]
-    private var offsets: [HelperSampleKind: Int] = [:]
-    private var calls = 0
-    private var lastStartedAt: [HelperSampleKind: Date] = [:]
-    private var spacingViolations = 0
-    private var nettopCaptureTimes: [Date] = []
-    private var sampleStarts: [Date] = []
-
-    init(clock: TestClock, responses: [HelperSampleKind: [HelperSampleResponse]]) {
-        self.clock = clock
-        self.responses = responses
-    }
-
-    func sample(_ kind: HelperSampleKind) async -> HelperSampleResponse {
-        calls += 1
-        let startedAt = clock.now()
-        sampleStarts.append(startedAt)
-        let violatesSpacing = lastStartedAt[kind].map { startedAt.timeIntervalSince($0) < 5 } ?? false
-        if violatesSpacing { spacingViolations += 1 }
-        lastStartedAt[kind] = startedAt
-        let index = offsets[kind, default: 0]
-        offsets[kind] = index + 1
-        let entries = responses[kind] ?? []
-        let queued = entries.indices.contains(index) ? entries[index] : response(kind, at: startedAt, error: "no queued response")
-        if kind == .nettop { nettopCaptureTimes.append(startedAt) }
-        // Advancing the virtual clock models serialized helper work completing.
-        clock.advance(by: 0.5)
-        if violatesSpacing {
-            return response(kind, at: startedAt, error: "rateLimited")
-        }
-        return response(kind, at: startedAt, output: queued.output, error: queued.error)
-    }
-
-    func callCount() -> Int { calls }
-    func spacingViolationCount() -> Int { spacingViolations }
-    func networkCaptureTimes() -> [Date] { nettopCaptureTimes }
-    func sampleStartTimes() -> [Date] { sampleStarts }
 }

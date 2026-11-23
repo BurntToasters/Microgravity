@@ -359,6 +359,166 @@ final class MonitoringStoreTests: XCTestCase {
         XCTAssertEqual(rowsAfterReset, 0,
                        "the write that started before reset must not repopulate history afterward")
     }
+
+    func testHistoryGapKeepsEveryFieldOutsideTheGappedRates() throws {
+        let before = Self.snapshotWithEveryOptionalField(timestamp: Date(timeIntervalSince1970: 1_800_000_000))
+        let after = before.markingHistoryGap(reason: .sleepGap)
+
+        // The fixture must set every optional field, or the comparisons below cannot see it.
+        assertEveryOptionalIsSet(before.system, label: "system")
+        assertEveryOptionalIsSet(try XCTUnwrap(before.system.power), label: "system.power")
+        assertEveryOptionalIsSet(try XCTUnwrap(before.system.hardware), label: "system.hardware")
+        for group in before.processGroups {
+            assertEveryOptionalIsSet(group, label: "group \(group.title)")
+        }
+
+        assertGapKeepsFields(before.system, after.system,
+                             gapped: ["cpuPercent", "perCoreCPUPercent", "diskReadBytesPerSecond",
+                                      "diskWriteBytesPerSecond", "networkReceiveBytesPerSecond",
+                                      "networkTransmitBytesPerSecond"],
+                             label: "system")
+        XCTAssertEqual(after.system.power, before.system.power)
+        XCTAssertEqual(after.system.hardware, before.system.hardware)
+        XCTAssertEqual(after.system.cpuPercent.unavailableReason, .sleepGap)
+        XCTAssertEqual(after.system.perCoreCPUPercent.map(\.unavailableReason), [.sleepGap, .sleepGap])
+
+        XCTAssertEqual(after.processGroups.count, before.processGroups.count)
+        for (old, new) in zip(before.processGroups, after.processGroups) {
+            assertGapKeepsFields(old, new,
+                                 gapped: ["cpuPercent", "diskReadBytesPerSecond", "diskWriteBytesPerSecond",
+                                          "networkReceiveBytesPerSecond", "networkTransmitBytesPerSecond"],
+                                 label: "group \(old.title)")
+            XCTAssertEqual(new.category, old.category)
+            XCTAssertEqual(new.cpuPercent.unavailableReason, .sleepGap)
+        }
+    }
+
+    /// Every optional field of `system`, its power and hardware, and each group is set to a non-default value.
+    private static func snapshotWithEveryOptionalField(timestamp: Date) -> MonitoringSnapshot {
+        func reading(_ value: Double, _ unit: MetricUnit) -> MetricReading {
+            MetricReading(value: value, unit: unit, timestamp: timestamp)
+        }
+        let power = SystemPowerSnapshot(
+            systemPowerWatts: reading(20, .watts), componentPowerWatts: reading(18, .watts),
+            adapterPowerWatts: reading(60, .watts), batteryPowerWatts: reading(4, .watts),
+            cpuPowerWatts: reading(6, .watts), gpuPowerWatts: reading(3, .watts),
+            anePowerWatts: reading(0.5, .watts), dramPowerWatts: reading(1, .watts),
+            powerSource: .battery, batteryPercent: 80, batteryCharging: false,
+            batteryTimeRemainingMinutes: 120, adapterMaxWatts: 96, thermalState: .fair)
+        let hardware = HardwareSpecSnapshot(
+            machineModel: "Fixture Mac", cpuName: "Fixture CPU", gpuName: "Fixture GPU", gpuCoreCount: 10,
+            memorySummary: "16 GB", bootDiskModel: "Fixture SSD", bootDiskCapacityBytes: 1_000_000_000_000,
+            primaryNetworkInterface: "en0", primaryNetworkDetail: "Fixture network")
+        let system = SystemMetricsSnapshot(
+            capacityCores: 8,
+            cpuPercent: reading(40, .percent),
+            perCoreCPUPercent: [reading(30, .percent), reading(50, .percent)],
+            memoryUsedBytes: MetricReading(value: 8e9, unit: .bytes, timestamp: timestamp,
+                                           detail: "fixture detail", isPartial: true,
+                                           measurementInterval: DateInterval(start: timestamp, duration: 1)),
+            memoryAvailableBytes: reading(8e9, .bytes),
+            memoryTotalBytes: reading(16e9, .bytes),
+            memoryAppBytes: reading(3e9, .bytes),
+            memoryWiredBytes: reading(2e9, .bytes),
+            memoryCompressedBytes: reading(1e9, .bytes),
+            memoryCachedFilesBytes: reading(1.5e9, .bytes),
+            memoryPressure: MemoryPressureSnapshot(level: .warning, timestamp: timestamp),
+            swapUsedBytes: reading(1e9, .bytes),
+            swapTotalBytes: reading(2e9, .bytes),
+            diskReadBytesPerSecond: reading(100, .bytesPerSecond),
+            diskWriteBytesPerSecond: reading(200, .bytesPerSecond),
+            networkReceiveBytesPerSecond: reading(300, .bytesPerSecond),
+            networkTransmitBytesPerSecond: reading(400, .bytesPerSecond),
+            networkInterfaces: [NetworkInterfaceSnapshot(
+                name: "en0", isUp: true,
+                receiveBytesPerSecond: reading(300, .bytesPerSecond),
+                transmitBytesPerSecond: reading(400, .bytesPerSecond),
+                receiveTotalBytes: reading(1e6, .bytes), transmitTotalBytes: reading(2e6, .bytes),
+                includedInTotals: false)],
+            processorTopology: ProcessorTopology(kinds: [
+                ProcessorCoreKind(name: "Performance", rank: 0, logicalCPUs: [0]),
+                ProcessorCoreKind(name: "Efficiency", rank: 1, logicalCPUs: [1]),
+            ]),
+            power: power,
+            hardware: hardware)
+
+        let helperID = ProcessIdentity(pid: 100, startTime: ProcessStartTime(secondsSinceEpoch: 1_800_000_000,
+                                                                              microseconds: 0))
+        let helper = ProcessGroupSnapshot(
+            id: helperID, title: "Helper", ownerUID: 501, executablePath: "/usr/libexec/helper",
+            association: .standalone,
+            historyIdentity: ApplicationHistoryIdentity(id: "helper", name: "Helper",
+                                                        executablePath: "/usr/libexec/helper",
+                                                        association: .standalone),
+            members: [helperID], cpuPercent: reading(12, .percent), memoryBytes: reading(1e8, .bytes),
+            diskReadBytesPerSecond: reading(10, .bytesPerSecond),
+            diskWriteBytesPerSecond: reading(20, .bytesPerSecond),
+            networkReceiveBytesPerSecond: reading(30, .bytesPerSecond),
+            networkTransmitBytesPerSecond: reading(40, .bytesPerSecond),
+            category: .system)
+        let browserID = ProcessIdentity(pid: 200, startTime: ProcessStartTime(secondsSinceEpoch: 1_800_000_100,
+                                                                              microseconds: 0))
+        let browser = ProcessGroupSnapshot(
+            id: browserID, title: "Browser", ownerUID: 501,
+            executablePath: "/Applications/Browser.app/Contents/MacOS/Browser",
+            association: .applicationBundle,
+            historyIdentity: ApplicationHistoryIdentity(id: "fixture-browser", name: "Browser",
+                                                        executablePath: "/Applications/Browser.app",
+                                                        association: .applicationBundle),
+            members: [browserID], cpuPercent: reading(25, .percent), memoryBytes: reading(2e8, .bytes),
+            diskReadBytesPerSecond: reading(11, .bytesPerSecond),
+            diskWriteBytesPerSecond: reading(21, .bytesPerSecond),
+            networkReceiveBytesPerSecond: reading(31, .bytesPerSecond),
+            networkTransmitBytesPerSecond: reading(41, .bytesPerSecond),
+            category: .background)
+
+        return MonitoringSnapshot(timestamp: timestamp, system: system, processes: [],
+                                  processGroups: [helper, browser], startupItems: [], services: [],
+                                  users: [], discoveryCoverage: [:], capabilities: [:])
+    }
+}
+
+/// Compares the JSON form of `before` and `after`: the same keys, and equal values except for `gapped` keys.
+private func assertGapKeepsFields<T: Encodable>(_ before: T, _ after: T, gapped: Set<String>, label: String,
+                                                file: StaticString = #filePath, line: UInt = #line) {
+    do {
+        let old = try gapJSONObject(before)
+        let new = try gapJSONObject(after)
+        XCTAssertEqual(Set(old.keys), Set(new.keys), "\(label): gap marking changed the encoded key set",
+                       file: file, line: line)
+        for key in Set(old.keys).union(new.keys).subtracting(gapped).sorted() {
+            XCTAssertEqual(gapCanonicalJSON(old[key]), gapCanonicalJSON(new[key]),
+                           "\(label).\(key) changed when the history gap was marked", file: file, line: line)
+        }
+        for key in gapped {
+            XCTAssertNotEqual(gapCanonicalJSON(old[key]), gapCanonicalJSON(new[key]),
+                              "\(label).\(key) should be marked as a gap", file: file, line: line)
+        }
+    } catch {
+        XCTFail("\(label): \(error)", file: file, line: line)
+    }
+}
+
+private func gapJSONObject<T: Encodable>(_ value: T) throws -> [String: Any] {
+    let data = try JSONEncoder().encode(value)
+    let object = try JSONSerialization.jsonObject(with: data)
+    return try XCTUnwrap(object as? [String: Any])
+}
+
+private func gapCanonicalJSON(_ value: Any?) -> Data? {
+    guard let value else { return nil }
+    return try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed, .sortedKeys])
+}
+
+/// Fails for any optional property left nil, so a field added later must be added to the fixture too.
+private func assertEveryOptionalIsSet(_ value: Any, label: String,
+                                      file: StaticString = #filePath, line: UInt = #line) {
+    for child in Mirror(reflecting: value).children {
+        let field = Mirror(reflecting: child.value)
+        if field.displayStyle == .optional, field.children.isEmpty {
+            XCTFail("\(label).\(child.label ?? "?") is nil; set it in the fixture", file: file, line: line)
+        }
+    }
 }
 
 private actor StaticCollector: MonitoringCollecting {

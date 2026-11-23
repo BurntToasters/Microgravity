@@ -11,8 +11,10 @@ final class ProcessInspectorTests: XCTestCase {
                                               ownerName: { _ in "tester" })
 
         XCTAssertEqual(rows.map(\.label), [
-            "Name", "PID", "Parent", "Owner", "Started", "Executable Path", "App Bundle", "CPU", "Memory",
-            "Disk Read Rate", "Disk Write Rate", "Read Since Start", "Written Since Start", "Network"
+            "Name", "PID", "Parent", "Owner", "Started", "Architecture", "Threads",
+            "Executable Path", "App Bundle", "CPU", "Memory",
+            "Disk Read Rate", "Disk Write Rate", "Read Since Start", "Written Since Start",
+            "Network", "Network Receive", "Network Send"
         ])
         XCTAssertEqual(value("Name", rows), "Fixture Renderer Worker")
         XCTAssertEqual(value("PID", rows), "411")
@@ -21,11 +23,15 @@ final class ProcessInspectorTests: XCTestCase {
         XCTAssertEqual(value("Started", rows),
                        ProcessesViewController.startTimeFormatter.string(
                            from: ProcessesViewController.startDate(renderer.id.startTime)))
+        XCTAssertEqual(value("Architecture", rows), ProcessInspectorModel.architectureLabel(renderer.architecture))
+        XCTAssertEqual(value("Threads", rows), renderer.threadCount.map(String.init))
         XCTAssertEqual(value("Executable Path", rows), renderer.executablePath)
         XCTAssertEqual(value("App Bundle", rows), "/Applications/Fixture Editor.app")
         XCTAssertEqual(value("Read Since Start", rows), UIFormat.metric(renderer.diskReadTotalBytes))
         XCTAssertEqual(value("Written Since Start", rows), UIFormat.metric(renderer.diskWriteTotalBytes))
         XCTAssertEqual(value("Disk Read Rate", rows), UIFormat.metric(renderer.diskReadBytesPerSecond))
+        XCTAssertNotNil(value("Network Receive", rows))
+        XCTAssertNotNil(value("Network Send", rows))
         XCTAssertEqual(rows.first { $0.label == "PID" }?.isMonospaced, true)
     }
 
@@ -73,6 +79,10 @@ final class ProcessInspectorTests: XCTestCase {
         let totalRead = try XCTUnwrap(leader.diskReadTotalBytes.value) + (renderer.diskReadTotalBytes.value ?? 0)
         XCTAssertEqual(value("Read Since Start", rows),
                        UIFormat.metric(MetricReading(value: totalRead, unit: .bytes, timestamp: snapshot.timestamp)))
+        XCTAssertEqual(value("Network Receive", rows), UIFormat.metric(group.networkReceiveBytesPerSecond))
+        XCTAssertEqual(value("Network Send", rows), UIFormat.metric(group.networkTransmitBytesPerSecond))
+        let cpuRow = try XCTUnwrap(rows.first { $0.label == "CPU" })
+        XCTAssertEqual(cpuRow.toolTip, cpuRow.value)
     }
 
     func testStandaloneGroupHasNoAppBundle() throws {

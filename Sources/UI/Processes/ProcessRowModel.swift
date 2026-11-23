@@ -3,20 +3,38 @@ import AppKit
 /// Identity of one outline row. A group's leader is also one of its members, so the row kind is part
 /// of the key: `.group(410)` and `.process(410)` are different rows.
 enum ProcessRowID: Hashable {
+    case section(ProcessCategory)
     case group(ProcessIdentity)
     case process(ProcessIdentity)
 
+    var processIdentity: ProcessIdentity? {
+        switch self {
+        case .section: return nil
+        case .group(let identity), .process(let identity): return identity
+        }
+    }
+
     var identity: ProcessIdentity {
         switch self {
-        case .group(let identity), .process(let identity): return identity
+        case .section:
+            return ProcessIdentity(pid: 0, startTime: ProcessStartTime(secondsSinceEpoch: 0, microseconds: 0))
+        case .group(let identity), .process(let identity):
+            return identity
         }
     }
 }
 
-/// `byApp` nests member processes under their group; `flat` lists every process at the top level.
+/// `byApp` nests member processes under their group; `byCategory` groups under Task Manager sections; `flat` is ungrouped.
 enum ProcessGrouping: Equatable {
     case byApp
+    case byCategory
     case flat
+}
+
+enum ProcessScopeFilter: String, Equatable {
+    case all
+    case apps
+    case myProcesses
 }
 
 /// Stores only full PID-plus-start-time identities. A reused PID cannot inherit an old expansion.
@@ -72,6 +90,8 @@ enum ProcessColumn: String, CaseIterable {
     case cpu = "process.column.cpu"
     case memory = "process.column.memory"
     case disk = "process.column.disk"
+    case diskRead = "process.column.disk-read"
+    case diskWrite = "process.column.disk-write"
     case network = "process.column.network"
     case gpu = "process.column.gpu"
 
@@ -85,7 +105,9 @@ enum ProcessColumn: String, CaseIterable {
         case .user: return String(localized: "User")
         case .cpu: return String(localized: "CPU")
         case .memory: return String(localized: "Memory")
-        case .disk: return String(localized: "Disk R / W")
+        case .disk: return String(localized: "Disk")
+        case .diskRead: return String(localized: "Disk Read")
+        case .diskWrite: return String(localized: "Disk Write")
         case .network: return String(localized: "Network")
         case .gpu: return String(localized: "GPU")
         }
@@ -100,7 +122,7 @@ enum ProcessColumn: String, CaseIterable {
         switch self {
         case .cpu: return ColorPreferences.color(for: .cpu)
         case .memory: return ColorPreferences.color(for: .memory)
-        case .disk: return ColorPreferences.color(for: .disk)
+        case .disk, .diskRead, .diskWrite: return ColorPreferences.color(for: .disk)
         case .network: return ColorPreferences.color(for: .network)
         case .name, .pid, .user, .gpu: return .systemOrange
         }
@@ -119,6 +141,22 @@ struct ProcessNameContent: Equatable {
     /// Application bundle whose icon represents the group; nil shows the generic executable icon.
     let bundlePath: String?
     let accessibilityID: String
+    let memberCount: Int
+    let isSectionHeader: Bool
+
+    init(title: String,
+         isGroup: Bool,
+         bundlePath: String?,
+         accessibilityID: String,
+         memberCount: Int = 1,
+         isSectionHeader: Bool = false) {
+        self.title = title
+        self.isGroup = isGroup
+        self.bundlePath = bundlePath
+        self.accessibilityID = accessibilityID
+        self.memberCount = memberCount
+        self.isSectionHeader = isSectionHeader
+    }
 }
 
 /// Content of one cell. Metric cells carry the presentation and the heat fraction (0...1, nil for none).
@@ -162,18 +200,31 @@ struct ProcessOutlineInput {
     /// Groups the user collapsed while a search was active; they stay collapsed until the search changes.
     var collapsedDuringSearch: Set<ProcessIdentity>
     var ownerName: (UInt32?) -> String
+    var scopeFilter: ProcessScopeFilter = .all
+    var currentUID: UInt32 = UInt32(getuid())
+    var collapsedCategories: Set<ProcessCategory> = []
 }
 
-/// The desired outline layout. `children` lists the members of expanded groups only.
+/// The desired outline layout. `children` lists the members of expanded groups and expanded category sections.
 @MainActor
 struct ProcessOutline {
     var topLevel: [ProcessRowID]
     var children: [ProcessRowID: [ProcessRowID]]
     var rows: [ProcessRowID: ProcessRow]
 
-    /// Row order when every group in `children` is expanded.
+    /// Row order in pre-order traversal when expanded groups and sections are open.
     var visibleOrder: [ProcessRowID] {
-        topLevel.flatMap { [$0] + (children[$0] ?? []) }
+        var result: [ProcessRowID] = []
+        func append(_ id: ProcessRowID) {
+            result.append(id)
+            for child in children[id] ?? [] {
+                append(child)
+            }
+        }
+        for id in topLevel {
+            append(id)
+        }
+        return result
     }
 }
 
@@ -204,7 +255,9 @@ enum ProcessRowModel {
         let query = input.query.trimmingCharacters(in: .whitespacesAndNewlines)
         let context = Context(input: input, query: query)
         if input.grouping == .flat {
-            let raws = input.processes.filter(context.processMatches).map(context.rawProcess)
+            let raws = input.processes
+                .filter { context.scopeMatches(process: $0) && context.processMatches($0) }
+                .map(context.rawProcess)
             let top = sorted(raws, by: input.sort)
             let rows = makeRows(top.map { ($0, false) }, context: context)
             return ProcessOutline(topLevel: top.map(\.id), children: [:], rows: rows)
@@ -212,19 +265,61 @@ enum ProcessRowModel {
 
         var entries: [Entry] = []
         for group in input.groups {
+            guard context.scopeMatches(group: group) else { continue }
             let members = group.members.compactMap { context.byIdentity[$0] }
             let groupMatches = context.searching && context.groupMatches(group)
             let visibleMembers = context.searching && !groupMatches ? members.filter(context.processMatches) : members
             if context.searching && !groupMatches && visibleMembers.isEmpty { continue }
-            let isExpandable = !visibleMembers.isEmpty
+            let hasDistinctSearchChild = context.searching && !groupMatches
+                && visibleMembers.contains(where: { $0.id != group.id })
+            let isExpandable = visibleMembers.count > 1 || hasDistinctSearchChild
             let manual = input.expandedGroups.contains(group.id)
             let automatic = context.searching && isExpandable && !input.collapsedDuringSearch.contains(group.id)
             let expanded = isExpandable && (manual || automatic)
-            entries.append(Entry(raw: context.rawGroup(group, members: members),
+            entries.append(Entry(raw: context.rawGroup(group, members: members, isExpandable: isExpandable),
+                                 category: group.category,
                                  isExpandable: isExpandable,
                                  expanded: expanded,
-                                 children: sorted(visibleMembers.map(context.rawProcess), by: input.sort)))
+                                 children: expanded ? sorted(visibleMembers.map(context.rawProcess), by: input.sort) : []))
         }
+
+        if input.grouping == .byCategory {
+            let orderedCategories: [ProcessCategory] = [.application, .background, .system]
+            var sectionTopLevel: [ProcessRowID] = []
+            var children: [ProcessRowID: [ProcessRowID]] = [:]
+            var displayed: [(RawRow, Bool)] = []
+            var heatParticipants: [(RawRow, Bool)] = []
+
+            for category in orderedCategories {
+                let bucket = entries.filter { $0.category == category }
+                    .sorted { precedes($0.raw, $1.raw, by: input.sort) }
+                guard !bucket.isEmpty else { continue }
+                let sectionID = ProcessRowID.section(category)
+                let sectionRaw = context.rawSection(category, count: bucket.count)
+                sectionTopLevel.append(sectionID)
+                displayed.append((sectionRaw, true))
+
+                let isSectionExpanded = context.searching || !input.collapsedCategories.contains(category)
+                if isSectionExpanded {
+                    children[sectionID] = bucket.map(\.raw.id)
+                    for entry in bucket {
+                        displayed.append((entry.raw, entry.isExpandable))
+                        heatParticipants.append((entry.raw, entry.isExpandable))
+                        if entry.expanded && !entry.children.isEmpty {
+                            children[entry.raw.id] = entry.children.map(\.id)
+                            for child in entry.children {
+                                displayed.append((child, false))
+                                heatParticipants.append((child, false))
+                            }
+                        }
+                    }
+                }
+            }
+
+            let rows = makeRows(displayed, heatInputs: heatParticipants, context: context)
+            return ProcessOutline(topLevel: sectionTopLevel, children: children, rows: rows)
+        }
+
         entries = entries.sorted { lhs, rhs in
             precedes(lhs.raw, rhs.raw, by: input.sort)
         }
@@ -239,6 +334,18 @@ enum ProcessRowModel {
             children[entry.raw.id] = entry.children.map(\.id)
         }
         return ProcessOutline(topLevel: entries.map(\.raw.id), children: children, rows: rows)
+    }
+
+    /// Number of process rows a flat `build` of the same input lists: processes passing the scope and search
+    /// filters. Group, section and child rows are not counted. Sorts nothing and builds no rows.
+    static func matchingProcessCount(_ input: ProcessOutlineInput) -> Int {
+        let context = Context(input: input, query: input.query.trimmingCharacters(in: .whitespacesAndNewlines))
+        // A flat build keys its rows by process identity, so a repeated identity counts once.
+        var identities = Set<ProcessIdentity>()
+        for process in input.processes where context.scopeMatches(process: process) && context.processMatches(process) {
+            identities.insert(process.id)
+        }
+        return identities.count
     }
 
     /// Operations that turn `old` into `new`. Both lists must hold unique IDs.
@@ -314,6 +421,47 @@ enum ProcessRowModel {
         return min(max(value / maximum, 0), 1)
     }
 
+    /// Compact combined Disk throughput cell (e.g. "0 B/s", "391 KB/s") with R/W split in the tooltip.
+    static func diskPresentation(read: MetricReading, write: MetricReading) -> MetricCellPresentation {
+        let readPres = MetricCellPresentation(read)
+        let writePres = MetricCellPresentation(write)
+        let badge: MetricCellPresentation.Badge
+        if readPres.badge == .unavailable || writePres.badge == .unavailable {
+            badge = .unavailable
+        } else if readPres.badge == .partial || writePres.badge == .partial {
+            badge = .partial
+        } else {
+            badge = .none
+        }
+        let tips = [
+            String(localized: "Read: \(readPres.valueText)"),
+            String(localized: "Write: \(writePres.valueText)")
+        ]
+        var extraDetails: [String] = []
+        if let readTip = readPres.toolTip { extraDetails.append(readTip) }
+        if let writeTip = writePres.toolTip, writeTip != readPres.toolTip { extraDetails.append(writeTip) }
+        let fullToolTip = (tips + extraDetails).joined(separator: "\n")
+
+        if let total = diskTotal(read: read, write: write) {
+            let formatted = UIFormat.bytesPerSecond(total)
+            return MetricCellPresentation(
+                valueText: formatted,
+                badge: badge,
+                toolTip: fullToolTip,
+                accessibilityDescription: String(localized: "Disk \(formatted), read \(readPres.accessibilityDescription), write \(writePres.accessibilityDescription)")
+            )
+        }
+        let fallbackValue = (readPres.valueText == writePres.valueText)
+            ? readPres.valueText
+            : String(localized: "R \(readPres.valueText) · W \(writePres.valueText)")
+        return MetricCellPresentation(
+            valueText: fallbackValue,
+            badge: badge,
+            toolTip: fullToolTip,
+            accessibilityDescription: String(localized: "Read \(readPres.accessibilityDescription), write \(writePres.accessibilityDescription)")
+        )
+    }
+
     /// Disk read and write as one cell: "R … · W …", with the worst badge of the two halves.
     static func diskPresentation(read: MetricCellPresentation, write: MetricCellPresentation) -> MetricCellPresentation {
         let badge: MetricCellPresentation.Badge
@@ -348,6 +496,8 @@ enum ProcessRowModel {
         let id: ProcessRowID
         let title: String
         let isGroup: Bool
+        let isSectionHeader: Bool
+        let memberCount: Int
         let accessibilityID: String
         let toggleID: String?
         let executablePath: String?
@@ -366,8 +516,10 @@ enum ProcessRowModel {
     @MainActor
     private struct Entry {
         let raw: RawRow
+        let category: ProcessCategory
         let isExpandable: Bool
         let expanded: Bool
+        /// Sorted member rows. Empty unless `expanded`, because collapsed groups never show their members.
         let children: [RawRow]
     }
 
@@ -409,6 +561,8 @@ enum ProcessRowModel {
         case .cpu: return numeric(raw.cpu.value)
         case .memory: return numeric(raw.memory.value)
         case .disk: return numeric(diskTotal(read: raw.diskRead, write: raw.diskWrite))
+        case .diskRead: return numeric(raw.diskRead.value)
+        case .diskWrite: return numeric(raw.diskWrite.value)
         case .network: return numeric(raw.network.value)
         case .gpu: return numeric(raw.gpu.value)
         }
@@ -428,12 +582,22 @@ enum ProcessRowModel {
 
     // MARK: - Rows
 
-    private static func makeRows(_ displayed: [(RawRow, Bool)], context: Context) -> [ProcessRowID: ProcessRow] {
+    private static func makeRows(_ displayed: [(RawRow, Bool)],
+                                 heatInputs: [(RawRow, Bool)]? = nil,
+                                 context: Context) -> [ProcessRowID: ProcessRow] {
         var maxDisk: Double?
+        var maxDiskRead: Double?
+        var maxDiskWrite: Double?
         var maxNetwork: Double?
-        for (raw, _) in displayed {
+        for (raw, _) in (heatInputs ?? displayed) where !raw.isSectionHeader {
             if let total = diskTotal(read: raw.diskRead, write: raw.diskWrite), total > (maxDisk ?? -.infinity) {
                 maxDisk = total
+            }
+            if let value = raw.diskRead.value, value.isFinite, value > (maxDiskRead ?? -.infinity) {
+                maxDiskRead = value
+            }
+            if let value = raw.diskWrite.value, value.isFinite, value > (maxDiskWrite ?? -.infinity) {
+                maxDiskWrite = value
             }
             if let value = raw.network.value, value.isFinite, value > (maxNetwork ?? -.infinity) {
                 maxNetwork = value
@@ -441,27 +605,47 @@ enum ProcessRowModel {
         }
         var rows: [ProcessRowID: ProcessRow] = [:]
         for (raw, isExpandable) in displayed {
-            rows[raw.id] = makeRow(raw, isExpandable: isExpandable, maxDisk: maxDisk,
+            rows[raw.id] = makeRow(raw, isExpandable: isExpandable,
+                                   maxDisk: maxDisk, maxDiskRead: maxDiskRead, maxDiskWrite: maxDiskWrite,
                                    maxNetwork: maxNetwork, physicalMemory: context.input.physicalMemoryBytes)
         }
         return rows
     }
 
-    private static func makeRow(_ raw: RawRow, isExpandable: Bool, maxDisk: Double?, maxNetwork: Double?,
-                                physicalMemory: Double?) -> ProcessRow {
+    private static func makeRow(_ raw: RawRow, isExpandable: Bool,
+                                maxDisk: Double?, maxDiskRead: Double?, maxDiskWrite: Double?,
+                                maxNetwork: Double?, physicalMemory: Double?) -> ProcessRow {
+        if raw.isSectionHeader {
+            var cells: [ProcessColumn: ProcessCellContent] = [:]
+            cells[.name] = .name(ProcessNameContent(title: raw.title, isGroup: false,
+                                                    bundlePath: nil,
+                                                    accessibilityID: raw.accessibilityID,
+                                                    memberCount: raw.memberCount,
+                                                    isSectionHeader: true))
+            for column in ProcessColumn.allCases where column != .name {
+                cells[column] = .text("")
+            }
+            return ProcessRow(id: raw.id, title: raw.title, isGroup: false, isExpandable: isExpandable,
+                              accessibilityID: raw.accessibilityID, toggleID: raw.toggleID,
+                              executablePath: nil, iconBundlePath: nil, cells: cells)
+        }
         let disk = diskTotal(read: raw.diskRead, write: raw.diskWrite)
         var cells: [ProcessColumn: ProcessCellContent] = [:]
         cells[.name] = .name(ProcessNameContent(title: raw.title, isGroup: raw.isGroup,
                                                 bundlePath: raw.iconBundlePath,
-                                                accessibilityID: raw.accessibilityID))
+                                                accessibilityID: raw.accessibilityID,
+                                                memberCount: raw.memberCount))
         cells[.pid] = .text(String(raw.pid))
         cells[.user] = .text(raw.ownerName)
         cells[.cpu] = .metric(MetricCellPresentation(raw.cpu), heat: heat(raw.cpu.value, maximum: 100))
         cells[.memory] = .metric(MetricCellPresentation(raw.memory),
                                  heat: heat(raw.memory.value, maximum: physicalMemory))
-        cells[.disk] = .metric(diskPresentation(read: MetricCellPresentation(raw.diskRead),
-                                                write: MetricCellPresentation(raw.diskWrite)),
+        cells[.disk] = .metric(diskPresentation(read: raw.diskRead, write: raw.diskWrite),
                                heat: heat(disk, maximum: maxDisk))
+        cells[.diskRead] = .metric(MetricCellPresentation(raw.diskRead),
+                                   heat: heat(raw.diskRead.value, maximum: maxDiskRead))
+        cells[.diskWrite] = .metric(MetricCellPresentation(raw.diskWrite),
+                                    heat: heat(raw.diskWrite.value, maximum: maxDiskWrite))
         cells[.network] = .metric(MetricCellPresentation(raw.network), heat: heat(raw.network.value, maximum: maxNetwork))
         cells[.gpu] = .metric(MetricCellPresentation(raw.gpu), heat: nil)
         return ProcessRow(id: raw.id, title: raw.title, isGroup: raw.isGroup, isExpandable: isExpandable,
@@ -544,9 +728,44 @@ enum ProcessRowModel {
             input.ownerName(uid)
         }
 
+        func scopeMatches(process: ProcessSnapshot) -> Bool {
+            switch input.scopeFilter {
+            case .all: return true
+            case .apps: return process.category == .application
+            case .myProcesses: return process.ownerUID == input.currentUID || process.isCurrentUser
+            }
+        }
+
+        func scopeMatches(group: ProcessGroupSnapshot) -> Bool {
+            switch input.scopeFilter {
+            case .all: return true
+            case .apps: return group.category == .application
+            case .myProcesses: return group.ownerUID == input.currentUID
+            }
+        }
+
+        func rawSection(_ category: ProcessCategory, count: Int) -> RawRow {
+            let title: String
+            switch category {
+            case .application: title = String(localized: "Apps")
+            case .background: title = String(localized: "Background processes")
+            case .system: title = String(localized: "System processes")
+            }
+            let slug = "process.section.\(category.rawValue)"
+            let placeholder = MetricReading(unavailable: .percent, timestamp: timestamp, reason: .unsupported)
+            return RawRow(
+                id: .section(category), title: title, isGroup: false, isSectionHeader: true,
+                memberCount: count,
+                accessibilityID: slug, toggleID: "process.section.toggle.\(category.rawValue)",
+                executablePath: nil, iconBundlePath: nil, ownerUID: nil, ownerName: "", pid: 0,
+                cpu: placeholder, memory: placeholder, diskRead: placeholder, diskWrite: placeholder,
+                network: placeholder, gpu: placeholder)
+        }
+
         func rawProcess(_ process: ProcessSnapshot) -> RawRow {
             RawRow(
-                id: .process(process.id), title: process.name, isGroup: false,
+                id: .process(process.id), title: process.name, isGroup: false, isSectionHeader: false,
+                memberCount: 1,
                 accessibilityID: "process.row.\(process.id.pid)", toggleID: nil,
                 executablePath: process.executablePath, iconBundlePath: nil,
                 ownerUID: process.ownerUID, ownerName: owner(process.ownerUID), pid: process.id.pid,
@@ -556,14 +775,15 @@ enum ProcessRowModel {
                 gpu: processReading(process, .processGPUTime))
         }
 
-        func rawGroup(_ group: ProcessGroupSnapshot, members: [ProcessSnapshot]) -> RawRow {
+        func rawGroup(_ group: ProcessGroupSnapshot, members: [ProcessSnapshot], isExpandable: Bool) -> RawRow {
             let duplicated = (slugCounts[ProcessRowModel.slug(group.title)] ?? 0) > 1
             let slug = ProcessRowModel.slug(group.title)
             let suffix = duplicated ? ".\(groupIdentifierSuffix(group.id))" : ""
             return RawRow(
-                id: .group(group.id), title: group.title, isGroup: true,
+                id: .group(group.id), title: group.title, isGroup: true, isSectionHeader: false,
+                memberCount: members.count,
                 accessibilityID: "process.group.\(slug)\(suffix)",
-                toggleID: "process.group.toggle.\(slug)\(suffix)",
+                toggleID: isExpandable ? "process.group.toggle.\(slug)\(suffix)" : nil,
                 executablePath: group.executablePath,
                 iconBundlePath: group.association == .applicationBundle
                     ? ProcessRowModel.appBundlePath(for: group.executablePath) : nil,

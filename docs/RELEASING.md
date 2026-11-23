@@ -32,7 +32,7 @@ Run the Core XCTest suite. It is unsigned and needs no GUI session:
 ```sh
 mkdir -p DerivedData/TestResults
 rm -rf DerivedData/TestResults/Microgravity-Core.xcresult
-xcodebuild \
+MICROGRAVITY_SKIP_EMBED_SIGNING=1 xcodebuild \
   -project Microgravity.xcodeproj \
   -scheme Test \
   -configuration Debug \
@@ -60,13 +60,21 @@ Hosted CI (`.github/workflows/ci.yml`) runs the Node suite, project and version 
 
 `npm run release:prepare` runs `test:all -- --skip-ui` by default: version, project, and workspace checks, the Node suite, and Core XCTest. It records its 24-hour quality proof only after success, and the proof's `gate` field names the command that ran. Set `MICROGRAVITY_RELEASE_UI_TESTS=1` to include the UI suite in a release run. The UI suite is slow and takes over the desktop, so run the full `npm run test:all` (signed, on a logged-in session) whenever a change touches the interface, and before a release that contains interface changes since the last full run. An older `--skip-ui` run recorded on 2026-11-08 executed 220 Core tests, 0 failed, 0 skipped, from the `~/Documents` checkout without hanging. That count is superseded by the 2026-11-08 results below.
 
-Latest results, 2026-11-08, branch `next-0.1.2` (commit `f8b6a68` plus test fixes that were later committed):
+### 0.3.0 results
+
+- Core gate, `npm run test:all -- --skip-ui`: pass on 2026-11-23 (Apple M5 Pro, dirty worktree, so no release proof recorded). 481 core XCTest tests, 0 failures; Node tests 39/39 pass; version sync, project sync and validate ok.
+- Full gate, `npm run test:all`: pass on 2026-11-23. 481 core tests and 25 UI tests (`MicrogravityUITests`), 0 failures. The UI tests ran unsigned (no `MICROGRAVITY_UI_SIGNING_IDENTITY` / `MICROGRAVITY_UI_TEAM_ID` set).
+- Release smoke, `npm run build:release-smoke`: pass on 2026-11-23 (unsigned universal Release build, arm64 and x86_64). The helper binary links no libsqlite3 and has only the `/usr/lib/swift` rpath.
+
+### Earlier results
+
+Historical: results from 2026-11-08, branch `next-0.1.2` (commit `f8b6a68` plus test fixes that were later committed):
 
 - Unsigned Core XCTest executed 286 tests, 0 failed.
 - Signed UI tests (`-only-testing:MicrogravityUITests`, the command below, `DEVELOPMENT_TEAM=FYJZP8B2KG`, run from the `~/Documents` checkout) executed 23 tests: 21 passed and 2 failed. Both failures were stale assertions after 0.1.1: `testHistoryShowsGapsAndRequiresConfirmationToReset` checked the gap row without waiting after expanding an app that was now collapsed, and `testDetailsIsFlatAndShowsUnavailableMetricsExplicitly` expected "Unsupported" where the banner now says the network column needs the optional helper. Both tests were fixed and passed on rerun. The full UI suite was not rerun after the fixes.
 - These were not `npm run test:all` composite runs, so no release proof was recorded.
 
-The results below from 2026-11-07 are the last complete signed run. The signed run on 2026-11-07, on source `ec836a6` plus uncommitted `gate/0.1.0` changes from an isolated worktree outside `~/Documents`, exited 0: 243 tests executed (Core 220, UI 23), 0 failed, 0 skipped, 0 expected failures. It used `MICROGRAVITY_UI_SIGNING_IDENTITY='Apple Development' MICROGRAVITY_UI_TEAM_ID=<team-id> npm run test:all`. `test:all` reported `dirty worktree; no reusable release proof recorded`. Hosted CI runs only Core XCTest and records no release proof.
+Historical: the 2026-11-07 run is the last complete signed run recorded in this file. The signed run on 2026-11-07, on source `ec836a6` plus uncommitted `gate/0.1.0` changes from an isolated worktree outside `~/Documents`, exited 0: 243 tests executed (Core 220, UI 23), 0 failed, 0 skipped, 0 expected failures. It used `MICROGRAVITY_UI_SIGNING_IDENTITY='Apple Development' MICROGRAVITY_UI_TEAM_ID=<team-id> npm run test:all`. `test:all` reported `dirty worktree; no reusable release proof recorded`. Hosted CI runs only Core XCTest and records no release proof.
 
 In the 2026-11-07 run, the UI suite executed 23 tests with 0 failures and 0 skipped. The visual matrix captured 8 pages in System, Light, and Dark appearances at 1280 × 820 and 960 × 600 (48 captures), and the App History gap test adds 2 captures. The manager reviewed all of them; known visual issues are listed in `docs/IMPLEMENTATION_STATUS.md`. Fixture monitoring emits repeatable later snapshots; refresh tests establish selection, record current freshness, then wait for another refresh and assert selection remains attached. Expansion persistence is checked through native disclosure state across relaunch; history sorting uses native header clicks in both directions. The Debug fixture app clears per-test defaults on graceful termination only when XCTest markers, `--ui-test-fixtures`, and an exact `Microgravity.UITests.test…` suite name match. UI-test teardown sends Command-Q and waits for process exit; the persistence test force-terminates mid-test so expansion survives until final teardown. The app clears only that suite and autosave keys derived from it, synchronizes and verifies removal, and cancels termination on cleanup failure. The external host audit found zero nonempty fixture domains and zero matching autosave keys.
 
@@ -114,7 +122,7 @@ Troubleshooting:
 
 The vendored copy omits `generate_keys` and `generate_appcast`. `./get_sparkle.sh --tools [DIR]` runs the same verification, then installs the complete pinned release into `DIR` (default `~/Sparkle`) without touching `vendor/Sparkle`. An existing `DIR` is moved aside to `DIR.previous-<version>-<timestamp>`, never deleted; Sparkle keys live in the login keychain, so replacing the directory does not affect them.
 
-## Manual UI checklist (0.1.0)
+## Manual UI checklist
 
 Run this on a Mac with a logged-in desktop session before tagging, and record the date, macOS version, Xcode version, and any failure in `docs/IMPLEMENTATION_STATUS.md`.
 

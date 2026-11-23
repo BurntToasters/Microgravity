@@ -360,6 +360,69 @@ final class WindowTests: XCTestCase {
         XCTAssertTrue(identity.accessibilityLabel()?.contains("PID 411,") == true)
     }
 
+    func testAlwaysOnTopTogglesWindowLevelMenuValidationAndDefaultsOutsideFixtureMode() throws {
+        let defaults = UserDefaults.standard
+        let key = MainWindowController.alwaysOnTopDefaultsKey
+        let prior = defaults.object(forKey: key)
+        defaults.removeObject(forKey: key)
+        addTeardownBlock {
+            if let prior { defaults.set(prior, forKey: key) } else { defaults.removeObject(forKey: key) }
+        }
+
+        // Non-fixture mode persists Window > Always on Top across launches.
+        let configuration = FixtureConfiguration(arguments: [])
+        let store = FixtureMonitoringStore(configuration: configuration)
+        let nonFixtureDependencies = AppDependencies(
+            monitoringStore: store,
+            processActions: FixtureProcessActioner(configuration: configuration),
+            integrations: UnavailableSystemIntegrationAPI(),
+            fixtureMode: false
+        )
+        let first = MainWindowController(dependencies: nonFixtureDependencies, frameAutosaveName: nil)
+        let firstWindow = try XCTUnwrap(first.window)
+        defer { firstWindow.close() }
+
+        let viewMenu = try XCTUnwrap(MainMenu.make().items.first { $0.title == "View" }?.submenu)
+        let menuItem = try XCTUnwrap(menuItem(action: #selector(MainWindowController.toggleAlwaysOnTop(_:)), in: viewMenu))
+        XCTAssertEqual(menuItem.keyEquivalent, "t")
+        XCTAssertEqual(menuItem.keyEquivalentModifierMask, [.command, .option])
+
+        XCTAssertFalse(first.isAlwaysOnTop)
+        XCTAssertEqual(firstWindow.level, .normal)
+        XCTAssertTrue(first.validateUserInterfaceItem(menuItem))
+        XCTAssertEqual(menuItem.state, .off)
+
+        first.toggleAlwaysOnTop(menuItem)
+        XCTAssertTrue(first.isAlwaysOnTop)
+        XCTAssertEqual(firstWindow.level, .floating)
+        XCTAssertTrue(defaults.bool(forKey: key))
+        XCTAssertTrue(first.validateUserInterfaceItem(menuItem))
+        XCTAssertEqual(menuItem.state, .on)
+
+        // New non-fixture controller restores the persisted floating level.
+        let restored = MainWindowController(dependencies: nonFixtureDependencies, frameAutosaveName: nil)
+        let restoredWindow = try XCTUnwrap(restored.window)
+        defer { restoredWindow.close() }
+        XCTAssertTrue(restored.isAlwaysOnTop)
+        XCTAssertEqual(restoredWindow.level, .floating)
+
+        // Fixture mode ignores and never mutates the user default.
+        let (fixtureDependencies, _) = makeShellDependencies()
+        let fixtureController = MainWindowController(dependencies: fixtureDependencies, frameAutosaveName: nil)
+        let fixtureWindow = try XCTUnwrap(fixtureController.window)
+        defer { fixtureWindow.close() }
+        XCTAssertFalse(fixtureController.isAlwaysOnTop)
+        XCTAssertEqual(fixtureWindow.level, .normal)
+        fixtureController.toggleAlwaysOnTop(menuItem)
+        XCTAssertTrue(fixtureController.isAlwaysOnTop)
+        XCTAssertTrue(defaults.bool(forKey: key))
+
+        restored.toggleAlwaysOnTop(menuItem)
+        XCTAssertFalse(restored.isAlwaysOnTop)
+        XCTAssertEqual(restoredWindow.level, .normal)
+        XCTAssertFalse(defaults.bool(forKey: key))
+    }
+
     private final class NotificationCounter: @unchecked Sendable {
         var value = 0
     }

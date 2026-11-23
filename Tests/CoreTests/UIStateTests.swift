@@ -419,14 +419,14 @@ final class UIStateTests: XCTestCase {
     }
 
     func testDetailsRowMenuSelectsTheClickedRowAndDisablesPathActionsWithoutAPath() throws {
-        let (_, store, _) = makeDependencies()
+        let (dependencies, store, _) = makeDependencies()
         let base = try XCTUnwrap(store.latestSnapshot)
         let pathless = makeDiskProcess(pid: 999, name: "Pathless Helper",
                                        read: MetricReading(value: 0, unit: .bytesPerSecond, timestamp: base.timestamp),
                                        write: MetricReading(value: 0, unit: .bytesPerSecond, timestamp: base.timestamp),
                                        timestamp: base.timestamp)
         let snapshot = copy(base, timestamp: base.timestamp, processes: base.processes + [pathless])
-        let details = DetailsViewController(autosaveName: nil)
+        let details = DetailsViewController(dependencies: dependencies, autosaveName: nil)
         details.loadViewIfNeeded()
         details.update(snapshot: snapshot)
         let table = try XCTUnwrap(view(withIdentifier: "details.table", in: details.view) as? NSTableView)
@@ -436,8 +436,8 @@ final class UIStateTests: XCTestCase {
         details.configureContextMenu(menu, clickedRow: withPath)
         XCTAssertEqual(table.selectedRow, withPath, "right-click selects the clicked row first")
         let titles = menu.items.filter { !$0.isSeparatorItem }.map(\.title)
-        XCTAssertEqual(titles, ["Show in Processes", "Reveal in Finder", "Copy Path", "Copy PID"])
-        XCTAssertEqual(menu.items.map(\.isSeparatorItem), [false, true, false, false, false])
+        XCTAssertEqual(titles, ["Quit Process", "Force Quit…", "Inspect…", "Show in Processes", "Reveal in Finder", "Copy Path", "Copy PID"])
+        XCTAssertEqual(menu.items.map(\.isSeparatorItem), [false, false, true, false, false, true, false, false, false])
         XCTAssertTrue(menu.items.filter { !$0.isSeparatorItem }.allSatisfy(\.isEnabled))
 
         let withoutPath = try XCTUnwrap(detailsRow(id: "details.process.999", table: table))
@@ -447,6 +447,16 @@ final class UIStateTests: XCTestCase {
         XCTAssertEqual(menu.items.first { $0.title == "Copy Path" }?.isEnabled, false)
         XCTAssertEqual(menu.items.first { $0.title == "Copy PID" }?.isEnabled, true)
         XCTAssertEqual(menu.items.first { $0.title == "Show in Processes" }?.isEnabled, true)
+        XCTAssertEqual(menu.items.first { $0.title == "Inspect…" }?.isEnabled, true)
+
+        let noDependenciesDetails = DetailsViewController(autosaveName: nil)
+        noDependenciesDetails.loadViewIfNeeded()
+        noDependenciesDetails.update(snapshot: snapshot)
+        let noDependenciesTable = try XCTUnwrap(view(withIdentifier: "details.table", in: noDependenciesDetails.view) as? NSTableView)
+        let noDependenciesRow = try XCTUnwrap(detailsRow(id: "details.process.410", table: noDependenciesTable))
+        noDependenciesDetails.configureContextMenu(menu, clickedRow: noDependenciesRow)
+        XCTAssertEqual(menu.items.first { $0.title == "Quit Process" }?.isEnabled, false)
+        XCTAssertEqual(menu.items.first { $0.title == "Force Quit…" }?.isEnabled, false)
 
         details.configureContextMenu(menu, clickedRow: -1)
         XCTAssertTrue(menu.items.isEmpty, "a click outside any row leaves no menu items")

@@ -120,6 +120,52 @@ final class ProcessRowModelTests: XCTestCase {
         XCTAssertEqual(collapsed.topLevel, [.group(identity(100))])
     }
 
+    // MARK: Matching count
+
+    func testMatchingProcessCountEqualsTheProcessRowsOfAFlatBuild() {
+        let fixture = sampleFixture()
+        let queries = ["", "renderer", "RENDERER", "notes", "dev", "620", "root", "/applications", "no-such-thing"]
+        let scopes: [ProcessScopeFilter] = [.all, .apps, .myProcesses]
+        for query in queries {
+            for scope in scopes {
+                let flat = ProcessRowModel.build(input(fixture.processes, fixture.groups, query: query,
+                                                       grouping: .flat, scope: scope))
+                let flatProcessRows = flat.rows.values.filter { !$0.isGroup }.count
+                let count = ProcessRowModel.matchingProcessCount(input(fixture.processes, fixture.groups,
+                                                                       query: query, scope: scope))
+                XCTAssertEqual(count, flatProcessRows, "query=\(query) scope=\(scope)")
+            }
+        }
+    }
+
+    func testMatchingProcessCountCountsMembersOfCollapsedGroupsAndIgnoresGrouping() {
+        let fixture = sampleFixture()
+        XCTAssertEqual(ProcessRowModel.matchingProcessCount(input(fixture.processes, fixture.groups)),
+                       fixture.processes.count)
+        XCTAssertEqual(ProcessRowModel.matchingProcessCount(input(fixture.processes, fixture.groups,
+                                                                  query: "renderer")), 1)
+        XCTAssertEqual(ProcessRowModel.matchingProcessCount(input(fixture.processes, fixture.groups,
+                                                                  query: "dev")), 3)
+        XCTAssertEqual(ProcessRowModel.matchingProcessCount(input(fixture.processes, fixture.groups,
+                                                                  query: "no-such-thing")), 0)
+        let expanded = ProcessRowModel.matchingProcessCount(input(fixture.processes, fixture.groups,
+                                                                  expanded: [identity(100)]))
+        let byCategory = ProcessRowModel.matchingProcessCount(input(fixture.processes, fixture.groups,
+                                                                    grouping: .byCategory, expanded: [identity(100)]))
+        XCTAssertEqual(expanded, fixture.processes.count)
+        XCTAssertEqual(byCategory, fixture.processes.count)
+    }
+
+    func testMatchingProcessCountCountsARepeatedIdentityOnce() {
+        let fixture = sampleFixture()
+        let notes = fixture.processes[0]
+        let repeated = [notes, notes]
+        let flat = ProcessRowModel.build(input(repeated, [fixture.groups[0]], grouping: .flat))
+        XCTAssertEqual(ProcessRowModel.matchingProcessCount(input(repeated, [fixture.groups[0]])),
+                       flat.rows.values.filter { !$0.isGroup }.count)
+        XCTAssertEqual(ProcessRowModel.matchingProcessCount(input(repeated, [fixture.groups[0]])), 1)
+    }
+
     // MARK: Search
 
     func testSearchMatchesNameExecutablePathPIDAndUserCaseInsensitively() {
@@ -255,19 +301,36 @@ final class ProcessRowModelTests: XCTestCase {
 
     func testDuplicateGroupTitlesGetDistinctRowAndToggleIdentifiers() {
         let first = identity(410, offset: 1)
+        let firstChild = identity(411, offset: 2)
         let second = identity(620, offset: 3)
+        let secondChild = identity(621, offset: 4)
         let groups = [
-            group(first, title: "Fixture Editor", members: [first]),
-            group(second, title: "Fixture Editor", members: [second])
+            group(first, title: "Fixture Editor", members: [first, firstChild]),
+            group(second, title: "Fixture Editor", members: [second, secondChild])
         ]
-        let processes = [process(410, name: "A", cpu: reading(1), identity: first),
-                         process(620, name: "B", cpu: reading(1), identity: second)]
+        let processes = [
+            process(410, name: "A", cpu: reading(1), identity: first),
+            process(411, name: "A Worker", cpu: reading(0.5), identity: firstChild),
+            process(620, name: "B", cpu: reading(1), identity: second),
+            process(621, name: "B Worker", cpu: reading(0.5), identity: secondChild)
+        ]
         let output = ProcessRowModel.build(input(processes, groups))
         let firstRow = output.rows[.group(first)]
         let secondRow = output.rows[.group(second)]
+        XCTAssertEqual(firstRow?.isExpandable, true)
+        XCTAssertEqual(secondRow?.isExpandable, true)
         XCTAssertNotEqual(firstRow?.accessibilityID, secondRow?.accessibilityID)
         XCTAssertNotEqual(firstRow?.toggleID, secondRow?.toggleID)
         XCTAssertTrue(firstRow?.toggleID?.hasPrefix("process.group.toggle.fixture-editor.pid-410-start-") == true)
+
+        // Single-member groups are never expandable and carry no toggle identifier.
+        let solo = identity(730, offset: 5)
+        let soloOutput = ProcessRowModel.build(input(
+            [process(730, name: "Solo", cpu: reading(1), identity: solo)],
+            [group(solo, title: "Solo App", members: [solo])]
+        ))
+        XCTAssertEqual(soloOutput.rows[.group(solo)]?.isExpandable, false)
+        XCTAssertNil(soloOutput.rows[.group(solo)]?.toggleID)
     }
 
     func testSingleGroupTitleKeepsThePlainSlugIdentifier() {
@@ -371,7 +434,8 @@ final class ProcessRowModelTests: XCTestCase {
                        query: String = "", grouping: ProcessGrouping = .byApp,
                        sort: ProcessSortState = ProcessSortState(column: .cpu, ascending: false),
                        expanded: Set<ProcessIdentity> = [], collapsed: Set<ProcessIdentity> = [],
-                       physicalMemory: Double? = 8_000_000_000) -> ProcessOutlineInput {
+                       physicalMemory: Double? = 8_000_000_000,
+                       scope: ProcessScopeFilter = .all) -> ProcessOutlineInput {
         ProcessOutlineInput(
             processes: processes, groups: groups,
             capabilities: [.processNetwork: MetricAvailability(available: true),
@@ -385,7 +449,7 @@ final class ProcessRowModelTests: XCTestCase {
                 case 0?: return "root"
                 case let other?: return "uid \(other)"
                 }
-            })
+            }, scopeFilter: scope)
     }
 
     private func topLevelTitles(_ query: String, _ fixture: Fixture) -> [String] {

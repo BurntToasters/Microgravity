@@ -145,6 +145,19 @@ public struct ProcessIdentity: Codable, Hashable, Sendable {
     }
 }
 
+public enum ProcessArchitecture: String, Codable, Hashable, Sendable {
+    case appleSilicon
+    case intel
+    case rosetta
+    case unknown
+}
+
+public enum ProcessCategory: String, Codable, Hashable, CaseIterable, Sendable {
+    case application
+    case background
+    case system
+}
+
 public struct ProcessSnapshot: Codable, Equatable, Sendable, Identifiable {
     public let id: ProcessIdentity
     public let parentIdentity: ProcessIdentity?
@@ -162,6 +175,10 @@ public struct ProcessSnapshot: Codable, Equatable, Sendable, Identifiable {
     public let diskReadTotalBytes: MetricReading
     public let diskWriteTotalBytes: MetricReading
     public let advancedMetrics: [MetricKind: MetricReading]
+    public let threadCount: Int32?
+    public let cpuTotalSeconds: MetricReading?
+    public let architecture: ProcessArchitecture?
+    public let category: ProcessCategory
 
     public init(id: ProcessIdentity, parentIdentity: ProcessIdentity?, childIdentities: [ProcessIdentity],
                 name: String, executablePath: String?, ownerUID: UInt32?, isCurrentUser: Bool,
@@ -169,7 +186,10 @@ public struct ProcessSnapshot: Codable, Equatable, Sendable, Identifiable {
                 diskReadBytesPerSecond: MetricReading, diskWriteBytesPerSecond: MetricReading,
                 diskReadTotalBytes: MetricReading, diskWriteTotalBytes: MetricReading,
                 advancedMetrics: [MetricKind: MetricReading] = [:],
-                parentPID: Int32? = nil, parentExecutablePath: String? = nil) {
+                parentPID: Int32? = nil, parentExecutablePath: String? = nil,
+                threadCount: Int32? = nil, cpuTotalSeconds: MetricReading? = nil,
+                architecture: ProcessArchitecture? = nil,
+                category: ProcessCategory = .background) {
         self.id = id
         self.parentIdentity = parentIdentity
         self.parentPID = parentPID ?? parentIdentity?.pid
@@ -186,6 +206,41 @@ public struct ProcessSnapshot: Codable, Equatable, Sendable, Identifiable {
         self.diskReadTotalBytes = diskReadTotalBytes
         self.diskWriteTotalBytes = diskWriteTotalBytes
         self.advancedMetrics = advancedMetrics
+        self.threadCount = threadCount
+        self.cpuTotalSeconds = cpuTotalSeconds
+        self.architecture = architecture
+        self.category = category
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, parentIdentity, parentPID, parentExecutablePath, childIdentities, name, executablePath
+        case ownerUID, isCurrentUser, cpuPercent, memoryBytes
+        case diskReadBytesPerSecond, diskWriteBytesPerSecond, diskReadTotalBytes, diskWriteTotalBytes
+        case advancedMetrics, threadCount, cpuTotalSeconds, architecture, category
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(ProcessIdentity.self, forKey: .id)
+        parentIdentity = try container.decodeIfPresent(ProcessIdentity.self, forKey: .parentIdentity)
+        parentPID = try container.decodeIfPresent(Int32.self, forKey: .parentPID)
+        parentExecutablePath = try container.decodeIfPresent(String.self, forKey: .parentExecutablePath)
+        childIdentities = try container.decode([ProcessIdentity].self, forKey: .childIdentities)
+        name = try container.decode(String.self, forKey: .name)
+        executablePath = try container.decodeIfPresent(String.self, forKey: .executablePath)
+        ownerUID = try container.decodeIfPresent(UInt32.self, forKey: .ownerUID)
+        isCurrentUser = try container.decode(Bool.self, forKey: .isCurrentUser)
+        cpuPercent = try container.decode(MetricReading.self, forKey: .cpuPercent)
+        memoryBytes = try container.decode(MetricReading.self, forKey: .memoryBytes)
+        diskReadBytesPerSecond = try container.decode(MetricReading.self, forKey: .diskReadBytesPerSecond)
+        diskWriteBytesPerSecond = try container.decode(MetricReading.self, forKey: .diskWriteBytesPerSecond)
+        diskReadTotalBytes = try container.decode(MetricReading.self, forKey: .diskReadTotalBytes)
+        diskWriteTotalBytes = try container.decode(MetricReading.self, forKey: .diskWriteTotalBytes)
+        advancedMetrics = try container.decodeIfPresent([MetricKind: MetricReading].self, forKey: .advancedMetrics) ?? [:]
+        threadCount = try container.decodeIfPresent(Int32.self, forKey: .threadCount)
+        cpuTotalSeconds = try container.decodeIfPresent(MetricReading.self, forKey: .cpuTotalSeconds)
+        architecture = try container.decodeIfPresent(ProcessArchitecture.self, forKey: .architecture)
+        category = try container.decodeIfPresent(ProcessCategory.self, forKey: .category) ?? .background
     }
 }
 
@@ -223,12 +278,14 @@ public struct ProcessGroupSnapshot: Codable, Equatable, Sendable, Identifiable {
     public let diskWriteBytesPerSecond: MetricReading
     public let networkReceiveBytesPerSecond: MetricReading
     public let networkTransmitBytesPerSecond: MetricReading
+    public let category: ProcessCategory
 
     public init(id: ProcessIdentity, title: String, ownerUID: UInt32?, executablePath: String?,
                 association: ProcessGroupAssociation, historyIdentity: ApplicationHistoryIdentity,
                 members: [ProcessIdentity], cpuPercent: MetricReading, memoryBytes: MetricReading,
                 diskReadBytesPerSecond: MetricReading, diskWriteBytesPerSecond: MetricReading,
-                networkReceiveBytesPerSecond: MetricReading, networkTransmitBytesPerSecond: MetricReading) {
+                networkReceiveBytesPerSecond: MetricReading, networkTransmitBytesPerSecond: MetricReading,
+                category: ProcessCategory? = nil) {
         self.id = id
         self.title = title
         self.ownerUID = ownerUID
@@ -242,6 +299,32 @@ public struct ProcessGroupSnapshot: Codable, Equatable, Sendable, Identifiable {
         self.diskWriteBytesPerSecond = diskWriteBytesPerSecond
         self.networkReceiveBytesPerSecond = networkReceiveBytesPerSecond
         self.networkTransmitBytesPerSecond = networkTransmitBytesPerSecond
+        self.category = category ?? (association == .applicationBundle ? .application : .background)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, ownerUID, executablePath, association, historyIdentity, members
+        case cpuPercent, memoryBytes, diskReadBytesPerSecond, diskWriteBytesPerSecond
+        case networkReceiveBytesPerSecond, networkTransmitBytesPerSecond, category
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(ProcessIdentity.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        ownerUID = try container.decodeIfPresent(UInt32.self, forKey: .ownerUID)
+        executablePath = try container.decodeIfPresent(String.self, forKey: .executablePath)
+        association = try container.decode(ProcessGroupAssociation.self, forKey: .association)
+        historyIdentity = try container.decode(ApplicationHistoryIdentity.self, forKey: .historyIdentity)
+        members = try container.decode([ProcessIdentity].self, forKey: .members)
+        cpuPercent = try container.decode(MetricReading.self, forKey: .cpuPercent)
+        memoryBytes = try container.decode(MetricReading.self, forKey: .memoryBytes)
+        diskReadBytesPerSecond = try container.decode(MetricReading.self, forKey: .diskReadBytesPerSecond)
+        diskWriteBytesPerSecond = try container.decode(MetricReading.self, forKey: .diskWriteBytesPerSecond)
+        networkReceiveBytesPerSecond = try container.decode(MetricReading.self, forKey: .networkReceiveBytesPerSecond)
+        networkTransmitBytesPerSecond = try container.decode(MetricReading.self, forKey: .networkTransmitBytesPerSecond)
+        category = try container.decodeIfPresent(ProcessCategory.self, forKey: .category)
+            ?? (association == .applicationBundle ? .application : .background)
     }
 }
 
@@ -334,6 +417,105 @@ public struct ProcessorTopology: Codable, Equatable, Sendable {
     }
 }
 
+public enum PowerSourceKind: String, Codable, Hashable, Sendable {
+    case ac
+    case battery
+    case ups
+    case unknown
+}
+
+public enum SystemThermalState: String, Codable, Hashable, Sendable {
+    case nominal
+    case fair
+    case serious
+    case critical
+}
+
+public struct SystemPowerSnapshot: Codable, Equatable, Sendable {
+    public let systemPowerWatts: MetricReading?
+    public let componentPowerWatts: MetricReading?
+    public let adapterPowerWatts: MetricReading?
+    public let batteryPowerWatts: MetricReading?
+    public let cpuPowerWatts: MetricReading?
+    public let gpuPowerWatts: MetricReading?
+    public let anePowerWatts: MetricReading?
+    public let dramPowerWatts: MetricReading?
+    public let powerSource: PowerSourceKind
+    public let batteryPercent: Double?
+    public let batteryCharging: Bool?
+    public let batteryTimeRemainingMinutes: Int?
+    public let adapterMaxWatts: Int?
+    public let thermalState: SystemThermalState
+
+    public init(systemPowerWatts: MetricReading? = nil,
+                componentPowerWatts: MetricReading? = nil,
+                adapterPowerWatts: MetricReading? = nil,
+                batteryPowerWatts: MetricReading? = nil,
+                cpuPowerWatts: MetricReading? = nil,
+                gpuPowerWatts: MetricReading? = nil,
+                anePowerWatts: MetricReading? = nil,
+                dramPowerWatts: MetricReading? = nil,
+                powerSource: PowerSourceKind = .unknown,
+                batteryPercent: Double? = nil,
+                batteryCharging: Bool? = nil,
+                batteryTimeRemainingMinutes: Int? = nil,
+                adapterMaxWatts: Int? = nil,
+                thermalState: SystemThermalState = .nominal) {
+        self.systemPowerWatts = systemPowerWatts
+        self.componentPowerWatts = componentPowerWatts
+        self.adapterPowerWatts = adapterPowerWatts
+        self.batteryPowerWatts = batteryPowerWatts
+        self.cpuPowerWatts = cpuPowerWatts
+        self.gpuPowerWatts = gpuPowerWatts
+        self.anePowerWatts = anePowerWatts
+        self.dramPowerWatts = dramPowerWatts
+        self.powerSource = powerSource
+        self.batteryPercent = batteryPercent
+        self.batteryCharging = batteryCharging
+        self.batteryTimeRemainingMinutes = batteryTimeRemainingMinutes
+        self.adapterMaxWatts = adapterMaxWatts
+        self.thermalState = thermalState
+    }
+
+    public var primaryPowerWatts: MetricReading? {
+        if let systemPowerWatts, systemPowerWatts.value != nil { return systemPowerWatts }
+        if let componentPowerWatts, componentPowerWatts.value != nil { return componentPowerWatts }
+        return systemPowerWatts ?? componentPowerWatts
+    }
+}
+
+public struct HardwareSpecSnapshot: Codable, Equatable, Sendable {
+    public let machineModel: String?
+    public let cpuName: String?
+    public let gpuName: String?
+    public let gpuCoreCount: Int?
+    public let memorySummary: String?
+    public let bootDiskModel: String?
+    public let bootDiskCapacityBytes: UInt64?
+    public let primaryNetworkInterface: String?
+    public let primaryNetworkDetail: String?
+
+    public init(machineModel: String? = nil,
+                cpuName: String? = nil,
+                gpuName: String? = nil,
+                gpuCoreCount: Int? = nil,
+                memorySummary: String? = nil,
+                bootDiskModel: String? = nil,
+                bootDiskCapacityBytes: UInt64? = nil,
+                primaryNetworkInterface: String? = nil,
+                primaryNetworkDetail: String? = nil) {
+        self.machineModel = machineModel
+        self.cpuName = cpuName
+        self.gpuName = gpuName
+        self.gpuCoreCount = gpuCoreCount
+        self.memorySummary = memorySummary
+        self.bootDiskModel = bootDiskModel
+        self.bootDiskCapacityBytes = bootDiskCapacityBytes
+        self.primaryNetworkInterface = primaryNetworkInterface
+        self.primaryNetworkDetail = primaryNetworkDetail
+    }
+}
+
 public struct SystemMetricsSnapshot: Codable, Equatable, Sendable {
     public let capacityCores: Int
     public let cpuPercent: MetricReading
@@ -356,6 +538,8 @@ public struct SystemMetricsSnapshot: Codable, Equatable, Sendable {
     public let networkInterfaces: [NetworkInterfaceSnapshot]
     /// Optional so snapshots persisted before this field existed still decode. Nil means one ungrouped list.
     public let processorTopology: ProcessorTopology?
+    public let power: SystemPowerSnapshot?
+    public let hardware: HardwareSpecSnapshot?
 
     public init(capacityCores: Int, cpuPercent: MetricReading, perCoreCPUPercent: [MetricReading],
                 memoryUsedBytes: MetricReading, memoryAvailableBytes: MetricReading,
@@ -370,7 +554,9 @@ public struct SystemMetricsSnapshot: Codable, Equatable, Sendable {
                 networkReceiveBytesPerSecond: MetricReading,
                 networkTransmitBytesPerSecond: MetricReading,
                 networkInterfaces: [NetworkInterfaceSnapshot],
-                processorTopology: ProcessorTopology? = nil) {
+                processorTopology: ProcessorTopology? = nil,
+                power: SystemPowerSnapshot? = nil,
+                hardware: HardwareSpecSnapshot? = nil) {
         self.capacityCores = capacityCores
         self.cpuPercent = cpuPercent
         self.perCoreCPUPercent = perCoreCPUPercent
@@ -390,6 +576,8 @@ public struct SystemMetricsSnapshot: Codable, Equatable, Sendable {
         self.networkTransmitBytesPerSecond = networkTransmitBytesPerSecond
         self.networkInterfaces = networkInterfaces
         self.processorTopology = processorTopology
+        self.power = power
+        self.hardware = hardware
     }
 }
 
@@ -546,19 +734,69 @@ public struct MonitoringSnapshot: Codable, Equatable, Sendable {
     }
 }
 
+/// Read-only per-process resource counters supplied by the privileged helper when local syscalls lack access.
+public struct CollectedProcessSystemMetrics: Codable, Equatable, Sendable {
+    public let cpuTotalNanoseconds: UInt64?
+    public let memoryBytes: UInt64?
+    public let diskReadBytes: UInt64?
+    public let diskWriteBytes: UInt64?
+    public let threadCount: Int32?
+    public let executablePath: String?
+    /// When the helper captured these counters. Rates derived from them use this time, not the collection tick.
+    public let capturedAt: Date?
+
+    public init(cpuTotalNanoseconds: UInt64? = nil,
+                memoryBytes: UInt64? = nil,
+                diskReadBytes: UInt64? = nil,
+                diskWriteBytes: UInt64? = nil,
+                threadCount: Int32? = nil,
+                executablePath: String? = nil,
+                capturedAt: Date? = nil) {
+        self.cpuTotalNanoseconds = cpuTotalNanoseconds
+        self.memoryBytes = memoryBytes
+        self.diskReadBytes = diskReadBytes
+        self.diskWriteBytes = diskWriteBytes
+        self.threadCount = threadCount
+        self.executablePath = executablePath
+        self.capturedAt = capturedAt
+    }
+}
+
 /// Injection seam for later public integrations such as GPU and energy counters.
 /// Values keep their source units (for example joules or watt-hours) and errors.
 public struct AdvancedMetricsSnapshot: Codable, Equatable, Sendable {
     public let system: [MetricKind: MetricReading]
     public let perProcess: [ProcessIdentity: [MetricKind: MetricReading]]
     public let capabilities: [MetricKind: MetricAvailability]
+    /// When set and processNetwork is available, live processes omitted from the delta frame are verified idle (0 B/s).
+    public let idleZeroInterval: DateInterval?
+    /// Helper-collected raw counters for processes inaccessible to the unprivileged GUI process.
+    public let perProcessSystemMetrics: [ProcessIdentity: CollectedProcessSystemMetrics]
 
     public init(system: [MetricKind: MetricReading] = [:],
                 perProcess: [ProcessIdentity: [MetricKind: MetricReading]] = [:],
-                capabilities: [MetricKind: MetricAvailability] = [:]) {
+                capabilities: [MetricKind: MetricAvailability] = [:],
+                idleZeroInterval: DateInterval? = nil,
+                perProcessSystemMetrics: [ProcessIdentity: CollectedProcessSystemMetrics] = [:]) {
         self.system = system
         self.perProcess = perProcess
         self.capabilities = capabilities
+        self.idleZeroInterval = idleZeroInterval
+        self.perProcessSystemMetrics = perProcessSystemMetrics
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case system, perProcess, capabilities, idleZeroInterval, perProcessSystemMetrics
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        system = try container.decode([MetricKind: MetricReading].self, forKey: .system)
+        perProcess = try container.decode([ProcessIdentity: [MetricKind: MetricReading]].self, forKey: .perProcess)
+        capabilities = try container.decode([MetricKind: MetricAvailability].self, forKey: .capabilities)
+        idleZeroInterval = try container.decodeIfPresent(DateInterval.self, forKey: .idleZeroInterval)
+        perProcessSystemMetrics = try container.decodeIfPresent([ProcessIdentity: CollectedProcessSystemMetrics].self,
+                                                                forKey: .perProcessSystemMetrics) ?? [:]
     }
 }
 
@@ -580,6 +818,7 @@ public struct MonitoringGraphSample: Codable, Equatable, Sendable, Identifiable 
     public let networkReceiveBytesPerSecond: MetricReading
     public let networkTransmitBytesPerSecond: MetricReading
     public let advancedMetrics: [MetricKind: MetricReading]
+    public let power: SystemPowerSnapshot?
 
     public init(snapshot: MonitoringSnapshot) {
         timestamp = snapshot.timestamp
@@ -594,6 +833,7 @@ public struct MonitoringGraphSample: Codable, Equatable, Sendable, Identifiable 
         networkReceiveBytesPerSecond = snapshot.system.networkReceiveBytesPerSecond
         networkTransmitBytesPerSecond = snapshot.system.networkTransmitBytesPerSecond
         advancedMetrics = snapshot.advancedMetrics
+        power = snapshot.system.power
     }
 }
 

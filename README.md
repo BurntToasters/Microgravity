@@ -4,7 +4,7 @@
 
 # Microgravity
 
-Microgravity is a free, open-source macOS process monitor — a native AppKit and Swift alternative to Activity Monitor and Task Manager. It groups processes by app and shows live CPU, memory, disk, and network activity, with system-wide GPU and energy graphs when the optional helper is enabled. Per-app CPU, disk, and network history is kept locally for up to 30 days. It runs on macOS 14 or later on Apple silicon and Intel Macs.
+Microgravity is a free, open-source macOS process monitor — a native AppKit and Swift alternative to Activity Monitor and Task Manager. It groups processes by app or Task Manager category (Apps, Background, System), shows live CPU, memory, disk, external per-process network, GPU, and AC/battery system power, and keeps up to 30 days of per-app CPU, disk, and network history locally. It runs on macOS 14 or later on Apple silicon and Intel Macs.
 
 <p align="center">
   <a href="https://github.com/BurntToasters/Microgravity/releases/latest"><img alt="Latest Microgravity release" src="https://img.shields.io/github/v/release/BurntToasters/Microgravity?label=release&sort=semver"></a>
@@ -47,10 +47,10 @@ Activity Monitor is built into macOS and is still the quickest way to check one 
 
 | | Microgravity | Activity Monitor |
 | --- | --- | --- |
-| App grouping | Groups helper processes under their app, with an optional flat list | Parent/child process hierarchy |
+| App grouping | Groups helper processes under their app, plus By Category (Apps / Background / System) and Flat List | Parent/child process hierarchy |
 | Per-app history | Up to 30 days of daily CPU, disk, and network totals, stored locally | Live graphs while open; no per-app history retention |
-| Per-process GPU | Not collected; system GPU activity appears on the Performance page | `% GPU` and `GPU Time` columns where available |
-| Per-process network | With the optional privileged helper, plus per-app history | Network tab, with per-process totals since each process started |
+| Per-process GPU | Not collected; system GPU % and power appear natively on Apple silicon (or via helper) | `% GPU` and `GPU Time` columns where available |
+| Per-process network | Live 1s streaming external `nettop` deltas, run by the app as your user with no helper needed, plus per-app history | Network tab, with per-process totals since each process started |
 | Heat-mapped columns | CPU, memory, disk, and network | No background heat maps |
 | Startup items and services | Read-only inventory of login items, launch agents, daemons, and services | Not included |
 | Open source | GPL-3.0-only | Proprietary |
@@ -68,15 +68,15 @@ The optional privileged helper, open-at-login item, and update checks are manage
 
 ## Process monitor
 
-By default, Microgravity groups processes by app, so browser helpers, Electron subprocesses, and other children sit under the app they belong to. Switch to Flat List when you want every PID in one table. Search matches process name, executable path, PID, or owner.
+By default, Microgravity groups processes by app (deduplicated per bundle and user) or lets you switch to **By Category** (Apps, Background processes, System processes) and filter by **All Processes**, **Apps Only**, or **My Processes**, or view a **Flat List**. A clickable live system totals strip sits above the table, and search matches process name, executable path, PID, or owner.
 
-The CPU, memory, disk read/write, and network columns can be sorted. CPU, memory, disk, and network cells use background heat maps. Microgravity does not collect per-process GPU time; the Performance page shows system-wide GPU activity instead. Quit and Force Quit act on the selected process; protected and root-owned processes are refused with an explanation. Other standard users' processes can be quit after administrator approval through the optional helper. Finder can be relaunched from the same page. Missing metrics carry a reason instead of appearing as zero.
+The CPU, memory, disk (combined rate with Read/Write tooltip and optional separate columns), and network columns can be sorted, and double-clicking expands multi-process groups or inspects single processes. CPU, memory, disk, and network cells use background heat maps. Quit and Force Quit act on the selected process; protected and root-owned processes are refused with an explanation. Other standard users' processes can be quit after administrator approval through the optional helper. Finder can be relaunched from the same page. Missing metrics carry a reason instead of appearing as zero.
 
 ## Performance and GPU monitoring
 
-Performance shows live CPU, memory, disk, network, GPU, and energy graphs with 1-minute, 5-minute, 15-minute, and 1-hour windows. A detail view adds per-logical-processor activity, swap usage, and a memory-pressure timeline. Hover a graph to read a sample; paused or missed samples appear as gaps.
+Performance shows hardware spec headers, live CPU, memory (with segmented App/Wired/Compressed/Cached/Free composition bar), disk, network (with collapsible virtual interfaces), GPU, and Energy graphs with 1-minute, 5-minute, 15-minute, and 1-hour windows. Energy displays true **System Power** across both AC power and battery using `AppleSMC` and `AppleSmartBattery`, alongside Apple Silicon `IOReport` SoC component power (CPU, GPU, ANE, DRAM), adapter input, battery charge/discharge telemetry, and thermal pressure. Hover a graph to read a sample; paused or missed samples appear as gaps.
 
-GPU activity is system-wide, and per-process GPU time is not collected. GPU and energy readings require the optional helper, and energy is marked unavailable when macOS does not provide the expected power data.
+GPU activity and component power use native `libIOReport` on Apple silicon (with `powermetrics` fallback via the helper on Intel or unsupported platforms), and metrics stay marked unavailable whenever macOS does not report a hardware sensor.
 
 ## Per-app history
 
@@ -86,13 +86,13 @@ Reset App History in Settings to clear the stored totals. History is aggregate d
 
 ## Startup items and services
 
-Startup is a read-only inventory of login items, launch agents, and launch daemons. Services lists macOS services. Both show name, kind, status, owner, and known path, and can reveal the selected item in Finder or open Login Items settings.
+Startup is a read-only, searchable inventory of login items, launch agents, and launch daemons. Services lists macOS services with live search filtering. Both show name, kind, status, owner, and known path, and can reveal the selected item in Finder or open Login Items settings.
 
 macOS may protect some locations. When discovery is incomplete, the page reports the limitation rather than presenting an empty list as complete.
 
 ## Users and process details
 
-Users combines active login sessions with every account that owns a process, then totals process count, CPU, and memory per account. Details is a flat, searchable process table with PID, owner, parent PID, CPU, memory, disk, network, and executable path. Both pages label unavailable data with a reason.
+Users is searchable and combines active login sessions with every account that owns a process, totaling process count, CPU, and memory per account. Details is a flat, searchable process table with PID, owner, parent PID, CPU, memory, disk, network, executable path, optional Threads, Architecture, and CPU Time columns, and context-menu Inspect, Quit, and Force Quit actions. Both pages label unavailable data with a reason.
 
 ## Settings and privacy
 
@@ -104,11 +104,11 @@ Microgravity has no account and no analytics. It samples locally, stores aggrega
 
 ### Is Microgravity an Activity Monitor alternative?
 
-Yes. It is a free, open-source macOS process monitor that covers the everyday jobs of Activity Monitor — finding resource-heavy processes, viewing system-wide CPU, memory, disk, and network activity, and quitting processes — and adds app grouping, up to 30 days of per-app history, and startup and service inventories. GPU and energy readings also appear when the optional helper is enabled. Activity Monitor is built into macOS; Microgravity is a separate download.
+Yes. It is a free, open-source macOS process monitor that covers the everyday jobs of Activity Monitor — finding resource-heavy processes, viewing system-wide CPU, memory, disk, and network activity, and quitting processes — and adds app grouping, up to 30 days of per-app history, and startup and service inventories. GPU and energy readings also appear on Apple silicon without extra setup; on Intel Macs they need the optional helper. Activity Monitor is built into macOS; Microgravity is a separate download.
 
 ### How do I find what is using CPU, GPU, or memory?
 
-Open Processes and sort by CPU or Memory, or search by name, path, PID, or user. The Performance page shows system-wide trends; GPU activity is system-wide, not per process. For a flat, searchable list, use Details. GPU and energy readings need the optional helper.
+Open Processes and sort by CPU or Memory, or search by name, path, PID, or user. The Performance page shows system-wide trends; GPU activity is system-wide, not per process. For a flat, searchable list, use Details. On Apple silicon, GPU and energy readings come from macOS sensors without the helper; on Intel Macs they need the optional helper.
 
 ### How long does Microgravity keep history?
 
@@ -116,7 +116,7 @@ Up to 30 days of daily per-app CPU, disk, and network totals. History is stored 
 
 ### Does per-process network monitoring require the helper?
 
-Yes. Per-process network byte totals come from `nettop` through the optional privileged helper; without it, the network column is marked unavailable. System-wide network rates work without the helper.
+Per-process network streaming works out of the box. Microgravity runs `nettop -t external` itself, as your user, and updates it every second; the helper does not run `nettop`. Enabling the optional privileged helper adds CPU, memory, and disk readings for processes owned by root and other users, plus quitting processes owned by other standard users. System-wide network rates work without the helper.
 
 ### Does Microgravity run on Apple silicon and Intel Macs?
 
@@ -130,7 +130,7 @@ Microgravity is free and licensed GPL-3.0-only. It has no account and no analyti
 
 Microgravity collects measurements on your Mac. App History stores daily aggregate totals plus app display names and bundle paths in a local SQLite database; it does not store command lines or network destinations. There is no account, no telemetry, and no analytics service. The app's only automatic network request is an update check.
 
-The optional privileged helper adds per-process network totals, GPU activity, and energy readings. It is code-signed and checks the app's signature; the app checks the helper. The helper can quit processes owned by other standard users, but never root-owned processes, PID 1, itself, or processes in protected system locations. macOS asks for administrator approval for each such quit. You can remove the helper from Settings.
+The helper does not collect per-process network. The optional privileged helper adds CPU, memory, and disk readings for processes owned by root and other users, and on Intel Macs GPU and energy readings from `powermetrics`. It is code-signed and checks the app's signature; the app checks the helper. The helper can quit processes owned by other standard users, but never root-owned processes, PID 1, itself, or processes in protected system locations. macOS asks for administrator approval for each such quit. You can remove the helper from Settings.
 
 The login item can also ask macOS for approval, and the update state is reported in Settings. Some metrics and inventory locations depend on permissions or platform support, and the interface marks those states instead of showing zero or an empty list. For the fixed commands, code-signing requirements, termination authorization, and logging, read [how Microgravity collects advanced metrics and protects the helper](docs/ADVANCED_METRICS.md).
 

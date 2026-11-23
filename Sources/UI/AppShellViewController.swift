@@ -143,6 +143,12 @@ final class RootViewController: NSViewController {
         (pageHost.currentController as? ProcessesViewController)?.selectProcess(identity: identity)
     }
 
+    /// Opens Performance and selects the given metric detail card.
+    func showPerformance(metric: PerformanceMetric) {
+        select(.performance)
+        (pageHost.currentController as? PerformanceViewController)?.selectMetric(metric)
+    }
+
     /// Collapses or expands the sidebar; the split view controller owns the animation.
     @objc func toggleSidebar(_ sender: Any?) {
         splitController.toggleSidebar(sender)
@@ -242,7 +248,8 @@ private final class PageHostViewController: NSViewController {
         case .users: return UsersViewController()
         case .details:
             // Fixture launches keep column layout out of the app's real defaults domain.
-            return context.fixtureMode ? DetailsViewController(autosaveName: nil) : DetailsViewController()
+            return DetailsViewController(dependencies: context,
+                                         autosaveName: context.fixtureMode ? nil : "Microgravity.details.columns.v3")
         case .services: return InventoryViewController(kind: .services, dependencies: context)
         case .settings: return SettingsViewController(dependencies: context)
         }

@@ -35,7 +35,25 @@ enum ProcessInspectorModel {
         let diskWrite = group?.diskWriteBytesPerSecond ?? process.diskWriteBytesPerSecond
         let readTotal = aggregate({ $0.diskReadTotalBytes }, unit: .bytes)
         let writeTotal = aggregate({ $0.diskWriteTotalBytes }, unit: .bytes)
-        let network = aggregate({ networkReading($0, snapshot: snapshot) }, unit: .bytesPerSecond)
+        let network: MetricReading
+        let networkReceive: MetricReading
+        let networkTransmit: MetricReading
+        if let group {
+            networkReceive = group.networkReceiveBytesPerSecond
+            networkTransmit = group.networkTransmitBytesPerSecond
+            if let rx = networkReceive.value, let tx = networkTransmit.value, (rx + tx).isFinite {
+                network = MetricReading(value: rx + tx, unit: .bytesPerSecond, timestamp: snapshot.timestamp,
+                                        detail: networkReceive.detail ?? networkTransmit.detail,
+                                        isPartial: networkReceive.isPartial || networkTransmit.isPartial,
+                                        measurementInterval: networkReceive.measurementInterval ?? networkTransmit.measurementInterval)
+            } else {
+                network = aggregate({ networkReading($0, kind: .processNetwork, snapshot: snapshot) }, unit: .bytesPerSecond)
+            }
+        } else {
+            network = networkReading(process, kind: .processNetwork, snapshot: snapshot)
+            networkReceive = networkReading(process, kind: .processNetworkReceive, snapshot: snapshot)
+            networkTransmit = networkReading(process, kind: .processNetworkTransmit, snapshot: snapshot)
+        }
 
         let started = ProcessesViewController.startTimeFormatter.string(
             from: ProcessesViewController.startDate(process.id.startTime)
@@ -48,6 +66,14 @@ enum ProcessInspectorModel {
             appBundle = UIText.appBundlePath(forExecutable: appPath) ?? String(localized: "None")
         }
 
+        let threadSum: Int32? = {
+            if group == nil { return process.threadCount }
+            let counts = members.compactMap { $0?.threadCount }
+            return counts.isEmpty ? nil : counts.reduce(0, +)
+        }()
+        let threadText = threadSum.map { String($0) } ?? String(localized: "Unavailable")
+        let archText = Self.architectureLabel(process.architecture)
+
         return [
             ProcessInspectorRow(label: String(localized: "Name"), value: group?.title ?? process.name,
                                 toolTip: nil, isMonospaced: false),
@@ -59,26 +85,43 @@ enum ProcessInspectorModel {
                                 toolTip: nil, isMonospaced: false),
             ProcessInspectorRow(label: String(localized: "Started"), value: started,
                                 toolTip: nil, isMonospaced: true),
+            ProcessInspectorRow(label: String(localized: "Architecture"), value: archText,
+                                toolTip: nil, isMonospaced: false),
+            ProcessInspectorRow(label: String(localized: "Threads"), value: threadText,
+                                toolTip: nil, isMonospaced: true),
             ProcessInspectorRow(label: String(localized: "Executable Path"),
                                 value: process.executablePath ?? String(localized: "Unavailable"),
                                 toolTip: process.executablePath, isMonospaced: false),
             ProcessInspectorRow(label: String(localized: "App Bundle"), value: appBundle,
                                 toolTip: UIText.appBundlePath(forExecutable: appPath), isMonospaced: false),
             ProcessInspectorRow(label: String(localized: "CPU"), value: UIFormat.metric(cpu),
-                                toolTip: nil, isMonospaced: true),
+                                toolTip: UIFormat.metric(cpu), isMonospaced: true),
             ProcessInspectorRow(label: String(localized: "Memory"), value: UIFormat.metric(memory),
-                                toolTip: nil, isMonospaced: true),
+                                toolTip: UIFormat.metric(memory), isMonospaced: true),
             ProcessInspectorRow(label: String(localized: "Disk Read Rate"), value: UIFormat.metric(diskRead),
-                                toolTip: nil, isMonospaced: true),
+                                toolTip: UIFormat.metric(diskRead), isMonospaced: true),
             ProcessInspectorRow(label: String(localized: "Disk Write Rate"), value: UIFormat.metric(diskWrite),
-                                toolTip: nil, isMonospaced: true),
+                                toolTip: UIFormat.metric(diskWrite), isMonospaced: true),
             ProcessInspectorRow(label: String(localized: "Read Since Start"), value: UIFormat.metric(readTotal),
-                                toolTip: nil, isMonospaced: true),
+                                toolTip: UIFormat.metric(readTotal), isMonospaced: true),
             ProcessInspectorRow(label: String(localized: "Written Since Start"), value: UIFormat.metric(writeTotal),
-                                toolTip: nil, isMonospaced: true),
+                                toolTip: UIFormat.metric(writeTotal), isMonospaced: true),
             ProcessInspectorRow(label: String(localized: "Network"), value: UIFormat.metric(network),
-                                toolTip: nil, isMonospaced: true)
+                                toolTip: UIFormat.metric(network), isMonospaced: true),
+            ProcessInspectorRow(label: String(localized: "Network Receive"), value: UIFormat.metric(networkReceive),
+                                toolTip: UIFormat.metric(networkReceive), isMonospaced: true),
+            ProcessInspectorRow(label: String(localized: "Network Send"), value: UIFormat.metric(networkTransmit),
+                                toolTip: UIFormat.metric(networkTransmit), isMonospaced: true)
         ]
+    }
+
+    static func architectureLabel(_ architecture: ProcessArchitecture?) -> String {
+        switch architecture {
+        case .appleSilicon: return String(localized: "Apple Silicon")
+        case .intel: return String(localized: "Intel")
+        case .rosetta: return String(localized: "Rosetta")
+        case .unknown, nil: return String(localized: "Unavailable")
+        }
     }
 
     /// "<name> (PID n)" when the parent is listed, "PID n" when only its PID is known, otherwise "Unavailable".
@@ -96,9 +139,10 @@ enum ProcessInspectorModel {
     }
 
     /// The process's network rate, or a reading that explains why it is missing (capability reason, else not collected).
-    private static func networkReading(_ process: ProcessSnapshot, snapshot: MonitoringSnapshot) -> MetricReading {
-        if let reading = process.advancedMetrics[.processNetwork] { return reading }
-        let capability = snapshot.capabilities[.processNetwork]
+    private static func networkReading(_ process: ProcessSnapshot, kind: MetricKind,
+                                       snapshot: MonitoringSnapshot) -> MetricReading {
+        if let reading = process.advancedMetrics[kind] { return reading }
+        let capability = snapshot.capabilities[kind] ?? snapshot.capabilities[.processNetwork]
         let unavailable = capability?.available == false
         return MetricReading(unavailable: .bytesPerSecond, timestamp: snapshot.timestamp,
                              reason: unavailable ? (capability?.reason ?? .notCollected) : .notCollected,

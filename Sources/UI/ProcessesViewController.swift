@@ -461,13 +461,11 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         isApplyingModel = true
         defer { isApplyingModel = false }
 
-        // Collapse deepest nodes first when their expansion leaves the model.
+        // Collapse deepest nodes first when their expansion leaves the model: member rows before the sections
+        // that hold them. The order is total, so equal rows never compare as less than each other.
         let removedParents = Array(shownChildren.keys)
             .filter { output.children[$0] == nil }
-            .sorted { lhs, _ in
-                if case .section = lhs { return false }
-                return true
-            }
+            .sorted(by: Self.collapseOrderPrecedes)
         for id in removedParents {
             if let item = items[id], outlineView.row(forItem: item) >= 0 {
                 withoutAnimation { outlineView.collapseItem(item) }
@@ -475,23 +473,84 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             shownChildren[id] = nil
         }
 
-        if let topOperations = ProcessRowModel.boundedOperations(from: topLevelIDs, to: output.topLevel,
-                                                                 limit: Self.incrementalOperationLimit) {
-            if !topOperations.isEmpty {
-                withoutAnimation {
-                    outlineView.beginUpdates()
-                    for operation in topOperations {
-                        perform(operation, parent: nil)
-                    }
-                    outlineView.endUpdates()
-                }
-            }
-        } else {
+        // A row under a new parent cannot be moved step by step: its old copy would still be in the outline.
+        if hasReparentedRows(output) {
             reloadTopLevel(output)
+        } else {
+            reconcileTopLevel(output)
+        }
+        reconcileChildLevels(output)
+
+        // Safety net: if the outline still disagrees with the mirror, reload the top level once and redo the pass.
+        if outlineView.numberOfRows != visibleRowIDs.count {
+            reloadTopLevel(output)
+            reconcileChildLevels(output)
         }
 
-        // Reconcile expanded sections and groups breadth-first so parent rows exist before their child groups expand.
-        var queue = output.topLevel
+        reloadChangedCells(previous: previousRows, next: output)
+        rowsByID = output.rows
+        items = items.filter { output.rows[$0.key] != nil }
+        updateCachedMatchingProcessCount()
+        updateEmptyState(output: output)
+        syncSelection(visible: visibleRowIDs)
+        updateSelectionDetails()
+    }
+
+    /// Member rows collapse before the sections that hold them; rows of one kind are ordered by their description.
+    private static func collapseOrderPrecedes(_ lhs: ProcessRowID, _ rhs: ProcessRowID) -> Bool {
+        let lhsIsSection: Bool
+        if case .section = lhs { lhsIsSection = true } else { lhsIsSection = false }
+        let rhsIsSection: Bool
+        if case .section = rhs { rhsIsSection = true } else { rhsIsSection = false }
+        if lhsIsSection != rhsIsSection { return !lhsIsSection }
+        return String(describing: lhs) < String(describing: rhs)
+    }
+
+    /// Each nested row mapped to its parent, for the rows reachable from `topLevel` through `children`.
+    private static func nestedParents(topLevel: [ProcessRowID],
+                                      children: [ProcessRowID: [ProcessRowID]]) -> [ProcessRowID: ProcessRowID] {
+        var parents: [ProcessRowID: ProcessRowID] = [:]
+        var queue = topLevel
+        var cursor = 0
+        while cursor < queue.count {
+            let parent = queue[cursor]
+            cursor += 1
+            for child in children[parent] ?? [] {
+                parents[child] = parent
+                queue.append(child)
+            }
+        }
+        return parents
+    }
+
+    /// True when a row present both in the mirror and in `output` has a different parent (nil for top level).
+    private func hasReparentedRows(_ output: ProcessOutline) -> Bool {
+        let mirrorParents = Self.nestedParents(topLevel: topLevelIDs, children: shownChildren)
+        let layoutParents = Self.nestedParents(topLevel: output.topLevel, children: output.children)
+        let mirrorRows = Set(topLevelIDs).union(mirrorParents.keys)
+        let layoutRows = Set(output.topLevel).union(layoutParents.keys)
+        return mirrorRows.intersection(layoutRows).contains { mirrorParents[$0] != layoutParents[$0] }
+    }
+
+    private func reconcileTopLevel(_ output: ProcessOutline) {
+        guard let topOperations = ProcessRowModel.boundedOperations(from: topLevelIDs, to: output.topLevel,
+                                                                    limit: Self.incrementalOperationLimit) else {
+            reloadTopLevel(output)
+            return
+        }
+        guard !topOperations.isEmpty else { return }
+        withoutAnimation {
+            outlineView.beginUpdates()
+            for operation in topOperations {
+                perform(operation, parent: nil)
+            }
+            outlineView.endUpdates()
+        }
+    }
+
+    /// Reconciles expanded sections and groups breadth-first so parent rows exist before their child groups expand.
+    private func reconcileChildLevels(_ output: ProcessOutline) {
+        var queue = topLevelIDs
         var cursor = 0
         while cursor < queue.count {
             let parentID = queue[cursor]
@@ -518,14 +577,6 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             }
             queue.append(contentsOf: wanted)
         }
-
-        reloadChangedCells(previous: previousRows, next: output)
-        rowsByID = output.rows
-        items = items.filter { output.rows[$0.key] != nil }
-        updateCachedMatchingProcessCount()
-        updateEmptyState(output: output)
-        syncSelection(visible: visibleRowIDs)
-        updateSelectionDetails()
     }
 
     private func updateCachedMatchingProcessCount() {
@@ -585,8 +636,11 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
     /// Reloads one expanded group's member rows in place when its diff is too long to apply step by step.
     private func reloadChildLevel(_ parent: ProcessRowID, wanted: [ProcessRowID]) {
         guard let item = items[parent] else { return }
-        shownChildren[parent] = wanted
         withoutAnimation {
+            // The reload drops the child rows, so their expansion and mirror entries go too. The breadth-first
+            // pass re-expands the nested groups that `wanted` still expands.
+            collapseDescendants(of: parent)
+            shownChildren[parent] = wanted
             let wasExpanded = outlineView.isItemExpanded(item)
             outlineView.reloadItem(item, reloadChildren: true)
             if wasExpanded, !outlineView.isItemExpanded(item) {
@@ -594,6 +648,20 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             }
         }
     }
+
+    /// Collapses every row below `parent` that the mirror shows, deepest first, and clears their mirror entries.
+    private func collapseDescendants(of parent: ProcessRowID) {
+        for child in shownChildren[parent] ?? [] {
+            collapseDescendants(of: child)
+            if let item = items[child], outlineView.row(forItem: item) >= 0 {
+                outlineView.collapseItem(item)
+            }
+            shownChildren[child] = nil
+        }
+    }
+
+    /// Test hook: the rows the mirror says the outline shows, top to bottom.
+    var mirroredRowIDs: [ProcessRowID] { visibleRowIDs }
 
     private var visibleRowIDs: [ProcessRowID] {
         var result: [ProcessRowID] = []
@@ -684,7 +752,10 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             guard !changed.isEmpty else { continue }
             rowIndexes.insert(row)
             for column in changed {
-                columnIndexes.insert(outlineView.column(withIdentifier: NSUserInterfaceItemIdentifier(column.rawValue)))
+                let columnIndex = outlineView.column(withIdentifier: NSUserInterfaceItemIdentifier(column.rawValue))
+                if columnIndex >= 0 {
+                    columnIndexes.insert(columnIndex)
+                }
             }
         }
         if !rowIndexes.isEmpty {
@@ -710,11 +781,16 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
             self.selectedID = nil
         }
         selectedID = ProcessRowModel.selection(after: selectedID, visible: visible)
-        if let selectedID, let index = visible.firstIndex(of: selectedID) {
-            if outlineView.selectedRow != index {
-                outlineView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        if let selectedID, let item = items[selectedID] {
+            let row = outlineView.row(forItem: item)
+            if row >= 0 {
+                if outlineView.selectedRow != row {
+                    outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                }
+                return
             }
-        } else if outlineView.selectedRow != -1 {
+        }
+        if outlineView.selectedRow != -1 {
             outlineView.deselectAll(nil)
         }
     }
@@ -1182,7 +1258,9 @@ final class ProcessesViewController: NSViewController, SnapshotUpdating, PageToo
         applyModel()
         let visible = visibleRowIDs
         guard let target = [ProcessRowID.process(identity), .group(identity)].first(where: { visible.contains($0) }),
-              let row = visible.firstIndex(of: target) else { return }
+              let item = items[target] else { return }
+        let row = outlineView.row(forItem: item)
+        guard row >= 0 else { return }
         selectedID = target
         outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         outlineView.scrollRowToVisible(row)
